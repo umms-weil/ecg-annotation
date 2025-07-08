@@ -1,0 +1,13 @@
+#sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 295px;           /* match to app.py marginLeft */
+    min-width: 200px;
+    height: 100vh;          /* full viewport height */
+    padding: 8px 12px 4px 8px;
+    overflow-y: auto;
+    background: #fff;
+    z-index: 100;
+    border-right: 1px solid #ddd;
+}
