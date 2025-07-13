@@ -4,19 +4,19 @@ from datetime import datetime
 
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "annotations.csv")
 
-def save_annotation(start, end, label):
-    now = datetime.now().isoformat(sep=' ', timespec='seconds')
-    entry = {
-        'start_time': float(start),
-        'end_time': float(end),
-        'label': label,
-        'saved_at': now
-    }
-    df = pd.DataFrame([entry])
-    if not os.path.exists(OUTPUT_FILE):
-        df.to_csv(OUTPUT_FILE, index=False)
+def save_all_annotations(annotations, subject=None):
+    """
+    Save all annotation dicts in a single CSV file.
+    Each annotation should at least have: 'start', 'end', 'label'
+    Optionally, include subject name in filename.
+    """
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if subject:
+        filename = f"annotations_{subject}_{now}.csv"
     else:
-        df.to_csv(OUTPUT_FILE, mode='a', header=False, index=False)
-    return entry
+        filename = f"annotations_{now}.csv"
+    outpath = os.path.join(OUTPUT_DIR, filename)
+    df = pd.DataFrame(annotations)
+    df.to_csv(outpath, index=False)
+    return outpath
