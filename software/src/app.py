@@ -79,6 +79,15 @@ app.layout = html.Div([
             placeholder="Add comment (required if Non-Interpretable)",
             style={'width': '100%', 'height': 24, "fontSize": 10, 'marginBottom': '5px'}
         ),
+        html.Label("Navigation step size (seconds):", style={"fontWeight": "bold", 'fontSize': 11}),
+        dcc.Input(
+            id='nav-step-size', 
+            type='number', 
+            min=1, 
+            value=1, 
+            step=1, 
+            style={'width': 60, 'fontSize': 11, 'marginBottom': '5px'}
+        ),
         html.Div([
             html.Button('←', id='prev-second-btn', n_clicks=0, style={'width': '45%', 'marginRight': '5%'}),
             html.Button('→', id='next-second-btn', n_clicks=0, style={'width': '45%'})

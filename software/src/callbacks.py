@@ -52,12 +52,12 @@ def register_callbacks(app):
         Input('prev-second-btn', 'n_clicks'),
         Input('next-second-btn', 'n_clicks'),
         Input('waveform-graph', 'relayoutData'),
+        Input('waveform-graph', 'clickData'),
         Input('mark-btn', 'n_clicks'),
         State('current_time', 'data'),
         State('last_mark', 'data'),
         State('waveform-length', 'data'),
         State('annotations-list', 'data'),
-        # New: all form elements!
         State("interpretability", "value"),
         State("comments", "value"),
         State("rhythm-label", "value"),
@@ -65,11 +65,19 @@ def register_callbacks(app):
         State("shockable", "value"),
         State("onset-event", "value"),
         State('data-store', 'data'),
+        State('nav-step-size', 'value'),
         prevent_initial_call=True
     )
-    def nav_mark_scroll_load(subject_selected, n_prev, n_next, relayout, n_mark,
-                             current_time, last_mark, waveform_length, annotations,
-                             interpretability, comments, rhythm_label, cpr_status, shockable, onset_event, data_store):
+    def nav_mark_scroll_load(
+        subject_selected,
+        n_prev, n_next,
+        relayout, click_data,
+        n_mark,
+        current_time, last_mark, waveform_length, annotations,
+        interpretability, comments, rhythm_label, cpr_status, shockable, onset_event,
+        data_store,
+        nav_step_size
+    ):
         ctx = callback_context
         trigger = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
 
@@ -77,46 +85,66 @@ def register_callbacks(app):
         if trigger == "subject-dropdown":
             if not subject_selected:
                 return 1, 0, [], True, True, True, "", {}, None
+            # Example: your actual subject loading logic may differ
+            from processing import load_all_leads
             times, signals, lead_names = load_all_leads(subject_selected)
             data_store = {
                 "time": times.tolist(),
                 "leads": [s.tolist() for s in signals],
                 "lead_names": lead_names,
             }
-            waveform_length = int(times[-1])
+            waveform_length = times[-1]
             current_time = 1
             last_mark = 0
             annotations = []
             return current_time, last_mark, annotations, True, True, False if waveform_length > 1 else True, "", data_store, waveform_length
 
         # Parse current states
-        current_time = int(current_time) if current_time is not None else 1
-        last_mark = int(last_mark) if last_mark is not None else 0
-        waveform_length = int(waveform_length) if waveform_length is not None else 0
+        current_time = current_time if current_time is not None else 1
+        last_mark = last_mark if last_mark is not None else 0
+        waveform_length = waveform_length if waveform_length is not None else 0
         annotations = annotations or []
+        step = int(nav_step_size or 1)  # Default to step size 1
 
-        # NAVIGATION
+        # NAVIGATION BUTTONS
         if trigger in ['next-second-btn', 'prev-second-btn']:
-            delta = 1 if trigger == 'next-second-btn' else -1
-            min_nav = max(last_mark + 1, 1)
+            delta = step if trigger == 'next-second-btn' else -step
+            min_nav = max(last_mark + 1.0, 0.0)     # Now use float, and allow start at 0
             max_nav = waveform_length
-            current_time = min(max(current_time + delta, min_nav), max_nav)
+            candidate = current_time + delta
+            if candidate < min_nav:
+                current_time = min_nav
+            else:
+                current_time = min(candidate, max_nav)
 
-        # PLOT SCROLL
-        elif trigger == 'waveform-graph':
-            if relayout and "xaxis.range[0]" in relayout and "xaxis.range[1]" in relayout:
-                x_left = relayout["xaxis.range[0]"]
-                x_right = relayout["xaxis.range[1]"]
-                mid = (x_left + x_right) / 2
-                min_nav = max(last_mark + 1, 1)
+        # PLOT SCROLL (handle relayout vs. click separately)
+        elif trigger == 'waveform-graph' and relayout and "xaxis.range[0]" in relayout and "xaxis.range[1]" in relayout:
+            x_left = relayout["xaxis.range[0]"]
+            x_right = relayout["xaxis.range[1]"]
+            mid = (x_left + x_right) / 2
+            min_nav = max(last_mark + 1.0, 0.0)
+            max_nav = waveform_length
+            if mid < min_nav:
+                current_time = min_nav
+            else:
+                current_time = min(mid, max_nav)
+
+        # HANDLE CLICK-TO-NAVIGATE
+        elif trigger == 'waveform-graph' and click_data:
+            try:
+                x = click_data['points'][0]['x']
+                min_nav = max(last_mark + 1.0, 0.0)
                 max_nav = waveform_length
-                snap = int(np.clip(np.round(mid), min_nav, max_nav))
-                current_time = snap
+                if x < min_nav:
+                    current_time = min_nav
+                else:
+                    current_time = min(x, max_nav)
+            except Exception:
+                pass
 
         # MARKING
         warning = ""
         mark_disabled = False
-
         if trigger == "mark-btn":
             # Validation
             if not interpretability:
@@ -137,11 +165,13 @@ def register_callbacks(app):
             elif not onset_event:
                 warning = "Select onset event"
                 mark_disabled = True
+            elif current_time - last_mark < 1:
+                warning = "Annotation must be at least 1 second"
+                mark_disabled = True
             else:
-                # All fields valid, record annotation
                 start = last_mark
                 end = current_time
-                if end > start:
+                if end > start and (end - start) >= 1:
                     annotation = {
                         "interpretable": interpretability,
                         "comments": comments or "",
@@ -155,16 +185,35 @@ def register_callbacks(app):
                     annotations = annotations + [annotation]
                     last_mark = end
                     current_time = min(last_mark + 1, waveform_length)
+                else:
+                    warning = "Annotation must be at least 1 second"
+                    mark_disabled = True
+
         # Check disables after nav/mark
         mark_disabled = (
-            (current_time <= last_mark) or (current_time > waveform_length)
-            or not interpretability or not rhythm_label or not cpr_status or not shockable or not onset_event
+            (current_time <= last_mark)
+            or (current_time > waveform_length)
+            or not interpretability
+            or not rhythm_label
+            or not cpr_status
+            or not shockable
+            or not onset_event
             or (interpretability == "Non-Interpretable" and (not comments or not comments.strip()))
         )
         prev_disabled = (current_time <= max(last_mark + 1, 1))
         next_disabled = (current_time >= waveform_length)
 
-        return current_time, last_mark, annotations, mark_disabled, prev_disabled, next_disabled, warning, no_update, no_update
+        return (
+            current_time,
+            last_mark,
+            annotations,
+            mark_disabled,
+            prev_disabled,
+            next_disabled,
+            warning,
+            no_update,
+            no_update
+        )
 
     @app.callback(
         Output('waveform-graph', 'figure'),
@@ -182,7 +231,7 @@ def register_callbacks(app):
         leads = [np.array(l) for l in data_store["leads"]]
         lead_names = data_store["lead_names"]
         n_lead = len(lead_names)
-        current_time = int(current_time) if current_time is not None else 1
+        current_time = current_time if current_time is not None else 1
         left = current_time - WINDOW_PADDING
         right = current_time + WINDOW_PADDING
         t_min, t_max = times[0], times[-1]
