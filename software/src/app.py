@@ -2,7 +2,7 @@ import dash
 from dash import dcc, html, dash_table
 from callbacks import register_callbacks
 
-SIDEBAR_WIDTH = '230px'
+SIDEBAR_WIDTH = '300px'
 
 app = dash.Dash(__name__)
 
@@ -123,15 +123,48 @@ app.layout = html.Div([
         'padding': '8px 6px 7px 7px', 'background': '#F7F7F9',
         'boxSizing':'border-box', 'maxHeight': '98vh'
     }),
-
     html.Div([
-        dcc.Graph(
-            id='waveform-graph',
-            config={'displayModeBar': True, 'scrollZoom': True, 'doubleClick': 'reset'},
-            style={'height': '500px', 'marginBottom': '4px', 'maxWidth':'900px', 'width':'900px'}
+    # (Optional) window/zoom controls
+    html.Div([
+        html.Label("Waveform view window (seconds):", style={"fontWeight": "bold", 'fontSize': 12, 'marginRight': '7px'}),
+        dcc.Input(
+            id='view-window-size',
+            type='number',
+            min=1,
+            max=300,
+            step=1,
+            value=10,
+            style={'width': 80, 'fontSize': 12}
         ),
-    ], style={'flexGrow': 1, 'padding': '8px 8px 8px 10px', 'marginLeft': SIDEBAR_WIDTH})
-], style={'display': 'flex', 'alignItems': 'flex-start', 'height':'100vh', 'background':'white'})
+    ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '8px'}),
+
+    # ----- PUT SCROLLBAR HERE ------
+    html.Div([
+        dcc.Slider(
+            id='x-scrollbar',
+            min=0,
+            max=100,  # set via callback
+            step=0.01,
+            value=0,
+            updatemode='drag',
+            tooltip={'always_visible': False}
+        ),
+    ], style={
+        'width': '100%',
+        'maxWidth': '900px',
+        'margin': '0 auto',
+        'marginBottom': '6px',
+    }),
+
+    # The plot
+    dcc.Graph(
+        id='waveform-graph',
+        config={'displayModeBar': True, 'scrollZoom': True, 'doubleClick': 'reset'},
+        style={'height': '500px', 'marginBottom': '0px', 'width': '100%', 'maxWidth': '1100px'}
+    ),
+],
+style={'flexGrow': 1, 'padding': '8px 8px 8px 10px'})
+], style={'display': 'flex', 'alignItems': 'flex-start', 'height':'0vh', 'background':'white'})
 
 app.layout.children += [
     dcc.Store(id='data-store', data={}),
@@ -139,6 +172,7 @@ app.layout.children += [
     dcc.Store(id='annotations-list', data=[]),
     dcc.Store(id='current_time', data=1),
     dcc.Store(id='last_mark', data=0),
+    dcc.Store(id='current_marker', data=None)
 ]
 
 register_callbacks(app)
