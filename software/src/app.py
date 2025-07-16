@@ -7,10 +7,13 @@ SIDEBAR_WIDTH = '300px'
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
+
+    # === SIDEBAR (LEFT) ===
     html.Div([
         html.H3("Annotations", style={'fontSize': 17}),
         html.Label("User Name:", style={"fontWeight": "bold", 'fontSize': 11}),
-        dcc.Input(id="user-name", placeholder="Enter user name...", type="text", value="", style={"marginBottom": 8, 'fontSize': 11, 'width': '100%'}),
+        dcc.Input(id="user-name", placeholder="Enter user name...", type="text", value="",
+                  style={"marginBottom": 8, 'fontSize': 11, 'width': '100%'}),
         html.Label("Subject:", style={"fontWeight": "bold", 'fontSize': 11}),
         dcc.Dropdown(
             id='subject-dropdown',
@@ -24,7 +27,8 @@ app.layout = html.Div([
             id="interpretability",
             options=[{"label": "Interpretable", "value": "Interpretable"},
                      {"label": "Non-Interpretable", "value": "Non-Interpretable"}],
-            value="Interpretable", inline=True, style={"fontSize": 11, 'marginBottom': '3px'}
+            value="Interpretable", inline=True,
+            style={"fontSize": 11, 'marginBottom': '3px'}
         ),
         html.Label("Rhythm Label:", style={"fontWeight": "bold", "fontSize": 11}),
         dcc.RadioItems(
@@ -42,7 +46,8 @@ app.layout = html.Div([
                 {"label": "Ventricular Pacing Rhythm", "value": "Ventricular Pacing Rhythm"},
                 {"label": "Idioventricular Rhythm", "value": "Idioventricular Rhythm"},
             ],
-            value="Normal Heart Rhythm", inline=False, style={"fontSize": 10, 'marginBottom': '5px'}
+            value="Normal Heart Rhythm", inline=False,
+            style={"fontSize": 10, 'marginBottom': '5px'}
         ),
         html.Label("CPR Status:", style={"fontWeight": "bold", "fontSize": 11}),
         dcc.RadioItems(
@@ -51,7 +56,8 @@ app.layout = html.Div([
                 {"label": "Initiated", "value": "Initiated"},
                 {"label": "Stopped", "value": "Stopped"},
                 {"label": "Unable to Discern", "value": "Unable to Discern"}
-            ], value="Initiated", inline=True, style={"fontSize": 11, 'marginBottom': '3px'}
+            ], value="Initiated", inline=True,
+            style={"fontSize": 11, 'marginBottom': '3px'}
         ),
         html.Label("Shockable?", style={"fontWeight": "bold", "fontSize": 11}),
         dcc.RadioItems(
@@ -60,7 +66,8 @@ app.layout = html.Div([
                 {"label": "Shockable", "value": "Shockable"},
                 {"label": "Non-Shockable", "value": "Non-Shockable"},
                 {"label": "Unable to Discern", "value": "Unable to Discern"}
-            ], value="Shockable", inline=True, style={"fontSize": 11, 'marginBottom': '3px'}
+            ], value="Shockable", inline=True,
+            style={"fontSize": 11, 'marginBottom': '3px'}
         ),
         html.Label("Onset Event:", style={"fontWeight": "bold", "fontSize": 11}),
         dcc.RadioItems(
@@ -71,9 +78,12 @@ app.layout = html.Div([
                 {"label": "Onset of Arrhythmia", "value": "Onset of Arrhythmia"},
                 {"label": "CPR Initiating", "value": "CPR Initiating"},
                 {"label": "CPR Termination", "value": "CPR Termination"},
-            ], value="None", inline=True, style={"fontSize": 11, 'marginBottom': '5px'}
+            ],
+            value="None", inline=True,
+            style={"fontSize": 11, 'marginBottom': '5px'}
         ),
-        html.Label("Comments/Explanation:", style={"fontWeight": "bold", 'fontSize': 11, 'marginBottom': '2px'}),
+        html.Label("Comments/Explanation:", style={"fontWeight": "bold", 'fontSize': 11,
+                                                   'marginBottom': '2px'}),
         dcc.Textarea(
             id="comments",
             placeholder="Add comment (required if Non-Interpretable)",
@@ -81,21 +91,78 @@ app.layout = html.Div([
         ),
         html.Label("Navigation step size (seconds):", style={"fontWeight": "bold", 'fontSize': 11}),
         dcc.Input(
-            id='nav-step-size', 
-            type='number', 
-            min=1, 
-            value=1, 
-            step=1, 
+            id='nav-step-size',
+            type='number',
+            min=1,
+            value=1,
+            step=1,
             style={'width': 60, 'fontSize': 11, 'marginBottom': '5px'}
         ),
         html.Div([
-            html.Button('←', id='prev-second-btn', n_clicks=0, style={'width': '45%', 'marginRight': '5%'}),
-            html.Button('→', id='next-second-btn', n_clicks=0, style={'width': '45%'})
-        ], style={'marginBottom':'6px'}),
-        html.Button('Mark', id='mark-btn', n_clicks=0, disabled=True, style={'width':'100%', 'marginBottom':'2px'}),
-        html.Div(id='mark-warning', style={'color': 'red', 'fontWeight': 'bold', 'fontSize': 11, 'minHeight': '12px'}),
+            html.Button('←', id='prev-second-btn', n_clicks=0,
+                        style={'width': '45%', 'marginRight': '5%'}),
+            html.Button('→', id='next-second-btn', n_clicks=0,
+                        style={'width': '45%'})
+        ], style={'marginBottom': '6px'}),
+        html.Button('Mark', id='mark-btn', n_clicks=0, disabled=True,
+                    style={'width': '100%', 'marginBottom': '2px'}),
+        html.Div(id='mark-warning', style={
+            'color': 'red', 'fontWeight': 'bold', 'fontSize': 11, 'minHeight': '12px'}),
         html.Hr(),
-        html.H5("Saved Annotations:", style={'margin':'2px 0', 'fontSize': 13}),
+        html.H5("Saved Annotations:", style={'margin': '2px 0', 'fontSize': 13}),
+        html.Button("Save All Annotations", id="save-all-btn", n_clicks=0,
+                    style={'width': '100%', 'margin': '7px 0 0 0'}),
+        html.Div(id='save-message', style={'color': '#156e13', 'fontWeight': 'bold',
+                                          'fontSize': '10px', 'height': '15px'}),
+    ], id='sidebar', style={
+        'width': SIDEBAR_WIDTH, 'minWidth': '100px', 'overflowY': 'auto',
+        'padding': '8px 6px 7px 7px', 'background': '#F7F7F9',
+        'boxSizing': 'border-box', 'maxHeight': '98vh'
+    }),
+
+    # === MAIN PANEL (RIGHT): Toolbar, slider, plot, table ===
+    html.Div([
+        # Window/zoom controls
+        html.Div([
+            html.Label("Waveform view window (seconds):",
+                       style={"fontWeight": "bold", 'fontSize': 12, 'marginRight': '7px'}),
+            dcc.Input(
+                id='view-window-size',
+                type='number',
+                min=1,
+                max=300,
+                step=1,
+                value=10,
+                style={'width': 80, 'fontSize': 12}
+            ),
+        ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '8px'}),
+
+        # Scrollbar
+        html.Div([
+            dcc.Slider(
+                id='x-scrollbar',
+                min=0,
+                max=100,
+                step=0.01,
+                value=0,
+                updatemode='drag',
+                tooltip={'always_visible': False}
+            ),
+        ], style={
+            'width': '100%',
+            'maxWidth': '900px',
+            'margin': '0 auto',
+            'marginBottom': '6px',
+        }),
+
+        # Plot
+        dcc.Graph(
+            id='waveform-graph',
+            config={'displayModeBar': True, 'scrollZoom': True, 'doubleClick': 'reset'},
+            style={'height': '100vh', 'marginBottom': '0px', 'width': '100%', 'maxWidth': '1100px'}
+        ),
+
+        # ----- ANNOTATION TABLE BELOW PLOT ------
         dash_table.DataTable(
             id='annotations-table',
             columns=[
@@ -111,61 +178,15 @@ app.layout = html.Div([
                 {"name": "Comments", "id": "comments"},
             ],
             data=[],
+            style_table={'width': '100%', 'maxWidth': '900px', 'margin': '0 auto',
+                         'marginTop': '16px'},
             style_cell={'textAlign': 'center', 'fontSize': 10, 'padding': '1px 1px'},
-            style_table={'height': 140, 'overflowY': 'auto', 'marginBottom':"7px", 'marginTop':"4px"},
             row_deletable=False,
             editable=False
         ),
-        html.Button("Save All Annotations", id="save-all-btn", n_clicks=0, style={'width':'100%', 'margin':'7px 0 0 0'}),
-        html.Div(id='save-message', style={'color':'#156e13', 'fontWeight':'bold', 'fontSize':'10px', 'height':'15px'}),
-    ], id='sidebar', style={
-        'width': SIDEBAR_WIDTH, 'minWidth': '100px', 'overflowY': 'auto',
-        'padding': '8px 6px 7px 7px', 'background': '#F7F7F9',
-        'boxSizing':'border-box', 'maxHeight': '98vh'
-    }),
-    html.Div([
-    # (Optional) window/zoom controls
-    html.Div([
-        html.Label("Waveform view window (seconds):", style={"fontWeight": "bold", 'fontSize': 12, 'marginRight': '7px'}),
-        dcc.Input(
-            id='view-window-size',
-            type='number',
-            min=1,
-            max=300,
-            step=1,
-            value=10,
-            style={'width': 80, 'fontSize': 12}
-        ),
-    ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '8px'}),
-
-    # ----- PUT SCROLLBAR HERE ------
-    html.Div([
-        dcc.Slider(
-            id='x-scrollbar',
-            min=0,
-            max=100,  # set via callback
-            step=0.01,
-            value=0,
-            updatemode='drag',
-            tooltip={'always_visible': False}
-        ),
-    ], style={
-        'width': '100%',
-        'maxWidth': '900px',
-        'margin': '0 auto',
-        'marginBottom': '6px',
-    }),
-
-    # The plot
-    dcc.Graph(
-        id='waveform-graph',
-        config={'displayModeBar': True, 'scrollZoom': True, 'doubleClick': 'reset'},
-        style={'height': '500px', 'marginBottom': '0px', 'width': '100%', 'maxWidth': '1100px'}
-    ),
+    ], style={'flexGrow': 1, 'padding': '8px 8px 8px 10px', 'overflowY': 'auto', 'maxHeight': '100vh'})
 ],
-style={'flexGrow': 1, 'padding': '8px 8px 8px 10px'})
-], style={'display': 'flex', 'alignItems': 'flex-start', 'height':'0vh', 'background':'white'})
-
+style={'display': 'flex', 'alignItems': 'flex-start', 'height': '100vh', 'background': 'white'})
 app.layout.children += [
     dcc.Store(id='data-store', data={}),
     dcc.Store(id='waveform-length', data=None),

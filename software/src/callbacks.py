@@ -62,7 +62,7 @@ def register_callbacks(app):
         Output('last_mark', 'data'),
         Output('annotations-list', 'data'),
         Output('mark-warning', 'children'),
-        Output('mark-btn', 'disabled'),  # NEW: disable/enable Mark button here!
+        Output('mark-btn', 'disabled'),
         Input('data-store', 'data'),
         Input('annotations-list', 'data'),
         Input('view-window-size', 'value'),
@@ -71,6 +71,7 @@ def register_callbacks(app):
         Input('mark-btn', 'n_clicks'),
         State('current_marker', 'data'),
         State('last_mark', 'data'),
+        State('user-name', 'value'),
         State('subject-dropdown', 'value'),
         State("interpretability", "value"),
         State("comments", "value"),
@@ -89,6 +90,7 @@ def register_callbacks(app):
         n_mark,
         current_marker,
         last_mark,
+        user_name,
         subject_selected,
         interpretability,
         comments,
@@ -149,6 +151,8 @@ def register_callbacks(app):
                     warning = "Select onset event"
                 else:
                     annotation = {
+                        "user_name": user_name,  
+                        "subject": subject_selected,
                         "interpretable": interpretability,
                         "comments": comments or "",
                         "rhythm_label": rhythm_label,
