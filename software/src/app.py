@@ -17,11 +17,15 @@ app.layout = html.Div([
         html.Label("Subject:", style={"fontWeight": "bold", 'fontSize': 11}),
         dcc.Dropdown(
             id='subject-dropdown',
-            options=[],  # Populated by callback
+            options=[],  # to be filled
             value=None,
             placeholder="Choose a subject",
-            style={'marginBottom': '8px', 'fontSize': 11}
+            style={'fontSize': 11, 'marginBottom': '8px'}
         ),
+        html.Div([
+            html.Button("Load Subject", id="load-subject-btn", n_clicks=0),
+            html.Button("Plot", id="plot-btn", n_clicks=0, style={'marginLeft': '10px'})
+        ], style={'display': 'flex', 'flexDirection': 'row', 'marginBottom': '10px'}),
         html.Label("Interval is:", style={"fontWeight": "bold", "fontSize": 11}),
         dcc.RadioItems(
             id="interpretability",
@@ -119,9 +123,20 @@ app.layout = html.Div([
         'padding': '8px 6px 7px 7px', 'background': '#F7F7F9',
         'boxSizing': 'border-box', 'maxHeight': '98vh'
     }),
-
-    # === MAIN PANEL (RIGHT): Toolbar, slider, plot, table ===
+    # === MAIN PANEL (RIGHT): Dir Select, Toolbar, slider, plot, table ===
     html.Div([
+        html.Div([
+            html.Label("Select Base Data Folder:", style={"fontWeight": "bold", "fontSize": 13, 'marginRight': '10px'}),
+            dcc.Input(
+                id='base-folder-input',
+                type='text',
+                placeholder='Paste the path to your base folder...',
+                value="",
+                style={'width': 400, 'fontSize': 12, 'marginRight': '10px'}
+            ),
+            html.Button('Set Folder', id='set-folder-btn', n_clicks=0),
+            html.Div(id='base-folder-status', style={'fontSize': 11, 'color': '#395983', 'marginTop': '5px'}),
+        ], style={'marginBottom': '18px', 'display': 'flex', 'alignItems': 'center'}),
         # Window/zoom controls
         html.Div([
             html.Label("Waveform view window (seconds):",
@@ -130,7 +145,7 @@ app.layout = html.Div([
                 id='view-window-size',
                 type='number',
                 min=1,
-                max=300,
+                max=10000,
                 step=1,
                 value=10,
                 style={'width': 80, 'fontSize': 12}
@@ -188,6 +203,7 @@ app.layout = html.Div([
 ],
 style={'display': 'flex', 'alignItems': 'flex-start', 'height': '100vh', 'background': 'white'})
 app.layout.children += [
+    dcc.Store(id='base-folder-store', data=""),
     dcc.Store(id='data-store', data={}),
     dcc.Store(id='waveform-length', data=None),
     dcc.Store(id='annotations-list', data=[]),
