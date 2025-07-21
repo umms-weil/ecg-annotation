@@ -155,6 +155,10 @@ def register_callbacks(app):
         # Handle plot click to set/move marker
         if trigger == 'waveform-graph' and click_data and 'points' in click_data:
             marker = float(click_data['points'][0]['x'])
+            # Center window on marker, but don't exceed bounds
+            left = min(max(marker - window_size/2, t_min), t_max - window_size)
+            left = max(left, t_min)  # Ensure not off the left edge
+            x_scroll_val = left
 
         # --- Marking and Validation ---
         if trigger == 'mark-btn' and n_mark:
