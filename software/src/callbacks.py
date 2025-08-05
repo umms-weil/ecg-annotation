@@ -73,6 +73,7 @@ def register_callbacks(app):
         if not subject_name or not base_folder or not os.path.isdir(base_folder):
             return {}
         # code_csv_path = base_folder + '/waveform_manifest.csv'
+        # TODO: Remove the hard path
         # code_csv_path = '/nfs/turbo/umms-sardara/projects/cpr_afib_prediction/data/pre-raw/2023_05_10_cpr_waveforms/waveform_manifest.csv'
         code_csv_path = '/home/pwalczyk/projects/ecg-annotation/software/data/waveform_manifest.csv'
         recording_start_sec, code_start_sec, code_stop_sec = get_code_time_bounds(subject_name, code_csv_path)
@@ -83,10 +84,6 @@ def register_callbacks(app):
             code_stop_sec=code_stop_sec,
             desired_waveforms=["I", "II", "III", "V", "AVF", "AVL", "AVR"]
         )
-        # Find Subset of Time to pull for display (max point holder for time range)
-        # max_points = 20000
-        # times_ds = times[:max_points]
-        # leads_ds = [(l[:max_points] if l is not None else None) for l in leads]
         return {
             "time": times_ds.tolist() if hasattr(times_ds, "tolist") else list(times_ds),
             "leads": [l.tolist() if l is not None else None for l in leads_ds],
@@ -363,18 +360,14 @@ def register_callbacks(app):
         for i, (sig, name, ts) in enumerate(zip(leads, lead_names, times)):
             if sig is not None and len(sig) > 0 and ts is not None and len(ts) > 0:
                 plot_times = ts - ts[0]
-                # ---- Window mask for this lead ----
-                # mask = (plot_times >= left) & (plot_times <= right)
-                # win_times = plot_times[mask]
-                # win_sig = sig[mask]
-                # ---- Downsample window ----
+                # ---- Downsample ----
                 Fs = 240.0
                 desired_fs = 100.0
                 stride = int(np.floor(Fs / desired_fs))
                 stride = max(stride, 1)
                 ds_times = plot_times[::stride]
                 ds_sig = sig[::stride]
-
+                # ---- Plotting Trace ----
                 print(f'Plotting trace {i}')
                 fig.add_trace(
                     go.Scatter(x=ds_times, y=ds_sig, mode='lines', name=name),
