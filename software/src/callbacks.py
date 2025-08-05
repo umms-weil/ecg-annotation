@@ -363,10 +363,21 @@ def register_callbacks(app):
         for i, (sig, name, ts) in enumerate(zip(leads, lead_names, times)):
             if sig is not None and len(sig) > 0 and ts is not None and len(ts) > 0:
                 plot_times = ts - ts[0]
-                print(plot_times)
+                # ---- Window mask for this lead ----
+                # mask = (plot_times >= left) & (plot_times <= right)
+                # win_times = plot_times[mask]
+                # win_sig = sig[mask]
+                # ---- Downsample window ----
+                Fs = 240.0
+                desired_fs = 100.0
+                stride = int(np.floor(Fs / desired_fs))
+                stride = max(stride, 1)
+                ds_times = plot_times[::stride]
+                ds_sig = sig[::stride]
+
                 print(f'Plotting trace {i}')
                 fig.add_trace(
-                    go.Scatter(x=plot_times, y=sig, mode='lines', name=name),
+                    go.Scatter(x=ds_times, y=ds_sig, mode='lines', name=name),
                     row=i+1, col=1
                 )
                 fig.update_yaxes(autorange=True, row=i+1, col=1)
