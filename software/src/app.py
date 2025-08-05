@@ -26,73 +26,77 @@ app.layout = html.Div([
             html.Button("Load Subject", id="load-subject-btn", n_clicks=0),
             html.Button("Plot", id="plot-btn", n_clicks=0, style={'marginLeft': '10px'})
         ], style={'display': 'flex', 'flexDirection': 'row', 'marginBottom': '10px'}),
-        html.Label("Interval is:", style={"fontWeight": "bold", "fontSize": 11}),
+        html.Label("Is this segment Interpretable?"),
         dcc.RadioItems(
             id="interpretability",
-            options=[{"label": "Interpretable", "value": "Interpretable"},
-                     {"label": "Non-Interpretable", "value": "Non-Interpretable"}],
-            value="Interpretable", inline=True,
-            style={"fontSize": 11, 'marginBottom': '3px'}
-        ),
-        html.Label("Rhythm Label:", style={"fontWeight": "bold", "fontSize": 11}),
-        dcc.RadioItems(
-            id="rhythm-label",
             options=[
-                {"label": "Normal Heart Rhythm", "value": "Normal Heart Rhythm"},
-                {"label": "Sinus tachycardia", "value": "Sinus tachycardia"},
-                {"label": "Bradycardia", "value": "Bradycardia"},
-                {"label": "Supraventricular tachycardia", "value": "Supraventricular tachycardia"},
-                {"label": "Atrial Flutter", "value": "Atrial Flutter"},
-                {"label": "Atrial Fibrillation", "value": "Atrial Fibrillation"},
-                {"label": "Ventricular Tachycardia", "value": "Ventricular Tachycardia"},
-                {"label": "Ventricular Fibrillation", "value": "Ventricular Fibrillation"},
-                {"label": "Atrial Pacing Rhythm", "value": "Atrial Pacing Rhythm"},
-                {"label": "Ventricular Pacing Rhythm", "value": "Ventricular Pacing Rhythm"},
-                {"label": "Idioventricular Rhythm", "value": "Idioventricular Rhythm"},
+                {"label": "Yes", "value": "Yes"},
+                {"label": "No",  "value": "No"}
             ],
-            value="Normal Heart Rhythm", inline=False,
-            style={"fontSize": 10, 'marginBottom': '5px'}
+            value=None,
+            inline=True
         ),
-        html.Label("CPR Status:", style={"fontWeight": "bold", "fontSize": 11}),
+        html.Div([
+            html.Label("Comment/Explanation"),
+            dcc.Textarea(
+                id="comment-box",
+                placeholder="Required if NOT Interpretable.",
+                style={"width": '100%'},
+                disabled=True    # Controlled by callback!
+            )
+        ]),
+        html.Hr(),
+
+        html.Label("Is this Cardiac Arrest?"),
+        dcc.RadioItems(
+            id="cardiac-arrest",
+            options=[
+                {"label": "Yes", "value": "Yes"},
+                {"label": "No",  "value": "No"}
+            ],
+            value=None,
+            inline=True
+        ),
+        html.Hr(),
+
+        html.Label("Is this CPR?"),
         dcc.RadioItems(
             id="cpr-status",
+            # Start with both options disabled; callback will set enables!
             options=[
-                {"label": "Initiated", "value": "Initiated"},
-                {"label": "Stopped", "value": "Stopped"},
-                {"label": "Unable to Discern", "value": "Unable to Discern"}
-            ], value="Initiated", inline=True,
-            style={"fontSize": 11, 'marginBottom': '3px'}
-        ),
-        html.Label("Shockable?", style={"fontWeight": "bold", "fontSize": 11}),
-        dcc.RadioItems(
-            id="shockable",
-            options=[
-                {"label": "Shockable", "value": "Shockable"},
-                {"label": "Non-Shockable", "value": "Non-Shockable"},
-                {"label": "Unable to Discern", "value": "Unable to Discern"}
-            ], value="Shockable", inline=True,
-            style={"fontSize": 11, 'marginBottom': '3px'}
-        ),
-        html.Label("Onset Event:", style={"fontWeight": "bold", "fontSize": 11}),
-        dcc.RadioItems(
-            id="onset-event",
-            options=[
-                {"label": "None", "value": "None"},
-                {"label": "Heart Rhythm", "value": "Heart Rhythm"},
-                {"label": "Onset of Arrhythmia", "value": "Onset of Arrhythmia"},
-                {"label": "CPR Initiating", "value": "CPR Initiating"},
-                {"label": "CPR Termination", "value": "CPR Termination"},
+                {"label": "Yes", "value": "Yes", "disabled": True},
+                {"label": "No",  "value": "No", "disabled": True}
             ],
-            value="None", inline=True,
-            style={"fontSize": 11, 'marginBottom': '5px'}
+            value=None,
+            inline=True
         ),
-        html.Label("Comments/Explanation:", style={"fontWeight": "bold", 'fontSize': 11,
-                                                   'marginBottom': '2px'}),
-        dcc.Textarea(
-            id="comments",
-            placeholder="Add comment (required if Non-Interpretable)",
-            style={'width': '100%', 'height': 24, "fontSize": 10, 'marginBottom': '5px'}
+        html.Hr(),
+
+        html.Label("Rhythm Type"),
+        dcc.Dropdown(
+            id="rhythm-label",
+            options=[
+                {"label": rt, "value": rt} for rt in [
+                    "Normal Heart Rhythm", "Sinus tachycardia", "Bradycardia",
+                    "Supraventricular tachycardia", "Atrial Flutter", "Atrial Fibrillation",
+                    "Ventricular Tachycardia", "Ventricular Fibrillation",
+                    "Atrial Pacing Rhythm", "Ventricular Pacing Rhythm", "Idioventricular Rhythm",
+                    "Unable to Determine", "Other"
+                ]
+            ],
+            value=None,
+            placeholder="Select rhythm",
+            disabled=True    # Controlled by callback!
         ),
+        html.Div([
+            html.Label("Rhythm Explanation"),
+            dcc.Textarea(
+                id="rhythm-explanation",
+                placeholder="Explain if rhythm is 'Unable to Determine' or 'Other'.",
+                style={"width": '100%'},
+                disabled=True     # Controlled by callback!
+            )
+        ]),
         html.Label("Navigation step size (seconds):", style={"fontWeight": "bold", 'fontSize': 11}),
         dcc.Input(
             id='nav-step-size',
@@ -178,23 +182,24 @@ app.layout = html.Div([
         ),
 
         # ----- ANNOTATION TABLE BELOW PLOT ------
+        html.H5("Saved Annotations:", style={'margin': '2px 0', 'fontSize': 13}),
         dash_table.DataTable(
             id='annotations-table',
             columns=[
                 {"name": "User", "id": "user_name"},
                 {"name": "Subject", "id": "subject"},
                 {"name": "Interpretable", "id": "interpretable"},
-                {"name": "Rhythm", "id": "rhythm_label"},
+                {"name": "Cardiac Arrest", "id": "cardiac_arrest"},
                 {"name": "CPR", "id": "cpr_status"},
-                {"name": "Shockable", "id": "shockable"},
-                {"name": "Onset", "id": "onset_event"},
+                {"name": "Rhythm", "id": "rhythm_label"},
+                {"name": "NonInterp Explanation", "id": "noninterp_explanation"},
+                {"name": "Rhythm Explanation", "id": "rhythm_explanation"},
                 {"name": "Start", "id": "start"},
                 {"name": "End", "id": "end"},
-                {"name": "Comments", "id": "comments"},
             ],
             data=[],
             style_table={'width': '100%', 'maxWidth': '900px', 'margin': '0 auto',
-                         'marginTop': '16px'},
+                        'marginTop': '16px'},
             style_cell={'textAlign': 'center', 'fontSize': 10, 'padding': '1px 1px'},
             row_deletable=False,
             editable=False

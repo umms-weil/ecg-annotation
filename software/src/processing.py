@@ -8,7 +8,8 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import h5py
 import hdf5storage
 import time
-
+import re
+from datetime import datetime, timedelta
 # ---- Constants ----
 WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]  # Order to display waveforms in stack
 
@@ -107,6 +108,35 @@ def list_annotation_files(subject_folder: str) -> List[str]:
     return glob.glob(os.path.join(subject_folder, 'annotations*.csv'))
 
 # ---- .mat Waveform Loading ----
+def strip_nanoseconds(timestr):
+    # Remove everything after :SS (including .micro, +00:00, etc.)
+    match = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', timestr)
+    return match.group(1) if match else timestr  # fallback if no match
+
+def datetime_string_to_seconds_since_1840(timestr):
+    # Parse the date/time string (assume format is '%Y-%m-%d %H:%M:%S')
+    dt = datetime.strptime(str(timestr), "%Y-%m-%d %H:%M:%S")
+    # Your reference epoch ("zero") is 1840-12-31 00:00:00
+    epoch = datetime(1840, 12, 31, 0, 0, 0)
+    # Compute total seconds difference
+    return (dt - epoch).total_seconds()
+
+def get_code_time_bounds(subject, code_csv_path):
+    # Load and filter the CSV for this subject
+    code_df = pd.read_csv(code_csv_path)
+    row = code_df[code_df['UUID'] == subject].iloc[0]
+
+    recording_start = strip_nanoseconds(row['signal_start'])
+    print(recording_start)
+    code_start_time = strip_nanoseconds(row['CODE_START'])
+    print(code_start_time)
+    code_stop_time  = strip_nanoseconds(row['CODE_END'])
+    print(code_stop_time)
+    recording_start_sec = datetime_string_to_seconds_since_1840(recording_start)
+    code_start_sec = datetime_string_to_seconds_since_1840(code_start_time)
+    code_stop_sec  = datetime_string_to_seconds_since_1840(code_stop_time)
+
+    return recording_start_sec, code_start_sec, code_stop_sec
 
 def load_mat_data(filename: str) -> dict:
     """
@@ -119,13 +149,12 @@ def load_mat_data(filename: str) -> dict:
 
 def load_waveforms_for_subject(
     base_folder: str, 
-    subject: str, 
+    subject: str,
+    recording_start_sec: float = None,
+    code_start_sec: float = None,
+    code_stop_sec: float = None,
     desired_waveforms: list = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
 ):
-    import glob
-    import numpy as np
-    import os
-
     subj_path = os.path.join(base_folder, subject)
     mat_files = glob.glob(os.path.join(subj_path, "*.mat"))
     wf_files = {}
@@ -141,6 +170,9 @@ def load_waveforms_for_subject(
     leads = []
     lead_names = []
     available_units = []
+    lead_ranges = []
+    start_secs = []  # keep in Epic seconds for alignment
+    fs_list = []
 
     for wf in desired_waveforms:
         f = wf_files.get(wf, None)
@@ -148,15 +180,16 @@ def load_waveforms_for_subject(
             leads.append(None)
             lead_names.append(wf)
             available_units.append("")
+            times_list.append(np.array([]))
+            lead_ranges.append((None, None))
+            fs_list.append(None)
+            start_secs.append(None)
             continue
         try:
-            start_wf = time.time()
-            print(f"Loading waveform {wf}: file={f}")
             mat_data = load_mat_data(f)
-            data = mat_data.get('data', None)  # Should already be a numpy array
+            data = mat_data.get('data', None)
             Fs = mat_data.get('Fs', 1.0)
             UNIT = mat_data.get('UNIT', '')
-            # Convert Fs and UNIT as in the previous robust version
             try:
                 Fs = float(np.array(Fs).flatten()[0]) if Fs is not None else 1.0
             except Exception:
@@ -173,22 +206,89 @@ def load_waveforms_for_subject(
                 UNIT = str(UNIT)
             if data is not None:
                 sig = np.array(data).flatten()
-                times = np.arange(len(sig)) / Fs
+                # Get recording start Epic seconds:
+                mat_start_val = mat_data.get('start_time', 0)
+                if isinstance(mat_start_val, np.ndarray):
+                    mat_start_sec = float(mat_start_val.flatten()[0])
+                else:
+                    mat_start_sec = float(mat_start_val)
+                # use provided recording_start_sec if given, else use from mat
+                rec_start_sec = float(recording_start_sec) if recording_start_sec is not None else mat_start_sec
+                start_secs.append(rec_start_sec)
+                fs_list.append(Fs)
+                # For times array, just for ref (not used for slicing now)
+                times = rec_start_sec + np.arange(len(sig)) / Fs
+                lead_ranges.append((times[0], times[-1]))
             else:
                 sig = None
                 times = np.array([])
-            times_list.append(times)
+                lead_ranges.append((None, None))
+                start_secs.append(None)
+                fs_list.append(None)
             leads.append(sig)
             lead_names.append(wf)
             available_units.append(UNIT)
-            print(f"Finished waveform {wf} in {time.time() - start_wf:.2f} seconds")
+            times_list.append(times)
         except Exception as e:
             print(f"Error loading {f}: {e}")
             leads.append(None)
             lead_names.append(wf)
             available_units.append("")
-    default_times = next((t for t in times_list if len(t)), np.array([0]))
-    return default_times, leads, lead_names, available_units
+            times_list.append(np.array([]))
+            lead_ranges.append((None, None))
+            start_secs.append(None)
+            fs_list.append(None)
+
+    # Subset range calculation in Epic seconds
+    # Find the required range: intersection of available and desired
+    valid_ranges = [(s, e) for s, e in lead_ranges if s is not None and e is not None]
+    intersection_start = None
+    intersection_end = None
+
+    candidate_starts = [r[0] for r in valid_ranges]
+    candidate_ends = [r[1] for r in valid_ranges]
+    if code_start_sec is not None:
+        candidate_starts.append(code_start_sec)
+    if code_stop_sec is not None:
+        candidate_ends.append(code_stop_sec)
+    if candidate_starts:
+        intersection_start = max(candidate_starts)
+    if candidate_ends:
+        intersection_end = min(candidate_ends)
+
+    if intersection_start is None or intersection_end is None or intersection_end <= intersection_start:
+        # return empty if no valid window
+        return [np.array([]) for _ in desired_waveforms], [None for _ in desired_waveforms], lead_names, available_units
+
+    # Now extract the correct segment for each available waveform
+    for idx, (sig, rec_start_sec, Fs) in enumerate(zip(leads, start_secs, fs_list)):
+        print(f'signal {idx}')
+        if sig is None or rec_start_sec is None or Fs is None or len(sig) == 0:
+            print('No Signal')
+            times_list[idx] = np.array([])
+            leads[idx] = None
+            continue
+        # start_sec and stop_sec RELATIVE TO EACH WAVEFORM'S START
+        rel_start_offset = (intersection_start - rec_start_sec)
+        rel_end_offset = (intersection_end - rec_start_sec)
+        start_idx = int(np.floor(rel_start_offset * Fs))
+        end_idx = int(np.ceil(rel_end_offset * Fs))
+        n = len(sig)
+        print(f'sig len {n}')
+        start_idx = max(0, start_idx)
+        print(f'start {start_idx}')
+        end_idx = min(n, end_idx)
+        print(f'start {end_idx}')
+        if end_idx <= 0 or start_idx >= n or end_idx <= start_idx:
+            times_list[idx] = np.array([])
+            leads[idx] = None
+        else:
+            leads[idx] = sig[start_idx:end_idx]
+            print(len(leads[idx]))
+            times_list[idx] = rec_start_sec + np.arange(start_idx, end_idx) / Fs
+            print(len(times_list[idx]))
+
+    return times_list, leads, lead_names, available_units
 
 def get_available_waveforms_for_subject(base_folder: str, subject: str) -> List[str]:
     """
