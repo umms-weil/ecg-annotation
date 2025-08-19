@@ -86,7 +86,7 @@ def list_subjects(base_folder: str) -> List[Dict]:
         subj_path = os.path.join(base_folder, name)
         if not os.path.isdir(subj_path) or name.startswith('.'):
             continue
-        annot_csvs = glob.glob(os.path.join(subj_path, 'annotations*.csv'))
+        annot_csvs = glob.glob(os.path.join(subj_path, 'annotation*.csv'))
         n_annot = len(annot_csvs)
         subjects.append({
             'name': name,
