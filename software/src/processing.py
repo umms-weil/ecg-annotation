@@ -138,14 +138,66 @@ def get_code_time_bounds(subject, code_csv_path):
 
     return recording_start_sec, code_start_sec, code_stop_sec
 
+# def load_mat_data(filename: str) -> dict:
+#     """
+#     Loads MATLAB .mat file with hdf5storage (handles v7.3+ and older).
+#     Returns a dict as from loadmat: {fieldname: value, ...}
+#     """
+#     data = hdf5storage.loadmat(filename)
+#     # Remove MATLAB __header__ etc fields
+#     return {k: v for k, v in data.items() if not k.startswith("__")}
+
 def load_mat_data(filename: str) -> dict:
     """
-    Loads MATLAB .mat file with hdf5storage (handles v7.3+ and older).
-    Returns a dict as from loadmat: {fieldname: value, ...}
+    Loads a MATLAB v7.3+ .mat file using h5py.
+    Returns a dict mapping {fieldname: value, ...},
+    dereferencing cell arrays automatically,
+    and excluding MATLAB fields starting with "__".
     """
-    data = hdf5storage.loadmat(filename)
-    # Remove MATLAB __header__ etc fields
-    return {k: v for k, v in data.items() if not k.startswith("__")}
+
+    def extract_dataset(item, file_reference):
+        # Handle standard arrays
+        val = item[()]
+        # If it's a cell array (object references)
+        if item.dtype == object:
+            # Dereference all object refs within the cell array
+            deref_vals = [file_reference[ref][()] for ref in val.flat]
+            # Convert each dereferenced value to a scalar if possible
+            deref_vals = [v.item() if hasattr(v, "item") else v for v in deref_vals]
+            val = np.array(deref_vals, dtype=object).reshape(val.shape)
+            # Squeeze if it's a single value (1x1 cell)
+            if val.size == 1:
+                val = val.item()
+        else:
+            # For standard arrays, if shape is (), convert to scalar
+            if hasattr(val, "item") and val.shape == ():
+                val = val.item()
+        return val
+
+    def recursively_load(group, file_reference):
+        out = {}
+        for key in group:
+            if key.startswith("__"):  # skip MATLAB private fields
+                continue
+            item = group[key]
+            if isinstance(item, h5py.Dataset):
+                out[key] = extract_dataset(item, file_reference)
+            elif isinstance(item, h5py.Group):
+                out[key] = recursively_load(item, file_reference)
+        return out
+
+    # Do all extraction in the same open file context
+    with h5py.File(filename, "r", locking=False) as f:
+        data = {}
+        for key in f:
+            if key.startswith("__"):  # skip MATLAB private fields
+                continue
+            item = f[key]
+            if isinstance(item, h5py.Dataset):
+                data[key] = extract_dataset(item, f)
+            elif isinstance(item, h5py.Group):
+                data[key] = recursively_load(item, f)
+    return data
 
 def load_waveforms_for_subject(
     base_folder: str, 
@@ -187,12 +239,13 @@ def load_waveforms_for_subject(
             continue
         try:
             mat_data = load_mat_data(f)
-            data = mat_data.get('data', None)
-            Fs = mat_data.get('Fs', 1.0)
-            UNIT = mat_data.get('UNIT', '')
+            data = mat_data['data']
+            Fs = mat_data['Fs']
+            UNIT = mat_data['unit']
             try:
                 Fs = float(np.array(Fs).flatten()[0]) if Fs is not None else 1.0
             except Exception:
+                print('sampling exception')
                 Fs = 1.0
             try:
                 if isinstance(UNIT, (np.ndarray, list)) and len(UNIT) > 0:
