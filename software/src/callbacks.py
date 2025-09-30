@@ -1,4 +1,5 @@
-from dash import Output, Input, State, callback_context, no_update
+import dash
+from dash import Output, Input, State, callback_context, no_update, exceptions
 from plotly.subplots import make_subplots
 import plotly.graph_objs as go
 from processing import list_subjects, load_waveforms_for_subject, get_code_time_bounds
@@ -92,74 +93,204 @@ def register_callbacks(app):
         }
 
     @app.callback(
-    Output('comment-box', 'disabled'),
-    Output('cpr-status', 'options'),
-    Output('rhythm-label', 'disabled'),
-    Output('rhythm-explanation', 'disabled'),
+    Output("comment-box", "disabled"),
+    Output("comment-box", "value"),
+    Output("cardiac-arrest", "options"),
+    Output("cardiac-arrest", "value"),
+    Output("cpr-status", "options"),
+    Output("cpr-status", "value"),
+    Output("rhythm-label", "disabled"),
+    Output("rhythm-label", "value"),
+    Output("rhythm-explanation", "disabled"),
+    Output("rhythm-explanation", "value"),
+    Output("mark-warning", "children"),
+    Output("mark-btn", "disabled"),
     Input("interpretability", "value"),
     Input("cardiac-arrest", "value"),
+    Input("cpr-status", "value"),
     Input("rhythm-label", "value"),
+    Input("comment-box", "value"),
+    Input("rhythm-explanation", "value"),
+    Input("user-name", "value"),
+    Input("current_marker", "data"),
+    Input("last_mark", "data"),
+    Input("mark-btn", "n_clicks"),
+    State("mark-warning", "children"),
+    prevent_initial_call=True,
     )
-    def control_disables(interpretability, cardiac_arrest, rhythm_label):
-        # Defaults
-        comment_disabled = True        
-        cpr_disabled = True
-        rhythm_disabled = True
-        rhythm_explanation_disabled = True
+    def update_sidebar_ui(
+        interp, ca, cpr, rhythm, comment, rex, user_name,
+        marker, last_mark, n_mark, warning
+    ):
+        ctx = callback_context
 
-        if interpretability == "No":
-            comment_disabled = False
-            cpr_disabled = True
-            rhythm_disabled = True
-            rhythm_explanation_disabled = True
-        elif interpretability == "Yes":
-            comment_disabled = True
-            if cardiac_arrest == "Yes":
-                cpr_disabled = False
-                rhythm_disabled = True
-                rhythm_explanation_disabled = True
-            elif cardiac_arrest == "No":
-                cpr_disabled = True
-                rhythm_disabled = False
-                rhythm_explanation_disabled = not (rhythm_label in ["Unable to Determine", "Other"])
+        # --- Clear All Fields After Successful Mark Only ---
+        if ctx.triggered and 'mark-btn' in ctx.triggered[0]['prop_id']:
+            if n_mark and (not warning):   # Clear only if mark just succeeded (no warnings)
+                ca_options = [
+                    {"label": "Yes", "value": "Yes", "disabled": True},
+                    {"label": "No", "value": "No", "disabled": True}
+                ]
+                cpr_options = [
+                    {"label": "Yes", "value": "Yes", "disabled": True},
+                    {"label": "No", "value": "No", "disabled": True}
+                ]
+                return (
+                    True, "",           # comment-box: disabled, cleared
+                    ca_options, None,     # cardiac-arrest: reset
+                    cpr_options, None,    # cpr-status: reset
+                    True, "",           # rhythm-label: disabled, cleared
+                    True, "",           # rhythm-explanation: disabled, cleared
+                    "", True              # mark-warning and mark-btn
+                )
             else:
-                cpr_disabled = True
-                rhythm_disabled = True
-                rhythm_explanation_disabled = True
+                raise exceptions.PreventUpdate
 
+        # --- UI state logic (Enable/disable) ---
+        comment_disabled = True
+        ca_disabled     = True
+        cpr_disabled    = True
+        rhythm_disabled = True
+        rex_disabled    = True
+
+        # Only clear field if disabling
+        comment_value = None if comment_disabled else comment
+        ca_value      = None if ca_disabled else ca
+        cpr_value     = None if cpr_disabled else cpr
+        rhythm_value  = None if rhythm_disabled else rhythm
+        rex_value     = None if rex_disabled else rex
+
+        if interp == "No":
+            comment_disabled = False
+            ca_disabled     = True
+            cpr_disabled    = True
+            rhythm_disabled = True
+            rex_disabled    = True
+        elif interp == "Yes":
+            comment_disabled = False
+            ca_disabled     = False
+            if ca == "Yes":
+                cpr_disabled    = False
+                rhythm_disabled = True
+                rex_disabled    = True
+            elif ca == "No":
+                cpr_disabled    = True
+                rhythm_disabled = False
+                if rhythm in ["Other", "Unable to Determine"]:
+                    rex_disabled = False
+                else:
+                    rex_disabled = False  # enabled, though not required
+            else:
+                cpr_disabled    = True
+                rhythm_disabled = True
+                rex_disabled    = True
+        else:
+            comment_disabled = True
+            ca_disabled     = True
+            cpr_disabled    = True
+            rhythm_disabled = True
+            rex_disabled    = True
+
+        ca_options = [
+            {"label": "Yes", "value": "Yes", "disabled": ca_disabled},
+            {"label": "No", "value": "No", "disabled": ca_disabled},
+        ]
         cpr_options = [
             {"label": "Yes", "value": "Yes", "disabled": cpr_disabled},
-            {"label": "No", "value": "No", "disabled": cpr_disabled}
+            {"label": "No", "value": "No", "disabled": cpr_disabled},
         ]
-        return comment_disabled, cpr_options, rhythm_disabled, rhythm_explanation_disabled
+
+        comment_value = None if comment_disabled else comment
+        ca_value      = None if ca_disabled else ca
+        cpr_value     = None if cpr_disabled else cpr
+        rhythm_value  = None if rhythm_disabled else rhythm
+        rex_value     = None if rex_disabled else rex
+
+        # --- Live warnings and (disable) logic ---
+        warning_msg = ""
+        mark_btn_disabled = False
+
+        # Marker logic comes first!
+        if marker is None:
+            warning_msg = "Click on the plot to place a marker before marking."
+            mark_btn_disabled = True
+        elif last_mark is None:
+            warning_msg = "No previous mark set."
+            mark_btn_disabled = True
+        else:
+            try:
+                interval = float(marker) - float(last_mark)
+            except Exception:
+                warning_msg = "Error calculating marked interval."
+                mark_btn_disabled = True
+            else:
+                if interval <= 0 or interval < 1.0:
+                    warning_msg = "Marked interval must be at least 1 second."
+                    mark_btn_disabled = True
+
+        # Only check fields if marker logic passed
+        if not mark_btn_disabled:
+            if not user_name or not user_name.strip():
+                warning_msg = "Enter your User Name before marking."
+                mark_btn_disabled = True
+            elif not interp:
+                warning_msg = "Choose Interpretable or Non-Interpretable."
+                mark_btn_disabled = True
+            elif interp == "No":
+                if not comment or not comment.strip():
+                    warning_msg = "Comment required for Non-Interpretable interval."
+                    mark_btn_disabled = True
+            elif interp == "Yes":
+                if not ca:
+                    warning_msg = "Select Cardiac Arrest status."
+                    mark_btn_disabled = True
+                elif ca == "Yes":
+                    if not cpr:
+                        warning_msg = "Select CPR status."
+                        mark_btn_disabled = True
+                elif ca == "No":
+                    if not rhythm:
+                        warning_msg = "Select Rhythm Label."
+                        mark_btn_disabled = True
+                    elif rhythm in ["Unable to Determine", "Other"] and (not rex or not rex.strip()):
+                        warning_msg = "Explanation required for selected rhythm."
+                        mark_btn_disabled = True
+
+        return (
+            comment_disabled, comment_value,
+            ca_options, ca_value,
+            cpr_options, cpr_value,
+            rhythm_disabled, rhythm_value,
+            rex_disabled, rex_value,
+            warning_msg,
+            mark_btn_disabled
+        )
 
     @app.callback(
-        Output('waveform-graph', 'figure'),
-        Output('x-scrollbar', 'min'),
-        Output('x-scrollbar', 'max'),
-        Output('x-scrollbar', 'value'),
-        Output('current_marker', 'data'),
-        Output('last_mark', 'data'),
-        Output('annotations-list', 'data'),
-        Output('mark-warning', 'children'),
-        Output('mark-btn', 'disabled'),
-        Input('data-store', 'data'),
-        Input('annotations-list', 'data'),
-        Input('view-window-size', 'value'),
-        Input('x-scrollbar', 'value'),
-        Input('waveform-graph', 'clickData'),
-        Input('mark-btn', 'n_clicks'),
-        State('current_marker', 'data'),
-        State('last_mark', 'data'),
-        State('user-name', 'value'),
-        State('subject-dropdown', 'value'),
-        State("interpretability", "value"),
-        State("cardiac-arrest", "value"),
-        State("cpr-status", "value"),
-        State("rhythm-label", "value"),
-        State("comment-box", "value"),
-        State("rhythm-explanation", "value"),
-        prevent_initial_call=False,
+    Output('waveform-graph', 'figure'),
+    Output('x-scrollbar', 'min'),
+    Output('x-scrollbar', 'max'),
+    Output('x-scrollbar', 'value'),
+    Output('current_marker', 'data'),
+    Output('last_mark', 'data'),
+    Output('annotations-list', 'data'),
+    Input('data-store', 'data'),
+    Input('annotations-list', 'data'),
+    Input('view-window-size', 'value'),
+    Input('x-scrollbar', 'value'),
+    Input('waveform-graph', 'clickData'),
+    Input('mark-btn', 'n_clicks'),
+    State('current_marker', 'data'),
+    State('last_mark', 'data'),
+    State('user-name', 'value'),
+    State('subject-dropdown', 'value'),
+    State("interpretability", "value"),
+    State("cardiac-arrest", "value"),
+    State("cpr-status", "value"),
+    State("rhythm-label", "value"),
+    State("comment-box", "value"),
+    State("rhythm-explanation", "value"),
+    prevent_initial_call=False,
     )
     def update_waveform_and_mark(
         data_store, annotations, window_size, x_scroll_val, click_data, n_mark,
@@ -169,7 +300,6 @@ def register_callbacks(app):
     ):
         ctx = callback_context
         trigger = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
-        warning = ""
         marker = current_marker
         annotations = annotations or []
         last_mark = float(last_mark) if last_mark is not None else 0.0
@@ -177,11 +307,10 @@ def register_callbacks(app):
         # Data load/empty state
         if not data_store or "time" not in data_store or not data_store["time"]:
             fig = go.Figure(layout={"height": 400, "title": "No Data Loaded"})
-            return fig, 0, 100, 0, marker, last_mark, annotations, warning, True
+            return fig, 0, 100, 0, marker, last_mark, annotations
 
         # Get waveform/time data
         times = np.array(data_store["time"])
-        # Relative Time
         time_relative = times[0] - times[0][0]
         leads = [np.array(l) for l in data_store["leads"]]
         lead_names = data_store["lead_names"]
@@ -192,164 +321,54 @@ def register_callbacks(app):
         x_scroll_val = float(x_scroll_val if x_scroll_val is not None else t_min)
         x_scroll_val = min(max(x_scroll_val, x_scroll_min), x_scroll_max)
 
-        # Handle plot click to set/move marker
+        # Plot click to set marker
         if trigger == 'waveform-graph' and click_data and 'points' in click_data:
             marker = float(click_data['points'][0]['x'])
-            # Center window on marker, but don't exceed bounds
             left = min(max(marker - window_size/2, t_min), t_max - window_size)
-            left = max(left, t_min)  # Ensure not off the left edge
+            left = max(left, t_min)
             x_scroll_val = left
 
-        comment_disabled = True
-        cpr_disabled = True
-        rhythm_disabled = True
-        rhythm_explanation_disabled = True
-
-        if interpretability == "No":
-            comment_disabled = False
-            cpr_disabled = True
-            rhythm_disabled = True
-            rhythm_explanation_disabled = True
-        elif interpretability == "Yes":
-            comment_disabled = True
-            if cardiac_arrest == "Yes":
-                cpr_disabled = False
-                rhythm_disabled = True
-                rhythm_explanation_disabled = True
-            elif cardiac_arrest == "No":
-                cpr_disabled = True
-                rhythm_disabled = False
-                rhythm_explanation_disabled = not (rhythm_label in ["Unable to Determine", "Other"])
-            else:
-                cpr_disabled = True
-                rhythm_disabled = True
-                rhythm_explanation_disabled = True
-
-        # --- FORCIBLY CLEAR values for disabled fields! ---
-        if comment_disabled:
-            comment_box = None
-        if cpr_disabled:
-            cpr_status = None
-        if rhythm_disabled:
-            rhythm_label = None
-        if rhythm_explanation_disabled:
-            rhythm_explanation = None
-
-        # --- Marking and Validation ---
+        # --- Marking and Annotation Append ---
         if trigger == 'mark-btn' and n_mark:
-            if marker is None:
-                warning = "Click on the plot to place a marker before marking."
-            else:
+            can_save = True
+            try:
                 start = float(last_mark)
                 end = float(marker)
-                # Enforce direction and interval
-                if end <= start or (end - start) < 1.0:
-                    warning = "Marked interval must be at least 1 second."
-                # Validation only for ENABLED fields
-                elif not interpretability:
-                    warning = "Choose Interpretable or Non-Interpretable"
-                elif interpretability == "No":
-                    if comment_box is None or not comment_box.strip():
-                        warning = "Comment required for Non-Interpretable interval"
-                    else:
-                        # Only comment required; all other (disabled) fields already set to None
-                        annotation = {
-                            "user_name": user_name,
-                            "subject": subject_selected,
-                            "interpretable": interpretability,
-                            "cardiac_arrest": None,
-                            "cpr_status": None,
-                            "rhythm_label": None,
-                            "noninterp_explanation": comment_box,
-                            "rhythm_explanation": None,
-                            "start": start,
-                            "end": end,
-                        }
-                        annotations = annotations + [annotation]
-                        last_mark = end
-                        marker = None
-                elif interpretability == "Yes":
-                    if not cardiac_arrest:
-                        warning = "Select Cardiac Arrest status"
-                    elif cardiac_arrest == "Yes":
-                        if not cpr_status:
-                            warning = "Select CPR status"
-                        else:
-                            # Only CPR present, rest are None
-                            annotation = {
-                                "user_name": user_name,
-                                "subject": subject_selected,
-                                "interpretable": interpretability,
-                                "cardiac_arrest": cardiac_arrest,
-                                "cpr_status": cpr_status,
-                                "rhythm_label": None,
-                                "noninterp_explanation": None,
-                                "rhythm_explanation": None,
-                                "start": start,
-                                "end": end,
-                            }
-                            annotations = annotations + [annotation]
-                            last_mark = end
-                            marker = None
-                    elif cardiac_arrest == "No":
-                        if not rhythm_label:
-                            warning = "Select Rhythm Label"
-                        elif rhythm_label in ["Unable to Determine", "Other"] and (rhythm_explanation is None or not rhythm_explanation.strip()):
-                            warning = "Explanation required for selected rhythm"
-                        else:
-                            # Rhythm and possibly explanation present, rest None
-                            annotation = {
-                                "user_name": user_name,
-                                "subject": subject_selected,
-                                "interpretable": interpretability,
-                                "cardiac_arrest": cardiac_arrest,
-                                "cpr_status": None,
-                                "rhythm_label": rhythm_label,
-                                "noninterp_explanation": None,
-                                "rhythm_explanation": rhythm_explanation if rhythm_label in ["Unable to Determine", "Other"] else None,
-                                "start": start,
-                                "end": end,
-                            }
-                            annotations = annotations + [annotation]
-                            last_mark = end
-                            marker = None
+                can_save = (
+                    marker is not None and
+                    end > start and
+                    (end - start) >= 1.0 and
+                    user_name and user_name.strip() and
+                    interpretability in ("Yes", "No") and
+                    (interpretability != "No" or (comment_box and comment_box.strip()))
+                )
+                # You can elaborate this logic to mirror your sidebar checks if you want full defense
+            except Exception:
+                can_save = False
 
-        # --- Disable Logic for Mark Button ---
-        mark_disabled = False
-        why_disabled = ""
-        if marker is None:
-            mark_disabled = True
-            why_disabled = "Click on the plot to place a marker before marking."
-        elif float(marker) <= float(last_mark) or (float(marker) - float(last_mark)) < 1.0:
-            mark_disabled = True
-            why_disabled = "Marked interval must be at least 1 second."
-        elif not interpretability:
-            mark_disabled = True
-            why_disabled = "Choose Interpretable or Non-Interpretable"
-        elif interpretability == "No":
-            if comment_box is None or not comment_box.strip():
-                mark_disabled = True
-                why_disabled = "Comment required for Non-Interpretable interval"
-        elif interpretability == "Yes":
-            if not cardiac_arrest:
-                mark_disabled = True
-                why_disabled = "Select Cardiac Arrest status"
-            elif cardiac_arrest == "Yes":
-                if not cpr_status:
-                    mark_disabled = True
-                    why_disabled = "Select CPR status"
-            elif cardiac_arrest == "No":
-                if not rhythm_label:
-                    mark_disabled = True
-                    why_disabled = "Select Rhythm Label"
-                elif rhythm_label in ["Unable to Determine", "Other"] and (rhythm_explanation is None or not rhythm_explanation.strip()):
-                    mark_disabled = True
-                    why_disabled = "Explanation required for selected rhythm"
+            if can_save:
+                # Decide what to store in annotation dict
+                annotation = {
+                    "user_name": user_name,
+                    "subject": subject_selected,
+                    "interpretable": interpretability,
+                    "cardiac_arrest": cardiac_arrest if interpretability == "Yes" else None,
+                    "cpr_status": cpr_status if interpretability == "Yes" and cardiac_arrest == "Yes" else None,
+                    "rhythm_label": rhythm_label if interpretability == "Yes" and cardiac_arrest == "No" else None,
+                    "noninterp_explanation": comment_box,
+                    "rhythm_explanation": (
+                        rhythm_explanation
+                    ),
+                    "start": start,
+                    "end": end
+                }
+                annotations = annotations + [annotation]
+                last_mark = end
+                # Clear marker after successful marking
+                marker = None
+            # If can_save is False, do nothing (sidebar handles warnings/UI)
 
-        if not warning and mark_disabled:
-            warning = why_disabled
-
-        # --- Plotting ---
+        # --- Plotting Section ---
         left = x_scroll_val
         right = min(x_scroll_val + window_size, t_max)
         n_lead = len(lead_names)
@@ -360,15 +379,12 @@ def register_callbacks(app):
         for i, (sig, name, ts) in enumerate(zip(leads, lead_names, times)):
             if sig is not None and len(sig) > 0 and ts is not None and len(ts) > 0:
                 plot_times = ts - ts[0]
-                # ---- Downsample ----
                 Fs = 240.0
-                desired_fs = 100.0
+                desired_fs = 80.0
                 stride = int(np.floor(Fs / desired_fs))
                 stride = max(stride, 1)
                 ds_times = plot_times[::stride]
                 ds_sig = sig[::stride]
-                # ---- Plotting Trace ----
-                print(f'Plotting trace {i}')
                 fig.add_trace(
                     go.Scatter(x=ds_times, y=ds_sig, mode='lines', name=name),
                     row=i+1, col=1
@@ -377,12 +393,10 @@ def register_callbacks(app):
             else:
                 print(f'Skipping trace {i} (no data)')
             fig.update_yaxes(autorange=True, row=i+1, col=1)
-        # Only set the initial and slider-update X mode:
         fig.update_xaxes(range=[left, right], title="Time (s)")
         if marker is not None and left <= marker <= right:
             for row in range(1, n_lead+1):
                 fig.add_vline(x=marker, line_color="red", line_width=2, row=row, col=1)
-        # Annotation intervals
         for row in range(1, n_lead+1):
             for ann in annotations or []:
                 color = LABEL_COLORS.get(ann["rhythm_label"], DEFAULT_COLOR)
@@ -393,7 +407,6 @@ def register_callbacks(app):
                     annotation_position="top right",
                     row=row, col=1
                 )
-                # Add dotted color-coded vline at mark endpoint
                 fig.add_vline(
                     x=ann["end"], line_color='black', line_dash="dot", line_width=2, row=row, col=1
                 )
@@ -402,6 +415,7 @@ def register_callbacks(app):
             height=120 * n_lead + 80, margin={'l': 55, 'r': 11, 't': 38, 'b': 38},
             showlegend=False, dragmode="pan"
         )
+
         return (
             fig,
             x_scroll_min,
@@ -409,9 +423,7 @@ def register_callbacks(app):
             x_scroll_val,
             marker,
             last_mark,
-            annotations,
-            warning,
-            False  
+            annotations
         )
 
     @app.callback(

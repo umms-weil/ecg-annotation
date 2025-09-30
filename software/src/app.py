@@ -7,7 +7,6 @@ SIDEBAR_WIDTH = '300px'
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-
     # === SIDEBAR (LEFT) ===
     html.Div([
         html.H3("Annotations", style={'fontSize': 17}),
@@ -62,7 +61,6 @@ app.layout = html.Div([
         html.Label("Is this CPR?"),
         dcc.RadioItems(
             id="cpr-status",
-            # Start with both options disabled; callback will set enables!
             options=[
                 {"label": "Yes", "value": "Yes", "disabled": True},
                 {"label": "No",  "value": "No", "disabled": True}
@@ -86,7 +84,7 @@ app.layout = html.Div([
             ],
             value=None,
             placeholder="Select rhythm",
-            disabled=True    # Controlled by callback!
+            disabled=True
         ),
         html.Div([
             html.Label("Rhythm Explanation"),
@@ -94,7 +92,7 @@ app.layout = html.Div([
                 id="rhythm-explanation",
                 placeholder="Explain if rhythm is 'Unable to Determine' or 'Other'.",
                 style={"width": '100%'},
-                disabled=True     # Controlled by callback!
+                disabled=True
             )
         ]),
         html.Label("Navigation step size (seconds):", style={"fontWeight": "bold", 'fontSize': 11}),
@@ -127,8 +125,9 @@ app.layout = html.Div([
         'padding': '8px 6px 7px 7px', 'background': '#F7F7F9',
         'boxSizing': 'border-box', 'maxHeight': '98vh'
     }),
-    # === MAIN PANEL (RIGHT): Dir Select, Toolbar, slider, plot, table ===
+    # === MAIN PANEL (RIGHT) ===
     html.Div([
+
         html.Div([
             html.Label("Select Base Data Folder:", style={"fontWeight": "bold", "fontSize": 13, 'marginRight': '10px'}),
             dcc.Input(
@@ -141,7 +140,7 @@ app.layout = html.Div([
             html.Button('Set Folder', id='set-folder-btn', n_clicks=0),
             html.Div(id='base-folder-status', style={'fontSize': 11, 'color': '#395983', 'marginTop': '5px'}),
         ], style={'marginBottom': '18px', 'display': 'flex', 'alignItems': 'center'}),
-        # Window/zoom controls
+
         html.Div([
             html.Label("Waveform view window (seconds):",
                        style={"fontWeight": "bold", 'fontSize': 12, 'marginRight': '7px'}),
@@ -156,7 +155,6 @@ app.layout = html.Div([
             ),
         ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '8px'}),
 
-        # Scrollbar
         html.Div([
             dcc.Slider(
                 id='x-scrollbar',
@@ -174,39 +172,64 @@ app.layout = html.Div([
             'marginBottom': '6px',
         }),
 
-        # Plot
-        dcc.Graph(
-            id='waveform-graph',
-            config={'displayModeBar': True, 'scrollZoom': True, 'doubleClick': 'reset'},
-            style={'height': '100vh', 'marginBottom': '0px', 'width': '100%', 'maxWidth': '1100px'}
-        ),
+        html.Div([
+            dcc.Graph(
+                id='waveform-graph',
+                config={'displayModeBar': True, 'scrollZoom': True, 'doubleClick': 'reset'},
+                style={
+                    'width': '100%',
+                    'maxWidth': '1100px'
+                }
+            ),
+        ], style={'width': '100%', 'display': 'block'}),
 
-        # ----- ANNOTATION TABLE BELOW PLOT ------
         html.H5("Saved Annotations:", style={'margin': '2px 0', 'fontSize': 13}),
-        dash_table.DataTable(
-            id='annotations-table',
-            columns=[
-                {"name": "User", "id": "user_name"},
-                {"name": "Subject", "id": "subject"},
-                {"name": "Interpretable", "id": "interpretable"},
-                {"name": "Cardiac Arrest", "id": "cardiac_arrest"},
-                {"name": "CPR", "id": "cpr_status"},
-                {"name": "Rhythm", "id": "rhythm_label"},
-                {"name": "NonInterp Explanation", "id": "noninterp_explanation"},
-                {"name": "Rhythm Explanation", "id": "rhythm_explanation"},
-                {"name": "Start", "id": "start"},
-                {"name": "End", "id": "end"},
-            ],
-            data=[],
-            style_table={'width': '100%', 'maxWidth': '900px', 'margin': '0 auto',
-                        'marginTop': '16px'},
-            style_cell={'textAlign': 'center', 'fontSize': 10, 'padding': '1px 1px'},
-            row_deletable=False,
-            editable=False
-        ),
-    ], style={'flexGrow': 1, 'padding': '8px 8px 8px 10px', 'overflowY': 'auto', 'maxHeight': '100vh'})
-],
-style={'display': 'flex', 'alignItems': 'flex-start', 'height': '100vh', 'background': 'white'})
+
+        html.Div([
+            dash_table.DataTable(
+                id='annotations-table',
+                columns=[
+                    {"name": "User", "id": "user_name"},
+                    {"name": "Subject", "id": "subject"},
+                    {"name": "Interpretable", "id": "interpretable"},
+                    {"name": "Cardiac Arrest", "id": "cardiac_arrest"},
+                    {"name": "CPR", "id": "cpr_status"},
+                    {"name": "Rhythm", "id": "rhythm_label"},
+                    {"name": "NonInterp Explanation", "id": "noninterp_explanation"},
+                    {"name": "Rhythm Explanation", "id": "rhythm_explanation"},
+                    {"name": "Start", "id": "start"},
+                    {"name": "End", "id": "end"},
+                ],
+                data=[],
+                style_table={
+                    'width': '100%',
+                    'maxWidth': '900px',
+                    'margin': '0 auto',
+                    'marginTop': '16px',
+                    'overflowY': 'auto',
+                    'maxHeight': '35vh'
+                },
+                style_cell={'textAlign': 'center', 'fontSize': 10, 'padding': '1px 1px'},
+                row_deletable=False,
+                editable=False
+            ),
+        ], style={'width': '100%', 'display': 'block'})
+
+    ], style={
+        'flexGrow': 1,
+        'padding': '8px 8px 8px 10px',
+        'overflowY': 'auto',
+        'height': '100vh',
+        'display': 'flex',
+        'flexDirection': 'column'
+    }),
+], style={
+    'display': 'flex',
+    'alignItems': 'flex-start',
+    'height': '100vh',
+    'background': 'white'
+})
+
 app.layout.children += [
     dcc.Store(id='base-folder-store', data=""),
     dcc.Store(id='data-store', data={}),
@@ -220,4 +243,4 @@ app.layout.children += [
 register_callbacks(app)
 
 if __name__ == '__main__':
-    app.run(debug=True,)
+    app.run(debug=True)
