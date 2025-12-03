@@ -344,183 +344,137 @@ class AnnotationAppCallbacks:
         self.update_table_data()
 
     def update_sidebar_ui(self):
-        # ===== FULL SIDEBAR CLEAR, after MARK =====
+        # --- Clear sidebar after marking ---
         if getattr(self, "pending_clear_sidebar", False):
             self.pending_clear_sidebar = False
 
-            # ---- Interpretable radios: clear and enable for new selection
-            self.interp_group.setExclusive(False)
-            self.radio_interp_yes.setChecked(False)
-            self.radio_interp_no.setChecked(False)
-            self.interp_group.setExclusive(True)
-            self.radio_interp_yes.setDisabled(False)
-            self.radio_interp_no.setDisabled(False)
-
-            # ---- Comment: clear, disable
-            self.comment_box.blockSignals(True)
-            self.comment_box.setPlainText("")
-            self.comment_box.setDisabled(True)
-            self.comment_box.blockSignals(False)
-
-            # ---- Cardiac Arrest radios ----
-            self.ca_group.setExclusive(False)
-            self.cardiac_arrest_yes.setChecked(False)
-            self.cardiac_arrest_no.setChecked(False)
-            self.ca_group.setExclusive(True)
-            self.cardiac_arrest_yes.setDisabled(True)
-            self.cardiac_arrest_no.setDisabled(True)
-
-            # ---- CPR radios ----
+            # Reset CPR buttons
             self.cpr_group.setExclusive(False)
             self.cpr_yes.setChecked(False)
             self.cpr_no.setChecked(False)
+            self.cpr_U2D.setChecked(False)
             self.cpr_group.setExclusive(True)
-            self.cpr_yes.setDisabled(True)
-            self.cpr_no.setDisabled(True)
+            self.cpr_yes.setDisabled(False)
+            self.cpr_no.setDisabled(False)
+            self.cpr_U2D.setDisabled(False)
 
-            # ---- Rhythm dropdown ----
+            # Reset Rhythm dropdown
             self.rhythm_dropdown.blockSignals(True)
             self.rhythm_dropdown.setCurrentIndex(-1)
             self.rhythm_dropdown.setDisabled(True)
             self.rhythm_dropdown.blockSignals(False)
 
-            # ---- Rhythm explanation ----
+            # Visual: Rhythm label as strikethrough + gray
+            if hasattr(self, "rhythm_label"):
+                self.rhythm_label.setText("<span style='text-decoration:line-through; color:#888;'>Rhythm Type</span>")
+                self.rhythm_label.setStyleSheet("font-size:13px;")
+
+            # Reset Explanation comment
             self.rhythm_explanation.blockSignals(True)
             self.rhythm_explanation.setPlainText("")
             self.rhythm_explanation.setDisabled(True)
             self.rhythm_explanation.blockSignals(False)
 
-            # --- Mark warning/mark btn: clear and disable
+            # Reset Mark warning/button
             self.mark_warning.setText("")
             self.mark_btn.setDisabled(True)
             return
 
-        # ======= Proceed with step logic =======
-        interp = self.get_interp_val()
-        ca = self.get_ca_val()
-        cpr = self.get_cpr_val()
-        rhythm = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else None
-        comment = self.comment_box.toPlainText()
-        rex = self.rhythm_explanation.toPlainText()
+        # --- Main logic ---
+        cpr      = self.get_cpr_val()
+        rhythm   = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else ""
+        rex      = self.rhythm_explanation.toPlainText()
         user_name = self.username_input.text()
-        marker = self.current_marker
+        marker    = self.current_marker
         last_mark = self.last_mark
-        warning = self.mark_warning.text()
 
-        # Stepwise field enables/disables
-        if interp is None:
-            # Step 1: Only Interpretable enabled
-            self.radio_interp_yes.setDisabled(False)
-            self.radio_interp_no.setDisabled(False)
-            self.cardiac_arrest_yes.setDisabled(True)
-            self.cardiac_arrest_no.setDisabled(True)
-            self.cpr_yes.setDisabled(True)
-            self.cpr_no.setDisabled(True)
+        # --- CPR and Rhythm section UI logic + visual Rhythm label ---
+        if cpr == "Yes":
+            # Disable rhythm dropdown & visually indicate as disabled
+            self.rhythm_dropdown.blockSignals(True)
+            self.rhythm_dropdown.setCurrentIndex(-1)
             self.rhythm_dropdown.setDisabled(True)
+            self.rhythm_dropdown.blockSignals(False)
+            if hasattr(self, "rhythm_label"):
+                self.rhythm_label.setText("<span style='text-decoration:line-through; color:#888;'>Rhythm Type</span>")
+                self.rhythm_label.setStyleSheet("font-size:13px;")
+            # Disable explanation/comment
+            self.rhythm_explanation.blockSignals(True)
+            self.rhythm_explanation.setPlainText("")
             self.rhythm_explanation.setDisabled(True)
-            self.comment_box.setDisabled(True)
-        elif interp == "No":
-            # Step 2a: Non-interpretable, comment only
-            self.radio_interp_yes.setDisabled(False)
-            self.radio_interp_no.setDisabled(False)
-            self.cardiac_arrest_yes.setDisabled(True)
-            self.cardiac_arrest_no.setDisabled(True)
-            self.cpr_yes.setDisabled(True)
-            self.cpr_no.setDisabled(True)
+            self.rhythm_explanation.blockSignals(False)
+
+        elif cpr == "Unable to Determine":
+            # Disable rhythm dropdown & visually indicate as disabled
+            self.rhythm_dropdown.blockSignals(True)
+            self.rhythm_dropdown.setCurrentIndex(-1)
             self.rhythm_dropdown.setDisabled(True)
+            self.rhythm_dropdown.blockSignals(False)
+            if hasattr(self, "rhythm_label"):
+                self.rhythm_label.setText("<span style='text-decoration:line-through; color:#888;'>Rhythm Type</span>")
+                self.rhythm_label.setStyleSheet("font-size:13px;")
+            # Enable explanation/comment
+            self.rhythm_explanation.setDisabled(False)
+
+        elif cpr == "No":
+            # Enable rhythm dropdown & visually restore label
+            self.rhythm_dropdown.setDisabled(False)
+            self.rhythm_dropdown.blockSignals(False)
+            if hasattr(self, "rhythm_label"):
+                self.rhythm_label.setText("Rhythm Type")
+                self.rhythm_label.setStyleSheet("font-size:13px; color: #00274C;")
+        else:
+            # No CPR selection yet; everything disabled, visually gray
+            self.rhythm_dropdown.blockSignals(True)
+            self.rhythm_dropdown.setCurrentIndex(-1)
+            self.rhythm_dropdown.setDisabled(True)
+            self.rhythm_dropdown.blockSignals(False)
+            if hasattr(self, "rhythm_label"):
+                self.rhythm_label.setText("<span style='text-decoration:line-through; color:#888;'>Rhythm Type</span>")
+                self.rhythm_label.setStyleSheet("font-size:13px;")
+            self.rhythm_explanation.blockSignals(True)
+            self.rhythm_explanation.setPlainText("")
             self.rhythm_explanation.setDisabled(True)
-            self.comment_box.setDisabled(False)
-        elif interp == "Yes":
-            # Step 2b: Interpretable, ask Cardiac Arrest
-            self.radio_interp_yes.setDisabled(False)
-            self.radio_interp_no.setDisabled(False)
-            self.cardiac_arrest_yes.setDisabled(False)
-            self.cardiac_arrest_no.setDisabled(False)
+            self.rhythm_explanation.blockSignals(False)
 
-            if ca is None:
-                # Must pick CA to continue
-                self.cpr_yes.setDisabled(True)
-                self.cpr_no.setDisabled(True)
-                self.rhythm_dropdown.setDisabled(True)
-                self.rhythm_explanation.setDisabled(True)
-                self.comment_box.setDisabled(False)
-            elif ca == "Yes":
-                # Now ask CPR
-                self.cpr_yes.setDisabled(False)
-                self.cpr_no.setDisabled(False)
-                self.rhythm_dropdown.setDisabled(True)
-                self.rhythm_explanation.setDisabled(True)
-                self.comment_box.setDisabled(False)
-            elif ca == "No":
-                # Now ask rhythm and maybe explanation
-                self.cpr_yes.setDisabled(True)
-                self.cpr_no.setDisabled(True)
-                self.rhythm_dropdown.setDisabled(False)
-                # Rhythm Explanation requirement:
-                if rhythm in ["Other", "Unable to Determine"]:
-                    self.rhythm_explanation.setDisabled(False)
-                else:
-                    self.rhythm_explanation.setDisabled(True)
-                self.comment_box.setDisabled(False)
-            else:
-                # Should not happen, defensive fallback
-                self.cpr_yes.setDisabled(True)
-                self.cpr_no.setDisabled(True)
-                self.rhythm_dropdown.setDisabled(True)
-                self.rhythm_explanation.setDisabled(True)
-                self.comment_box.setDisabled(False)
+        # --- Warnings & mark button logic ---
+        warnings = []
 
-        # Always ensure Mark button & warning are set appropriately
-        warning_msg = ""
-        mark_btn_disabled = False
-
-        # --- Below is workflow for enabling Mark ---
+        # 1. Plot marker requirements
         if marker is None:
-            warning_msg = "Click on the plot to place a marker before marking."
-            mark_btn_disabled = True
+            warnings.append("Click on the plot to place a marker before marking.")
         elif last_mark is None:
-            warning_msg = "No previous mark set."
-            mark_btn_disabled = True
+            warnings.append("No previous mark set.")
         else:
             try:
                 interval = float(marker) - float(last_mark)
             except Exception:
-                warning_msg = "Error calculating marked interval."
-                mark_btn_disabled = True
+                warnings.append("Error calculating marked interval.")
             else:
                 if interval <= 0 or interval < 1.0:
-                    warning_msg = "Marked interval must be at least 1 second."
-                    mark_btn_disabled = True
+                    warnings.append("Marked interval must be at least 1 second.")
 
-        if not mark_btn_disabled:
+        # 2. Required annotation fields
+        if not warnings:
             if not user_name or not user_name.strip():
-                warning_msg = "Enter your User Name before marking."
-                mark_btn_disabled = True
-            elif not interp:
-                warning_msg = "Choose Interpretable or Non-Interpretable."
-                mark_btn_disabled = True
-            elif interp == "No":
-                if not comment or not comment.strip():
-                    warning_msg = "Comment required for Non-Interpretable interval."
-                    mark_btn_disabled = True
-            elif interp == "Yes":
-                if not ca:
-                    warning_msg = "Select Cardiac Arrest status."
-                    mark_btn_disabled = True
-                elif ca == "Yes":
-                    if not cpr:
-                        warning_msg = "Select CPR status."
-                        mark_btn_disabled = True
-                elif ca == "No":
-                    if not rhythm:
-                        warning_msg = "Select Rhythm Label."
-                        mark_btn_disabled = True
-                    elif rhythm in ["Unable to Determine", "Other"] and (not rex or not rex.strip()):
-                        warning_msg = "Explanation required for selected rhythm."
-                        mark_btn_disabled = True
+                warnings.append("Enter your User Name before marking.")
+            if not cpr:
+                warnings.append("Select the CPR question before marking.")
 
+            if cpr == "No":
+                if not rhythm or rhythm == "":
+                    warnings.append("Select a Rhythm Label before marking.")
+                elif rhythm in ["Unable to Determine", "Other"] and (not rex or not rex.strip()):
+                    warnings.append("Explanation required for selected rhythm.")
+            elif cpr == "Unable to Determine":
+                if not rex or not rex.strip():
+                    warnings.append("Explanation required for 'Unable to Determine' CPR answer.")
+
+        # --- Display warnings and enable/disable mark button ---
+        warning_msg = "\n".join(warnings)
         self.mark_warning.setText(warning_msg)
-        self.mark_btn.setDisabled(mark_btn_disabled)
+        self.mark_warning.setWordWrap(True)
+        self.mark_btn.setDisabled(bool(warnings))
 
     def make_plot_click_handler(self, lead_idx):
         def handler(mouse_event):
@@ -563,9 +517,9 @@ class AnnotationAppCallbacks:
             ann = {
                 "user": self.username_input.text(),
                 "subject": self.subject_dropdown.currentData(),
-                "interp": self.get_interp_val(),
-                "comment": self.comment_box.toPlainText(),
-                "ca": self.get_ca_val(),
+                # "interp": self.get_interp_val(),
+                # "comment": self.comment_box.toPlainText(),
+                # "ca": self.get_ca_val(),
                 "cpr": self.get_cpr_val(),
                 "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
                 "rhythm_expl": self.rhythm_explanation.toPlainText(),
@@ -894,42 +848,46 @@ class AnnotationAppCallbacks:
         self.save_message.setText(f"Autoaved to {fullpath}")
 
     # --- Utility slots for GUI logic that you will implement: ---
-    def get_interp_val(self):
-        if self.radio_interp_yes.isChecked():
-            return "Yes"
-        if self.radio_interp_no.isChecked():
-            return "No"
-        return None
+    # def get_interp_val(self):
+    #     if self.radio_interp_yes.isChecked():
+    #         return "Yes"
+    #     if self.radio_interp_no.isChecked():
+    #         return "No"
+    #     return None
 
-    def get_ca_val(self):
-        if self.cardiac_arrest_yes.isChecked():
-            return "Yes"
-        if self.cardiac_arrest_no.isChecked():
-            return "No"
-        return None
+    # def get_ca_val(self):
+    #     if self.cardiac_arrest_yes.isChecked():
+    #         return "Yes"
+    #     if self.cardiac_arrest_no.isChecked():
+    #         return "No"
+    #     return None
 
     def get_cpr_val(self):
         if self.cpr_yes.isChecked():
             return "Yes"
         if self.cpr_no.isChecked():
             return "No"
+        if self.cpr_U2D.isChecked():
+            return "Unable to Determine"
         return None
     
-    def clear_cardiac_arrest(self):
-        self.cardiac_arrest_yes.setAutoExclusive(False)
-        self.cardiac_arrest_no.setAutoExclusive(False)
-        self.cardiac_arrest_yes.setChecked(False)
-        self.cardiac_arrest_no.setChecked(False)
-        self.cardiac_arrest_yes.setAutoExclusive(True)
-        self.cardiac_arrest_no.setAutoExclusive(True)
+    # def clear_cardiac_arrest(self):
+    #     self.cardiac_arrest_yes.setAutoExclusive(False)
+    #     self.cardiac_arrest_no.setAutoExclusive(False)
+    #     self.cardiac_arrest_yes.setChecked(False)
+    #     self.cardiac_arrest_no.setChecked(False)
+    #     self.cardiac_arrest_yes.setAutoExclusive(True)
+    #     self.cardiac_arrest_no.setAutoExclusive(True)
 
     def clear_cpr(self):
-        self.cpr_yes.setAutoExclusive(False)
-        self.cpr_no.setAutoExclusive(False)
+        self.cpr_group.setExclusive(False)
         self.cpr_yes.setChecked(False)
         self.cpr_no.setChecked(False)
-        self.cpr_yes.setAutoExclusive(True)
-        self.cpr_no.setAutoExclusive(True)
+        self.cpr_U2D.setChecked(False)
+        self.cpr_group.setExclusive(True)
+        self.cpr_yes.setDisabled(True)
+        self.cpr_no.setDisabled(True)
+        self.cpr_U2D.setDisabled(True)
 
 # ---- Example connections (in __init__): -----
 # self.set_folder_btn.clicked.connect(self.set_base_folder)
