@@ -10,6 +10,9 @@ import hdf5storage
 import time
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from dateutil import parser
+import pytz
 # ---- Constants ----
 WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]  # Order to display waveforms in stack
 
@@ -113,39 +116,143 @@ def strip_nanoseconds(timestr):
     match = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', timestr)
     return match.group(1) if match else timestr  # fallback if no match
 
-def datetime_string_to_seconds_since_1840(timestr):
-    # Parse the date/time string (assume format is '%Y-%m-%d %H:%M:%S')
-    dt = datetime.strptime(str(timestr), "%Y-%m-%d %H:%M:%S")
-    # Your reference epoch ("zero") is 1840-12-31 00:00:00
-    epoch = datetime(1840, 12, 31, 0, 0, 0)
-    # Compute total seconds difference
-    return (dt - epoch).total_seconds()
+def datetime_string_to_seconds_since_1970(timestr):
+    eastern = pytz.timezone("America/New_York")
+    dt_naive = datetime.strptime(timestr, "%Y-%m-%d %H:%M:%S")
+    dt_eastern = eastern.localize(dt_naive)
+    # Get UTC timestamp (seconds since 1970-01-01 UTC)
+    epoch_seconds = dt_eastern.timestamp()
+    return epoch_seconds
+
+def convert_utc_to_est(date_str):
+    # Parse as naive datetime
+    dt_naive = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+    # Attach UTC timezone
+    dt_utc = dt_naive.replace(tzinfo=ZoneInfo('UTC'))
+    # Convert to Eastern Time
+    dt_est = dt_utc.astimezone(ZoneInfo("America/New_York"))
+    return dt_est.strftime('%Y-%m-%d %H:%M:%S')
 
 def get_code_time_bounds(subject, code_csv_path):
-    # Load and filter the CSV for this subject
+    # Load and filter CSV for this subject
     code_df = pd.read_csv(code_csv_path)
-    row = code_df[code_df['UUID'] == subject].iloc[0]
+    df_subj = code_df[code_df['UUID'] == subject]
 
-    recording_start = strip_nanoseconds(row['signal_start'])
-    print(recording_start)
-    code_start_time = strip_nanoseconds(row['CODE_START'])
-    print(code_start_time)
-    code_stop_time  = strip_nanoseconds(row['CODE_END'])
-    print(code_stop_time)
-    recording_start_sec = datetime_string_to_seconds_since_1840(recording_start)
-    code_start_sec = datetime_string_to_seconds_since_1840(code_start_time)
-    code_stop_sec  = datetime_string_to_seconds_since_1840(code_stop_time)
+    def _get_timestamps(column):
+        vals = df_subj[column].dropna().unique()
+        # Remove empty strings if present
+        vals = [v for v in vals if str(v).strip() != ""]
+        return [strip_nanoseconds(v) for v in vals if v is not None]
 
-    return recording_start_sec, code_start_sec, code_stop_sec
+    # Gather timestamps for each field
+    signal_starts = _get_timestamps('signal_start')
+    signal_ends = _get_timestamps('signal_end')
+    print(f'nonconverted start:{signal_starts}')
+    print(f'nonconverted end:{signal_ends}')
+    # Change from UTC to EST
+    signal_starts = [convert_utc_to_est(t) for t in signal_starts if t]
+    signal_ends = [convert_utc_to_est(t) for t in signal_ends if t]
+    print(f'converted start:{signal_starts}')
+    print(f'converted end:{signal_ends}')
+    code_starts   = _get_timestamps('CODE_START')
+    code_ends     = _get_timestamps('CODE_END')
+
+    signal_start_secs = [datetime_string_to_seconds_since_1970(t) for t in signal_starts if t]
+    signal_ends_secs = [datetime_string_to_seconds_since_1970(t) for t in signal_ends if t]
+    code_start_secs   = [datetime_string_to_seconds_since_1970(t) for t in code_starts   if t]
+    code_end_secs     = [datetime_string_to_seconds_since_1970(t) for t in code_ends     if t]
+
+    # Print warnings if multiple distinct values for any time field
+    if len(set(signal_start_secs)) > 1:
+        print(f"WARNING: Multiple unique signal_start times for subject [{subject}]: {sorted(signal_start_secs)}")
+    if len(set(signal_ends_secs)) > 1:
+        print(f"WARNING: Multiple unique signal_end times for subject [{subject}]: {sorted(signal_ends_secs)}")
+    if len(set(code_start_secs)) > 1:
+        print(f"WARNING: Multiple unique CODE_START times for subject [{subject}]: {sorted(code_start_secs)}")
+    if len(set(code_end_secs)) > 1:
+        print(f"WARNING: Multiple unique CODE_END times for subject [{subject}]: {sorted(code_end_secs)}")
+
+    # Earliest start/rec start, earliest code start, latest code end
+    recording_start_sec = min(signal_start_secs) if signal_start_secs else None
+    recording_end_sec = max(signal_ends_secs) if signal_ends_secs else None
+    code_start_sec = min(code_start_secs) if code_start_secs else None
+    code_stop_sec  = max(code_end_secs)  if code_end_secs   else None
+
+    print("Recording start Date:", signal_starts)
+    print("Recording start Sec:", recording_start_sec)
+    print("Recording End Date:", signal_ends)
+    print("Recording End Sec:", recording_end_sec)
+
+    print("Code start Date:", code_starts)
+    print("Code start Sec:", code_start_sec)
+    print("Code stop Date:", code_ends)
+    print("Code stop Sec:", code_stop_sec)
+
+    return recording_start_sec, recording_end_sec, code_start_sec, code_stop_sec
+
+def get_events_for_window(manifest_path, subject, window_start, window_end):
+    """
+    Loads and returns a DataFrame of rows for the given subject and window.
+        - window_start, window_end: seconds since origin (EPIC or relative to data; match x axis)
+    """
+    df = pd.read_csv(manifest_path)
+    df_subj = df[df['UUID'] == subject].copy()
+    df_subj['event_sec'] = df_subj['RECORDED_TIME'].apply(datetime_string_to_seconds_since_1970)
+    # # Filter to the correct window
+    # df_subj = df_subj[(df_subj['event_sec'] >= window_start) & (df_subj['event_sec'] <= window_end)]
+    return df_subj
 
 def load_mat_data(filename: str) -> dict:
     """
-    Loads MATLAB .mat file with hdf5storage (handles v7.3+ and older).
-    Returns a dict as from loadmat: {fieldname: value, ...}
+    Loads a MATLAB v7.3+ .mat file using h5py.
+    Returns a dict mapping {fieldname: value, ...},
+    dereferencing cell arrays automatically,
+    and excluding MATLAB fields starting with "__".
     """
-    data = hdf5storage.loadmat(filename)
-    # Remove MATLAB __header__ etc fields
-    return {k: v for k, v in data.items() if not k.startswith("__")}
+
+    def extract_dataset(item, file_reference):
+        # Handle standard arrays
+        val = item[()]
+        # If it's a cell array (object references)
+        if item.dtype == object:
+            # Dereference all object refs within the cell array
+            deref_vals = [file_reference[ref][()] for ref in val.flat]
+            # Convert each dereferenced value to a scalar if possible
+            deref_vals = [v.item() if hasattr(v, "item") else v for v in deref_vals]
+            val = np.array(deref_vals, dtype=object).reshape(val.shape)
+            # Squeeze if it's a single value (1x1 cell)
+            if val.size == 1:
+                val = val.item()
+        else:
+            # For standard arrays, if shape is (), convert to scalar
+            if hasattr(val, "item") and val.shape == ():
+                val = val.item()
+        return val
+
+    def recursively_load(group, file_reference):
+        out = {}
+        for key in group:
+            if key.startswith("__"):  # skip MATLAB private fields
+                continue
+            item = group[key]
+            if isinstance(item, h5py.Dataset):
+                out[key] = extract_dataset(item, file_reference)
+            elif isinstance(item, h5py.Group):
+                out[key] = recursively_load(item, file_reference)
+        return out
+
+    # Do all extraction in the same open file context
+    with h5py.File(filename, "r", locking=False) as f:
+        data = {}
+        for key in f:
+            if key.startswith("__"):  # skip MATLAB private fields
+                continue
+            item = f[key]
+            if isinstance(item, h5py.Dataset):
+                data[key] = extract_dataset(item, f)
+            elif isinstance(item, h5py.Group):
+                data[key] = recursively_load(item, f)
+    return data
 
 def load_waveforms_for_subject(
     base_folder: str, 
@@ -171,7 +278,7 @@ def load_waveforms_for_subject(
     lead_names = []
     available_units = []
     lead_ranges = []
-    start_secs = []  # keep in Epic seconds for alignment
+    start_secs = []
     fs_list = []
 
     for wf in desired_waveforms:
@@ -187,13 +294,14 @@ def load_waveforms_for_subject(
             continue
         try:
             mat_data = load_mat_data(f)
-            data = mat_data.get('data', None)
-            Fs = mat_data.get('Fs', 1.0)
-            UNIT = mat_data.get('UNIT', '')
+            data = mat_data['data']
+            Fs = mat_data['Fs']
+            UNIT = mat_data['unit']
             try:
-                Fs = float(np.array(Fs).flatten()[0]) if Fs is not None else 1.0
+                Fs = float(np.array(Fs).flatten()[0]) if Fs is not None else 240
             except Exception:
-                Fs = 1.0
+                print('sampling exception')
+                Fs = 240.0
             try:
                 if isinstance(UNIT, (np.ndarray, list)) and len(UNIT) > 0:
                     u = UNIT[0] if isinstance(UNIT, (list, np.ndarray)) else UNIT
@@ -203,7 +311,7 @@ def load_waveforms_for_subject(
                 else:
                     UNIT = str(UNIT)
             except Exception:
-                UNIT = str(UNIT)
+                UNIT = 'NoUnitSpecified'
             if data is not None:
                 sig = np.array(data).flatten()
                 # Get recording start Epic seconds:
@@ -258,7 +366,13 @@ def load_waveforms_for_subject(
 
     if intersection_start is None or intersection_end is None or intersection_end <= intersection_start:
         # return empty if no valid window
-        return [np.array([]) for _ in desired_waveforms], [None for _ in desired_waveforms], lead_names, available_units
+        return {
+            'times_ds': [np.array([]) for _ in desired_waveforms],   # or just np.array([]) depending on context
+            'leads_ds': [None for _ in desired_waveforms],
+            'lead_names': lead_names,
+            'units': available_units,
+            'Fs': None
+        }
 
     # Now extract the correct segment for each available waveform
     for idx, (sig, rec_start_sec, Fs) in enumerate(zip(leads, start_secs, fs_list)):
@@ -288,7 +402,43 @@ def load_waveforms_for_subject(
             times_list[idx] = rec_start_sec + np.arange(start_idx, end_idx) / Fs
             print(len(times_list[idx]))
 
-    return times_list, leads, lead_names, available_units
+    for tarr in times_list:
+        if tarr is not None and len(tarr) > 0:
+            canonical_time = tarr
+            break
+    else:
+        canonical_time = np.array([])
+
+    # Downsampling settings
+    desired_fs = 120.0
+    downsample_factor = int(np.round(Fs / desired_fs))
+
+    # Downsample the canonical time axis
+    time_axis_ds = canonical_time[::downsample_factor] if canonical_time.size else np.array([])
+
+    # Downsample each lead to 80 Hz
+    leads_ds = []
+    for sig in leads:
+        if sig is not None and len(sig) > 0:
+            leads_ds.append(sig[::downsample_factor])
+        else:
+            leads_ds.append(np.array([]))
+    
+    print('Return values from Loading...')
+    print(time_axis_ds)
+    print(leads_ds)
+    print(lead_names)
+    print(available_units)
+    print(Fs)
+    result = {
+        'times_ds': time_axis_ds,
+        'leads_ds': leads_ds,
+        'lead_names': lead_names,
+        'units': available_units,
+        'Fs': Fs
+    }
+    # return time_axis_ds, leads_ds, lead_names, available_units, Fs
+    return result
 
 def get_available_waveforms_for_subject(base_folder: str, subject: str) -> List[str]:
     """
