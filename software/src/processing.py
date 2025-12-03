@@ -133,7 +133,7 @@ def convert_utc_to_est(date_str):
     dt_est = dt_utc.astimezone(ZoneInfo("America/New_York"))
     return dt_est.strftime('%Y-%m-%d %H:%M:%S')
 
-def get_code_time_bounds(subject, code_csv_path):
+def get_code_time_bounds(subject, code_csv_path, manifest_path=None):
     # Load and filter CSV for this subject
     code_df = pd.read_csv(code_csv_path)
     df_subj = code_df[code_df['UUID'] == subject]
@@ -158,7 +158,7 @@ def get_code_time_bounds(subject, code_csv_path):
     code_ends     = _get_timestamps('CODE_END')
 
     signal_start_secs = [datetime_string_to_seconds_since_1970(t) for t in signal_starts if t]
-    signal_ends_secs = [datetime_string_to_seconds_since_1970(t) for t in signal_ends if t]
+    signal_ends_secs  = [datetime_string_to_seconds_since_1970(t) for t in signal_ends if t]
     code_start_secs   = [datetime_string_to_seconds_since_1970(t) for t in code_starts   if t]
     code_end_secs     = [datetime_string_to_seconds_since_1970(t) for t in code_ends     if t]
 
@@ -182,13 +182,59 @@ def get_code_time_bounds(subject, code_csv_path):
     print("Recording start Sec:", recording_start_sec)
     print("Recording End Date:", signal_ends)
     print("Recording End Sec:", recording_end_sec)
-
     print("Code start Date:", code_starts)
     print("Code start Sec:", code_start_sec)
     print("Code stop Date:", code_ends)
     print("Code stop Sec:", code_stop_sec)
 
-    return recording_start_sec, recording_end_sec, code_start_sec, code_stop_sec
+    # --------------- Handling your updated rules -----------------
+
+    # If no CODE_END, use code_start + 2 hours
+    if code_start_sec is not None and code_stop_sec is None:
+        print("No CODE_END found, using 2 hours after CODE_START.")
+        code_stop_sec = code_start_sec + 2 * 3600
+
+    # If no CODE_START, use earliest flowsheet event (from manifest_path)
+    flowsheet_first_sec = None
+    if code_start_sec is None and manifest_path is not None:
+        events_df = get_events_for_window(manifest_path, subject, window_start=0, window_end=float('inf'))
+        if not events_df.empty:
+            flowsheet_first_sec = events_df['event_sec'].min()
+            print(f"No CODE_START found, using first flowsheet event as CODE_START: {flowsheet_first_sec}")
+            code_start_sec = flowsheet_first_sec
+            if code_stop_sec is None:
+                print("No CODE_END found, using 2 hours after first flowsheet event as CODE_END.")
+                code_stop_sec = code_start_sec + 2 * 3600
+        else:
+            print("No CODE_START or flowsheet events found for subject:", subject)
+
+    # If neither CODE_START nor CODE_END was found (even after flowsheet fallback)
+    if code_start_sec is None or code_stop_sec is None:
+        # Try with flowsheet if not already used
+        if flowsheet_first_sec is None and manifest_path is not None:
+            events_df = get_events_for_window(manifest_path, subject, window_start=0, window_end=float('inf'))
+            if not events_df.empty:
+                flowsheet_first_sec = events_df['event_sec'].min()
+                print(f"Using first flowsheet event as CODE_START: {flowsheet_first_sec}")
+                code_start_sec = flowsheet_first_sec
+                code_stop_sec = code_start_sec + 2 * 3600
+            else:
+                print(f"ERROR: Could not find CODE_START, CODE_END, or any flowsheet events for subject {subject}.")
+                return recording_start_sec, recording_end_sec, None, None
+        else:
+            print(f"ERROR: Could not find CODE_START, CODE_END, or any flowsheet events for subject {subject}.")
+            return recording_start_sec, recording_end_sec, None, None
+
+    # Add 30 minutes before and after code event window for plotting
+    final_start = code_start_sec - 1800  # 30 min before
+    final_end   = code_stop_sec + 1800   # 30 min after
+
+    print("Final code window (with buffer):")
+    print("  Code+buffer Start:", final_start)
+    print("  Code+buffer End  :", final_end)
+
+    # Return the recording bounds, and code event bounds for plotting
+    return recording_start_sec, recording_end_sec, final_start, final_end
 
 def get_events_for_window(manifest_path, subject, window_start, window_end):
     """
@@ -299,9 +345,15 @@ def load_waveforms_for_subject(
             UNIT = mat_data['unit']
             try:
                 Fs = float(np.array(Fs).flatten()[0]) if Fs is not None else 240
+                # Downsampling settings
+                desired_fs = 120.0
+                downsample_factor = int(np.round(Fs / desired_fs))
             except Exception:
                 print('sampling exception')
                 Fs = 240.0
+                # Downsampling settings
+                desired_fs = 120.0
+                downsample_factor = int(np.round(Fs / desired_fs))
             try:
                 if isinstance(UNIT, (np.ndarray, list)) and len(UNIT) > 0:
                     u = UNIT[0] if isinstance(UNIT, (list, np.ndarray)) else UNIT
@@ -408,10 +460,6 @@ def load_waveforms_for_subject(
             break
     else:
         canonical_time = np.array([])
-
-    # Downsampling settings
-    desired_fs = 120.0
-    downsample_factor = int(np.round(Fs / desired_fs))
 
     # Downsample the canonical time axis
     time_axis_ds = canonical_time[::downsample_factor] if canonical_time.size else np.array([])

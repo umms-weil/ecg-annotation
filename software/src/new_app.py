@@ -2,7 +2,7 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QRadioButton, QComboBox, QTextEdit, QSlider, QSpinBox, QTableWidget,
-    QAbstractItemView, QButtonGroup, QHeaderView,
+    QAbstractItemView, QButtonGroup, QHeaderView, QFrame, 
 )
 from PyQt5.QtCore import (Qt, QTimer)
 import pyqtgraph as pg
@@ -13,17 +13,21 @@ UM_MAIZE = "#FFCB05"
 UM_BLUE = "#00274C"
 UM_ACCENT = "#285680"
 UM_WHITE = "#FFFFFF"
+UM_RED = "#D50032"
 
 
 class MainApp(QMainWindow, AnnotationAppCallbacks):
     def __init__(self):
         super().__init__()
+        # ---- Window setup ---
         self.setWindowTitle("Waveform Annotation App (U-M Theme)")
         screen = QApplication.primaryScreen().availableGeometry()
-        self.resize(screen.width(), screen.height())
-        # or, for a margin:
+        # self.resize(screen.width(), screen.height())
+        # For a margin:
         self.resize(int(screen.width() * 0.95), int(screen.height() * 0.95))
         self.move(screen.left() + int(screen.width()*0.025), screen.top() + int(screen.height()*0.025))
+
+        # ---- State variables ----
         self.base_folder = ""
         self.data_store = {}
         self.annotations = []
@@ -41,20 +45,78 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sidebar.setStyleSheet(f"background-color: {UM_MAIZE}; border-right:2px solid {UM_BLUE};")
 
         header = QLabel("Annotations")
-        header.setStyleSheet(f"font-size:21px; font-weight: bold; color: {UM_BLUE}; margin-bottom:8px;")
+        header.setStyleSheet(f"""
+            font-size:32px;
+            font-weight:bold;
+            color:{UM_BLUE};
+            border-bottom: 3px solid {UM_MAIZE};
+            margin-bottom: 8px;
+        """)
+        header.setFixedHeight(40)
+        header.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(header)
 
-        # User/subject input
-        lab = QLabel("User Name:"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # ---- User/subject input ----
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        lab = QLabel("User Name:"); 
+        lab.setStyleSheet(f"""
+            font-size:18px;
+            font-weight:bold;
+            color:{UM_BLUE};
+            border-bottom: 3px solid {UM_MAIZE};
+        """)
+        lab.setFixedHeight(25)
+        lab.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(lab)
+
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        # --- Username input ---
         self.username_input = QLineEdit(); self.username_input.setStyleSheet(font_css)
         sidebar_layout.addWidget(self.username_input)
 
-        lab = QLabel("Subject:"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # --- Subject selection ---
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        lab = QLabel("Subject:"); 
+        lab.setStyleSheet(f"""
+            font-size:18px;
+            font-weight:bold;
+            color:{UM_BLUE};
+            border-bottom: 3px solid {UM_MAIZE};
+        """)
+        lab.setFixedHeight(25)
+        lab.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(lab)
+
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        # --- Subject dropdown ---
         self.subject_dropdown = QComboBox(); self.subject_dropdown.setStyleSheet(font_css)
         sidebar_layout.addWidget(self.subject_dropdown)
 
+        # --- Load / Plot buttons ---
         row = QHBoxLayout()
         self.load_subject_btn = QPushButton("Load Subject");
         self.load_subject_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
@@ -63,26 +125,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # row.addWidget(self.plot_btn)
         sidebar_layout.addLayout(row)
 
-        lab = QLabel("Is this segment Interpretable?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        sidebar_layout.addWidget(lab)
-
-        # self.radio_interp_yes = QRadioButton("Yes"); self.radio_interp_no = QRadioButton("No")
-        # self.radio_interp_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # self.radio_interp_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # interp_row = QHBoxLayout(); interp_row.addWidget(self.radio_interp_yes); interp_row.addWidget(self.radio_interp_no)
-        # sidebar_layout.addLayout(interp_row)
-        # Exclusive block-style radio for Interpretable
-        self.radio_interp_yes = QPushButton('YES')
-        self.radio_interp_no = QPushButton('NO')
-        self.radio_interp_yes.setCheckable(True)
-        self.radio_interp_no.setCheckable(True)
-        # Exclusive group:
-        self.interp_btn_group = QButtonGroup()
-        self.interp_btn_group.addButton(self.radio_interp_yes)
-        self.interp_btn_group.addButton(self.radio_interp_no)
-        self.interp_btn_group.setExclusive(True)
-
-        # Block styling
+        # --- Block styling for Question buttons ---
         block_css = """
         QPushButton {
             background-color: #FFCB05;
@@ -101,48 +144,93 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         }
         """
 
-        self.radio_interp_yes.setStyleSheet(block_css)
-        self.radio_interp_no.setStyleSheet(block_css)
+        # lab = QLabel("Is this segment Interpretable?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # sidebar_layout.addWidget(lab)
 
-        # Add to layout
-        interp_row = QHBoxLayout()
-        interp_row.addWidget(self.radio_interp_yes)
-        interp_row.addWidget(self.radio_interp_no)
-        sidebar_layout.addLayout(interp_row)
+        # self.radio_interp_yes = QRadioButton("Yes"); self.radio_interp_no = QRadioButton("No")
+        # self.radio_interp_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # self.radio_interp_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # interp_row = QHBoxLayout(); interp_row.addWidget(self.radio_interp_yes); interp_row.addWidget(self.radio_interp_no)
+        # sidebar_layout.addLayout(interp_row)
+        # Exclusive block-style radio for Interpretable
+        # self.radio_interp_yes = QPushButton('YES')
+        # self.radio_interp_no = QPushButton('NO')
+        # self.radio_interp_yes.setCheckable(True)
+        # self.radio_interp_no.setCheckable(True)
+        # Exclusive group:
+        # self.interp_btn_group = QButtonGroup()
+        # self.interp_btn_group.addButton(self.radio_interp_yes)
+        # self.interp_btn_group.addButton(self.radio_interp_no)
+        # self.interp_btn_group.setExclusive(True)
 
-        lab = QLabel("Comment/Explanation"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        sidebar_layout.addWidget(lab)
-        self.comment_box = QTextEdit()
-        self.comment_box.setMaximumHeight(40)  
-        self.comment_box.setStyleSheet(font_css)
-        sidebar_layout.addWidget(self.comment_box)
 
-        lab = QLabel("Is this Cardiac Arrest?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        sidebar_layout.addWidget(lab)
+        # self.radio_interp_yes.setStyleSheet(block_css)
+        # self.radio_interp_no.setStyleSheet(block_css)
+
+        # # --- Layout for Interpretable ---
+        # interp_row = QHBoxLayout()
+        # interp_row.addWidget(self.radio_interp_yes)
+        # interp_row.addWidget(self.radio_interp_no)
+        # sidebar_layout.addLayout(interp_row)
+
+        # lab = QLabel("Comment/Explanation"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # sidebar_layout.addWidget(lab)
+        # self.comment_box = QTextEdit()
+        # self.comment_box.setMaximumHeight(40)  
+        # self.comment_box.setStyleSheet(font_css)
+        # sidebar_layout.addWidget(self.comment_box)
+
+        # lab = QLabel("Is this Cardiac Arrest?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # sidebar_layout.addWidget(lab)
 
         # self.cardiac_arrest_yes = QRadioButton("Yes"); self.cardiac_arrest_no = QRadioButton("No")
         # self.cardiac_arrest_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
         # self.cardiac_arrest_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
         # ca_row = QHBoxLayout(); ca_row.addWidget(self.cardiac_arrest_yes); ca_row.addWidget(self.cardiac_arrest_no)
         # sidebar_layout.addLayout(ca_row)
-        self.cardiac_arrest_yes = QPushButton('YES')
-        self.cardiac_arrest_no = QPushButton('NO')
-        self.cardiac_arrest_yes.setCheckable(True)
-        self.cardiac_arrest_no.setCheckable(True)
-        self.ca_btn_group = QButtonGroup()
-        self.ca_btn_group.addButton(self.cardiac_arrest_yes)
-        self.ca_btn_group.addButton(self.cardiac_arrest_no)
-        self.ca_btn_group.setExclusive(True)
-        self.cardiac_arrest_yes.setStyleSheet(block_css)
-        self.cardiac_arrest_no.setStyleSheet(block_css)
-        ca_row = QHBoxLayout()
-        ca_row.addWidget(self.cardiac_arrest_yes)
-        ca_row.addWidget(self.cardiac_arrest_no)
-        sidebar_layout.addLayout(ca_row)
+        # self.cardiac_arrest_yes = QPushButton('YES')
+        # self.cardiac_arrest_no = QPushButton('NO')
+        # self.cardiac_arrest_yes.setCheckable(True)
+        # self.cardiac_arrest_no.setCheckable(True)
+        # self.ca_btn_group = QButtonGroup()
+        # self.ca_btn_group.addButton(self.cardiac_arrest_yes)
+        # self.ca_btn_group.addButton(self.cardiac_arrest_no)
+        # self.ca_btn_group.setExclusive(True)
+        # self.cardiac_arrest_yes.setStyleSheet(block_css)
+        # self.cardiac_arrest_no.setStyleSheet(block_css)
+        # ca_row = QHBoxLayout()
+        # ca_row.addWidget(self.cardiac_arrest_yes)
+        # ca_row.addWidget(self.cardiac_arrest_no)
+        # sidebar_layout.addLayout(ca_row)
 
-        lab = QLabel("Is this CPR?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        # --- CPR Question ---
+        # Container widget for highlight area
+        lab = QLabel("Is this CPR?")
+        lab.setStyleSheet(f"""
+            font-size:18px;
+            font-weight:bold;
+            color:{UM_BLUE};
+            border-bottom: 3px solid {UM_MAIZE};
+        """)
+        lab.setFixedHeight(25)
+        lab.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(lab)
 
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        # Old way of showing buttons
         # self.cpr_yes = QRadioButton("Yes"); self.cpr_no = QRadioButton("No")
         # self.cpr_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
         # self.cpr_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
@@ -150,23 +238,71 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # sidebar_layout.addLayout(cpr_row)
         self.cpr_yes = QPushButton('YES')
         self.cpr_no = QPushButton('NO')
+        self.cpr_U2D = QPushButton('Unable to Determine')
         self.cpr_yes.setCheckable(True)
         self.cpr_no.setCheckable(True)
-        self.cpr_btn_group = QButtonGroup()
-        self.cpr_btn_group.addButton(self.cpr_yes)
-        self.cpr_btn_group.addButton(self.cpr_no)
-        self.cpr_btn_group.setExclusive(True)
+        self.cpr_U2D.setCheckable(True)
+        self.cpr_group = QButtonGroup()
+        self.cpr_group.addButton(self.cpr_yes)
+        self.cpr_group.addButton(self.cpr_no)
+        self.cpr_group.addButton(self.cpr_U2D)
+        self.cpr_group.setExclusive(True)
         self.cpr_yes.setStyleSheet(block_css)
         self.cpr_no.setStyleSheet(block_css)
-        cpr_row = QHBoxLayout()
-        cpr_row.addWidget(self.cpr_yes)
-        cpr_row.addWidget(self.cpr_no)
-        sidebar_layout.addLayout(cpr_row)
+        self.cpr_U2D.setStyleSheet(block_css)
 
+        # cpr_row = QHBoxLayout()
+        # cpr_row.addWidget(self.cpr_yes)
+        # cpr_row.addWidget(self.cpr_no)
 
-        lab = QLabel("Rhythm Type"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        cpr_vert = QVBoxLayout()
+        cpr_vert.addWidget(self.cpr_yes)
+        cpr_vert.addWidget(self.cpr_no)
+        cpr_vert.addWidget(self.cpr_U2D)
+        sidebar_layout.addLayout(cpr_vert)
+
+        # --- Rhythm type Question ---
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
+        sidebar_layout.addWidget(sep)
+
+        lab = QLabel("Rhythm Type"); 
+        lab.setStyleSheet(f"""
+            font-size:18px;
+            font-weight:bold;
+            color:{UM_BLUE};
+            border-bottom: 3px solid {UM_MAIZE};
+        """)
+        lab.setFixedHeight(25)
+        lab.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(lab)
-        self.rhythm_dropdown = QComboBox(); self.rhythm_dropdown.setStyleSheet(font_css)
+
+        # Horizontal separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:2px;")
+        sidebar_layout.addWidget(sep)
+
+        # --- Rhythm type dropdown ---
+        self.rhythm_dropdown = QComboBox(); 
+        self.rhythm_dropdown.setStyleSheet("""
+            QComboBox {
+                font-size: 13px;
+                color: #00274C;          /* Normal - UM Blue */
+                background: #FFFFFF;
+                border: 1px solid #285680;
+                border-radius: 4px;
+            }
+            QComboBox:disabled {
+                color: #888888;          /* Gray text */
+                background: #f2f2f2;     /* Light gray background */
+                border: 1px solid #CCCCCC;
+            }
+        """)
         self.rhythm_dropdown.addItems([
             "Normal Heart Rhythm", "Sinus tachycardia", "Bradycardia",
             "Supraventricular tachycardia", "Atrial Flutter", "Atrial Fibrillation",
@@ -176,9 +312,19 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         ])
         sidebar_layout.addWidget(self.rhythm_dropdown)
 
-        lab = QLabel("Rhythm Explanation"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+        # --- Rhythm explanation (If "Unable to Determine" or "Other")---
+        lab = QLabel("Signal Explanation"); 
+        lab.setStyleSheet(f"""
+            font-size:18px;
+            font-weight:bold;
+            color:{UM_BLUE};
+            border-bottom: 3px solid {UM_MAIZE};
+        """)
+        lab.setFixedHeight(25)
+        lab.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(lab)
 
+        # --- Rhythm Explanation Box ---
         self.rhythm_explanation = QTextEdit()
         self.rhythm_explanation.setMaximumHeight(40)  
         self.rhythm_explanation.setStyleSheet(font_css)
@@ -196,38 +342,68 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # navrow.addWidget(self.prev_btn); navrow.addWidget(self.next_btn)
         # sidebar_layout.addLayout(navrow)
 
-        self.mark_btn = QPushButton("Mark"); self.mark_btn.setStyleSheet(
-            f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
+        # --- Marking button ---
+        self.mark_btn = QPushButton("Mark"); 
+        self.mark_btn.setMinimumHeight(48)
+        self.mark_btn.setMinimumWidth(160)
+        self.mark_btn.setStyleSheet(f"""
+            background: {UM_BLUE};
+            color: {UM_MAIZE};
+            font-size: 20px;
+            font-weight: bold;
+            border-radius: 8px;
+            padding: 8px 32px;
+        """)
         sidebar_layout.addWidget(self.mark_btn)
-        self.mark_warning = QLabel(""); sidebar_layout.addWidget(self.mark_warning); self.mark_warning.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
+
+        # --- Marking warning label ---
+        self.mark_warning = QLabel("")
+        self.mark_warning.setWordWrap(True)
+        self.mark_warning.setStyleSheet(f"font-size:24px; font-weight:bold; color:{UM_RED};")
+        self.mark_warning.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        sidebar_layout.addWidget(self.mark_warning)
         # saved_ann = sidebar_layout.addWidget(QLabel("Saved Annotations:")); saved_ann.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        self.save_all_btn = QPushButton("Save All Annotations"); self.save_all_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
+
+        # --- Save All Annotation button ---
+        self.save_all_btn = QPushButton("Save All Annotations"); 
+        self.save_all_btn.setMinimumHeight(24)
+        self.save_all_btn.setMinimumWidth(160)
+        self.save_all_btn.setStyleSheet(f"""
+            background: {UM_BLUE};
+            color: {UM_MAIZE};
+            font-size: 20px;
+            font-weight: bold;
+            border-radius: 8px;
+            padding: 8px 32px;
+        """)
         sidebar_layout.addWidget(self.save_all_btn)
         self.save_message = QLabel(""); sidebar_layout.addWidget(self.save_message)
 
-        self.interp_group = QButtonGroup()
-        self.interp_group.addButton(self.radio_interp_yes)
-        self.interp_group.addButton(self.radio_interp_no)
-        self.interp_group.setExclusive(True)
+        # self.interp_group = QButtonGroup()
+        # self.interp_group.addButton(self.radio_interp_yes)
+        # self.interp_group.addButton(self.radio_interp_no)
+        # self.interp_group.setExclusive(True)
 
-        self.ca_group = QButtonGroup()
-        self.ca_group.addButton(self.cardiac_arrest_yes)
-        self.ca_group.addButton(self.cardiac_arrest_no)
-        self.ca_group.setExclusive(True)
+        # self.ca_group = QButtonGroup()
+        # self.ca_group.addButton(self.cardiac_arrest_yes)
+        # self.ca_group.addButton(self.cardiac_arrest_no)
+        # self.ca_group.setExclusive(True)
 
-        self.cpr_group = QButtonGroup()
-        self.cpr_group.addButton(self.cpr_yes)
-        self.cpr_group.addButton(self.cpr_no)
-        self.cpr_group.setExclusive(True)
+        # self.cpr_group = QButtonGroup()
+        # self.cpr_group.addButton(self.cpr_yes)
+        # self.cpr_group.addButton(self.cpr_no)
+        # self.cpr_group.addButton(self.cpr_U2D)
+        # self.cpr_group.setExclusive(True)
 
         sidebar_layout.setSpacing(4)
         sidebar_layout.setContentsMargins(4, 2, 4, 2)
 
-        # --- MAIN PANEL Layout ---
+        # --- MAIN PANEL Layout (For Plots)---
         main_panel = QWidget()
         main_layout = QVBoxLayout(main_panel)
         main_panel.setStyleSheet(f"background-color: {UM_WHITE}; border:none;")
 
+        # -- Base folder selection row ---
         folderrow = QHBoxLayout()
         folderlab = QLabel("Select Base Data Folder:"); folderlab.setStyleSheet(f"font-size:13px; color:{UM_ACCENT}; font-weight: bold;")
         folderrow.addWidget(folderlab)
@@ -237,6 +413,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         folderrow.addWidget(self.set_folder_btn)
         main_layout.addLayout(folderrow)
 
+        # -- Folder status label --
         self.folder_status = QLabel("")
         self.folder_status.setStyleSheet(f"font-size:12px; color:{UM_BLUE}; margin-top:0px; margin-bottom:0px; font-weight:bold;")
         main_layout.addWidget(self.folder_status)
@@ -253,9 +430,11 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # self.x_scrollbar.setStyleSheet(f"background:{UM_ACCENT};")
         # main_layout.addWidget(self.x_scrollbar)
 
+        # ---- Waveform plots State Variable ----
         self.waveform_plots = []
         self.y_zoom_buttons = []
 
+        # ---- Create (up to) 7 waveform plots with Y+ / Y– buttons ----
         for lead_idx in range(7):
             plt = pg.PlotWidget()
             plt.setBackground(UM_WHITE)
@@ -266,7 +445,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             if lead_idx != 6:
                 plt.hideAxis('bottom')
 
-            # Create small Y+ / Y– buttons
+            # Create small Y+ / Y– buttons (changes Y axis scale)
             y_up_btn = QPushButton("Y-IN")
             y_down_btn = QPushButton("Y-OUT")
             self.y_zoom_buttons.append((y_down_btn, y_up_btn))
@@ -308,10 +487,9 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         for plt in self.waveform_plots[1:]:
             plt.setXLink(self.waveform_plots[0])
 
-        self.ann_table = QTableWidget(0, 10)
+        self.ann_table = QTableWidget(0, 7)
         self.ann_table.setHorizontalHeaderLabels([
-            "User", "Subject", "Interpretable", "NonInterp Exp.", "Cardiac Arrest", "CPR", "Rhythm",
-             "Rhythm Exp.", "Start", "End"
+            "User", "Subject", "CPR", "Rhythm", "Signal Exp.", "Start", "End"
         ])
         self.ann_table.horizontalHeader().setStyleSheet(
             f"color:{UM_BLUE}; font-size:13px; background-color:{UM_MAIZE}; font-weight:bold;")
@@ -325,6 +503,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.ann_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         main_layout.addWidget(self.ann_table, stretch=1)
 
+        # --- Set main window layout ---
         container = QWidget()
         container_layout = QHBoxLayout(container)
         container_layout.addWidget(sidebar)
@@ -342,63 +521,69 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.save_all_btn.clicked.connect(self.save_all_to_file)
         self.mark_btn.clicked.connect(self.handle_mark_clicked)
 
-        self.radio_interp_yes.toggled.connect(self.update_sidebar_ui)
-        self.radio_interp_no.toggled.connect(self.update_sidebar_ui)
-        self.cardiac_arrest_yes.toggled.connect(self.update_sidebar_ui)
-        self.cardiac_arrest_no.toggled.connect(self.update_sidebar_ui)
+        # self.radio_interp_yes.toggled.connect(self.update_sidebar_ui)
+        # self.radio_interp_no.toggled.connect(self.update_sidebar_ui)
+        # self.cardiac_arrest_yes.toggled.connect(self.update_sidebar_ui)
+        # self.cardiac_arrest_no.toggled.connect(self.update_sidebar_ui)
         self.cpr_yes.toggled.connect(self.update_sidebar_ui)
         self.cpr_no.toggled.connect(self.update_sidebar_ui)
         self.rhythm_dropdown.currentTextChanged.connect(self.update_sidebar_ui)
-        self.comment_box.textChanged.connect(self.update_sidebar_ui)
+        # self.comment_box.textChanged.connect(self.update_sidebar_ui)
         self.rhythm_explanation.textChanged.connect(self.update_sidebar_ui)
         self.username_input.textChanged.connect(self.update_sidebar_ui)
         # self.win_size.valueChanged.connect(self.update_waveform_and_mark)
         # self.x_scrollbar.valueChanged.connect(self.handle_x_scrollbar)
 
-        # Autosave
+        # --- Autosave Annotation timer (every 2 minutes) ---
         self.autosave_timer = QTimer(self)
         self.autosave_timer.timeout.connect(self.autosave_annotations)
         self.autosave_timer.start(2*60*1000)
 
+        # ---- UI update ----
         self.update_sidebar_ui()
         self.update_table_data()
 
     # ---- Helper functions for your callbacks.py ----
-    def get_interp_val(self):
-        if self.radio_interp_yes.isChecked():
-            return "Yes"
-        elif self.radio_interp_no.isChecked():
-            return "No"
-        else:
-            return None
+    # def get_interp_val(self):
+    #     if self.radio_interp_yes.isChecked():
+    #         return "Yes"
+    #     elif self.radio_interp_no.isChecked():
+    #         return "No"
+    #     else:
+    #         return None
 
-    def get_ca_val(self):
-        if self.cardiac_arrest_yes.isChecked():
-            return "Yes"
-        elif self.cardiac_arrest_no.isChecked():
-            return "No"
-        else:
-            return None
+    # def get_ca_val(self):
+    #     if self.cardiac_arrest_yes.isChecked():
+    #         return "Yes"
+    #     elif self.cardiac_arrest_no.isChecked():
+    #         return "No"
+    #     else:
+    #         return None
 
     def get_cpr_val(self):
         if self.cpr_yes.isChecked():
             return "Yes"
         elif self.cpr_no.isChecked():
             return "No"
+        elif self.cpr_U2D.isChecked():
+            return "Unable to Determine"
         else:
             return None
 
-    def clear_cardiac_arrest(self):
-        self.cardiac_arrest_yes.setAutoExclusive(False)
-        self.cardiac_arrest_yes.setChecked(False)
-        self.cardiac_arrest_no.setChecked(False)
-        self.cardiac_arrest_yes.setAutoExclusive(True)
+    # def clear_cardiac_arrest(self):
+    #     self.cardiac_arrest_yes.setAutoExclusive(False)
+    #     self.cardiac_arrest_yes.setChecked(False)
+    #     self.cardiac_arrest_no.setChecked(False)
+    #     self.cardiac_arrest_yes.setAutoExclusive(True)
 
     def clear_cpr(self):
-        self.cpr_yes.setAutoExclusive(False)
         self.cpr_yes.setChecked(False)
         self.cpr_no.setChecked(False)
-        self.cpr_yes.setAutoExclusive(True)
+        self.cpr_U2D.setChecked(False)
+        self.cpr_yes.setAutoExclusive(False)
+        self.cpr_no.setAutoExclusive(False)
+        self.cpr_U2D.setAutoExclusive(False)
+        # self.cpr_yes.setAutoExclusive(True)
 
 
     # def handle_mark_clicked(self):
