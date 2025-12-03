@@ -58,6 +58,7 @@ class AnnotationAppCallbacks:
         self.folder_status.setText(f"📂 Base folder set: {folder_path}")
         self.update_subject_dropdown()
 
+
     def update_subject_dropdown(self):
         base_folder = getattr(self, 'base_folder', None)
         combo = self.subject_dropdown
@@ -82,6 +83,7 @@ class AnnotationAppCallbacks:
             combo.addItem(label, userData=subj["name"])
         combo.setDisabled(False)
 
+
     def autoscale_y(self, plot, signal):
         """
         Autoscale the y-axis of the given PlotWidget to fit the central 99% of signal values,
@@ -100,6 +102,7 @@ class AnnotationAppCallbacks:
         y_min = -half_span - margin
         y_max = half_span + margin
         plot.setYRange(y_min, y_max, padding=0)
+
 
     def adjust_y_scale(self, plot_idx, zoom="up"):
         """
@@ -123,6 +126,7 @@ class AnnotationAppCallbacks:
         new_min = center - new_span / 2
         new_max = center + new_span / 2
         plt.setYRange(new_min, new_max, padding=0)
+
 
     def plot_event_markers(self):
         """
@@ -209,7 +213,6 @@ class AnnotationAppCallbacks:
             vline = pg.InfiniteLine(pos=self.recording_end_sec, angle=90, pen=event_pen)
             vline.is_event_marker = True
             plot.addItem(vline)
-            
 
 
     def plot_all_leads(self):
@@ -266,8 +269,6 @@ class AnnotationAppCallbacks:
          # Plot event markers AFTER plotting leads
         if hasattr(self, 'manifest_events') and self.manifest_events is not None:
             self.plot_event_markers()
-
-
 
 
     def load_subject_data(self):
@@ -342,6 +343,7 @@ class AnnotationAppCallbacks:
 
         self.update_waveform_and_mark()
         self.update_table_data()
+
 
     def update_sidebar_ui(self):
         # --- Clear sidebar after marking ---
@@ -476,6 +478,7 @@ class AnnotationAppCallbacks:
         self.mark_warning.setWordWrap(True)
         self.mark_btn.setDisabled(bool(warnings))
 
+
     def make_plot_click_handler(self, lead_idx):
         def handler(mouse_event):
             if mouse_event.button() != Qt.LeftButton:
@@ -498,6 +501,7 @@ class AnnotationAppCallbacks:
                 print(f"Ignored click at {t_clicked:.2f} (must be after last_mark={self.last_mark:.2f})")
         return handler
 
+
     def handle_x_scrollbar(self, value):
         window_width = self.win_size.value()
         x_min = value
@@ -505,6 +509,7 @@ class AnnotationAppCallbacks:
         for plt in self.waveform_plots:
             plt.setXRange(x_min, x_max, padding=0)
     
+
     def handle_mark_clicked(self):
         print("handle_mark_clicked CALLED")
         if (
@@ -517,9 +522,6 @@ class AnnotationAppCallbacks:
             ann = {
                 "user": self.username_input.text(),
                 "subject": self.subject_dropdown.currentData(),
-                # "interp": self.get_interp_val(),
-                # "comment": self.comment_box.toPlainText(),
-                # "ca": self.get_ca_val(),
                 "cpr": self.get_cpr_val(),
                 "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
                 "rhythm_expl": self.rhythm_explanation.toPlainText(),
@@ -541,6 +543,7 @@ class AnnotationAppCallbacks:
         self.update_waveform_and_mark()
         self.update_table_data()
         print("Current ANNOTATIONS LIST after marking:", self.annotations)
+
 
     def update_table_data(self):
         self.ann_table.setRowCount(len(self.annotations))
@@ -565,144 +568,6 @@ class AnnotationAppCallbacks:
                 item = QTableWidgetItem(str(value))
                 self.ann_table.setItem(idx, col, item)
 
-    # def update_waveform_and_mark(self):
-    #     data_store = self.data_store
-    #     annotations = getattr(self, "annotations", [])
-    #     window_size = float(self.win_size.value())
-    #     x_scroll_val = float(self.x_scrollbar.value())
-    #     marker = getattr(self, "current_marker", None)
-    #     last_mark = getattr(self, "last_mark", 0.0)
-    #     user_name = self.username_input.text()
-    #     subject_selected = self.subject_dropdown.currentData()
-    #     interpretability = self.get_interp_val()
-    #     cardiac_arrest = self.get_ca_val()
-    #     cpr_status = self.get_cpr_val()
-    #     rhythm_label = self.rhythm_dropdown.currentText()
-    #     comment_box = self.comment_box.toPlainText()
-    #     rhythm_explanation = self.rhythm_explanation.toPlainText()
-    #     n_mark = getattr(self, "n_mark_clicks", 0)
-
-    #     # Data load/empty state
-    #     if not data_store or "time" not in data_store or not data_store["time"]:
-    #         for plot in self.waveform_plots:
-    #             plot.clear()
-    #             plot.setTitle("No Data Loaded")
-    #         self.set_scrollbar_range(0, 100, 0)
-    #         self.annotations = []
-    #         return
-
-    #     # times = np.array(data_store["time"])
-    #     # time_axis = times[0]   # Use first lead's time axis
-    #     # # time_relative = times - times[0] if len(times) > 0 else times
-    #     # time_relative = time_axis - time_axis[0]
-    #     # leads = [np.array(l) for l in data_store["leads"]]
-    #     # lead_names = data_store["lead_names"]
-
-    #     # --- Marking/Annotation Append logic ---
-    #     if getattr(self, "triggered_by_mark_btn", False):
-    #         can_save = True
-    #         try:
-    #             start = float(last_mark)
-    #             end = float(marker)
-    #             can_save = (
-    #                 marker is not None and
-    #                 end > start and
-    #                 (end - start) >= 1.0 and
-    #                 user_name and user_name.strip() and
-    #                 interpretability in ("Yes", "No") and
-    #                 (interpretability != "No" or (comment_box and comment_box.strip()))
-    #             )
-    #         except Exception:
-    #             can_save = False
-
-    #         if can_save:
-    #             annotation = {
-    #                 "user_name": user_name,
-    #                 "subject": subject_selected,
-    #                 "interpretable": interpretability,
-    #                 "cardiac_arrest": cardiac_arrest if interpretability == "Yes" else None,
-    #                 "cpr_status": cpr_status if interpretability == "Yes" and cardiac_arrest == "Yes" else None,
-    #                 "rhythm_label": rhythm_label if interpretability == "Yes" and cardiac_arrest == "No" else None,
-    #                 "noninterp_explanation": comment_box,
-    #                 "rhythm_explanation": rhythm_explanation,
-    #                 "start": start,
-    #                 "end": end
-    #             }
-    #             annotations = annotations + [annotation]
-    #             last_mark = end
-    #             marker = None
-    #             self.annotations = annotations
-    #             self.last_mark = last_mark
-    #             self.current_marker = marker
-    #             self.update_table_data()
-
-    #     times = np.array(data_store["time"])
-    #     if len(times.shape) == 2:
-    #         time_axis = times[0]
-    #     else:
-    #         time_axis = times  # Already 1D
-    #     time_relative = time_axis - time_axis[0]
-    #     t_min, t_max = float(time_relative[0]), float(time_relative[-1])
-
-    #     # Use leads as list-of-1D numpy arrays:
-    #     leads = [np.array(l) for l in data_store["leads"]]
-    #     lead_names = data_store["lead_names"]
-
-    #     t_min, t_max = float(time_relative[0]), float(time_relative[-1])
-    #     x_scroll_min = t_min
-    #     x_scroll_max = max(t_max - window_size, t_min)
-    #     x_scroll_val = np.clip(x_scroll_val, x_scroll_min, x_scroll_max)
-    #     left = x_scroll_val
-    #     right = min(x_scroll_val + window_size, t_max)
-
-    #     Fs = 240.0
-    #     desired_fs = 80.0
-    #     stride = int(np.floor(Fs / desired_fs))
-    #     stride = max(stride, 1)
-
-    #     # --- Plotting Section ---
-    #     for i, (plot, sig, name) in enumerate(zip(self.waveform_plots, leads, lead_names)):
-    #         plot.clear()
-    #         plot.setTitle(name)
-    #         plot.scene().sigMouseClicked.connect(self.make_plot_click_handler(i))
-    #         # --- Ensure signal is 1D ---
-    #         sig = np.asarray(sig)
-    #         if sig.ndim == 2:
-    #             print(f"Lead {i}: signal has shape {sig.shape} (should be 1D) -- using first row/col")
-    #             if sig.shape[0] == 1:
-    #                 sig = sig[0]
-    #             elif sig.shape[1] == 1:
-    #                 sig = sig[:,0]
-    #             else:
-    #                 sig = sig[i]  # fallback: try ith signal (matches time axis)
-    #         assert sig.ndim == 1, f"sig after reshape is {sig.shape}"
-    #         # --- Index times for window ---
-    #         plot_times = time_axis - time_axis[0]
-    #         idx = (plot_times >= left) & (plot_times <= right)
-    #         if np.sum(idx) == 0:
-    #             continue  # Nothing in window
-    #         ds_times = plot_times[idx][::stride]
-    #         ds_sig = sig[idx][::stride]
-    #         print(f"Lead {i}: times {ds_times.shape} sig {ds_sig.shape}")
-    #         plot.plot(ds_times, ds_sig, pen='b', name=name)
-    #         # Draw marker if present
-    #         if marker is not None and left <= marker <= right:
-    #             vline = pg.InfiniteLine(marker, angle=90, pen='r')
-    #             plot.addItem(vline)
-    #         # Add annotations (rect/vline)
-    #         for ann in annotations:
-    #             color = LABEL_COLORS.get(ann.get("rhythm_label", ""), DEFAULT_COLOR)
-    #             start, end = ann["start"], ann["end"]
-    #             if end < left or start > right:
-    #                 continue
-    #             rect = pg.LinearRegionItem([max(left, start), min(right, end)],
-    #                                     brush=pg.mkBrush(color, 50), movable=False)
-    #             plot.addItem(rect)
-    #             vline = pg.InfiniteLine(end, angle=90, pen=pg.mkPen('k', style=pg.QtCore.Qt.DotLine))
-    #             plot.addItem(vline)
-    #         # plot.setXRange(left, right)
-    #     self.waveform_plots[0].setXRange(left, right, padding=0)
-    #     self.set_scrollbar_range(x_scroll_min, x_scroll_max, x_scroll_val)
 
     def update_waveform_and_mark(self):
         marker = getattr(self, "current_marker", None)
@@ -776,7 +641,7 @@ class AnnotationAppCallbacks:
                 marker_line.is_marker = True
                 plot.addItem(marker_line)
 
-        # ---- Optional: restrict scroll/zoom to X only ----
+        # ---- Restrict scroll/zoom to X only ----
         for plot in self.waveform_plots:
             plot.getViewBox().setMouseEnabled(x=True, y=False)
             # Optionally: autoscale y range for each plot
@@ -790,28 +655,6 @@ class AnnotationAppCallbacks:
         self.x_scrollbar.setValue(int(val))
         self.x_scrollbar.blockSignals(False)
 
-    # def update_table_data(self):
-    #     annotations = getattr(self, "annotations", [])
-    #     table = self.ann_table
-    #     table.setRowCount(0)
-    #     if not annotations:
-    #         return
-    #     table.setRowCount(len(annotations))
-    #     for row, a in enumerate(annotations):
-    #         fields = [
-    #             a.get("user_name", ""),
-    #             a.get("subject", ""),
-    #             a.get("interpretable", ""),
-    #             a.get("cardiac_arrest", ""),
-    #             a.get("cpr_status", ""),
-    #             a.get("rhythm_label", ""),
-    #             a.get("noninterp_explanation", ""),
-    #             a.get("rhythm_explanation", ""),
-    #             f"{float(a.get('start', 0)):.2f}",
-    #             f"{float(a.get('end', 0)):.2f}",
-    #         ]
-    #         for col, value in enumerate(fields):
-    #             table.setItem(row, col, QTableWidgetItem(str(value)))
 
     def save_all_to_file(self):
         annotations = getattr(self, "annotations", [])
@@ -833,6 +676,7 @@ class AnnotationAppCallbacks:
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Saved to {fullpath}")
 
+
     def autosave_annotations(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
@@ -848,20 +692,6 @@ class AnnotationAppCallbacks:
         self.save_message.setText(f"Autoaved to {fullpath}")
 
     # --- Utility slots for GUI logic that you will implement: ---
-    # def get_interp_val(self):
-    #     if self.radio_interp_yes.isChecked():
-    #         return "Yes"
-    #     if self.radio_interp_no.isChecked():
-    #         return "No"
-    #     return None
-
-    # def get_ca_val(self):
-    #     if self.cardiac_arrest_yes.isChecked():
-    #         return "Yes"
-    #     if self.cardiac_arrest_no.isChecked():
-    #         return "No"
-    #     return None
-
     def get_cpr_val(self):
         if self.cpr_yes.isChecked():
             return "Yes"
@@ -870,14 +700,7 @@ class AnnotationAppCallbacks:
         if self.cpr_U2D.isChecked():
             return "Unable to Determine"
         return None
-    
-    # def clear_cardiac_arrest(self):
-    #     self.cardiac_arrest_yes.setAutoExclusive(False)
-    #     self.cardiac_arrest_no.setAutoExclusive(False)
-    #     self.cardiac_arrest_yes.setChecked(False)
-    #     self.cardiac_arrest_no.setChecked(False)
-    #     self.cardiac_arrest_yes.setAutoExclusive(True)
-    #     self.cardiac_arrest_no.setAutoExclusive(True)
+
 
     def clear_cpr(self):
         self.cpr_group.setExclusive(False)
@@ -888,14 +711,3 @@ class AnnotationAppCallbacks:
         self.cpr_yes.setDisabled(True)
         self.cpr_no.setDisabled(True)
         self.cpr_U2D.setDisabled(True)
-
-# ---- Example connections (in __init__): -----
-# self.set_folder_btn.clicked.connect(self.set_base_folder)
-# self.load_subject_btn.clicked.connect(self.load_subject_data)
-# self.save_all_btn.clicked.connect(self.save_all_to_file)
-# self.waveform_plot_* / all fields: connect value/changed signals to update_sidebar_ui as needed
-# Call update_waveform_and_mark() on window/scrollbar/plot click, etc.
-# Call update_table_data() when annotations change
-
-# ---- Subclass or Mixin pattern -----
-# class MainApp(QMainWindow, AnnotationAppCallbacks): ...
