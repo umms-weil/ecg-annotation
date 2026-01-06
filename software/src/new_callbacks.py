@@ -117,14 +117,40 @@ class AnnotationAppCallbacks:
         y_min, y_max = plt.viewRange()[1]
         center = (y_min + y_max) / 2
         span = (y_max - y_min) or 1.0
-        if zoom == "up":
+        if zoom == "in":
             new_span = span * 0.8  # Zoom in
-        elif zoom == "down":
+        elif zoom == "out":
             new_span = span * 1.25 # Zoom out
         else:
             new_span = span
         new_min = center - new_span / 2
         new_max = center + new_span / 2
+        plt.setYRange(new_min, new_max, padding=0)
+
+    def shift_y_scale(self, plot_idx, shift="up"):
+        """
+        Shifts the Y-axis center of the selected PlotWidget by moving it up or down.
+        Shifts by moving Y range (shift="up"), or zooms out by expanding (shift="down").
+
+        Parameters:
+        - plot_idx: Index of the PlotWidget to adjust
+        - shift: "up" to shift up (move center up), "down" to shift down (move center down)
+        """
+        plt = self.waveform_plots[plot_idx]
+        y_min, y_max = plt.viewRange()[1]
+        span = (y_max - y_min) or 1.0
+        center = (y_min + y_max) / 2
+        shift_amount = span * 0.2  # 20% of current span
+
+        if shift == "up":
+            new_center = center + shift_amount
+        elif shift == "down":
+            new_center = center - shift_amount
+        else:
+            new_center = center
+
+        new_min = new_center - span / 2
+        new_max = new_center + span / 2
         plt.setYRange(new_min, new_max, padding=0)
 
 
