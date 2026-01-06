@@ -432,7 +432,8 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         # ---- Waveform plots State Variable ----
         self.waveform_plots = []
-        self.y_zoom_buttons = []
+        self.y_shift_buttons = []  # To store Y+ / Y– buttons for each plot
+        self.y_zoom_buttons = [] # To store Y-IN / Y–Out buttons for each plot
 
         # ---- Create (up to) 7 waveform plots with Y+ / Y– buttons ----
         for lead_idx in range(7):
@@ -446,9 +447,17 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
                 plt.hideAxis('bottom')
 
             # Create small Y+ / Y– buttons (changes Y axis scale)
-            y_up_btn = QPushButton("Y-IN")
-            y_down_btn = QPushButton("Y-OUT")
-            self.y_zoom_buttons.append((y_down_btn, y_up_btn))
+            y_in_btn = QPushButton("Y-IN")
+            y_out_btn = QPushButton("Y-OUT")
+            self.y_zoom_buttons.append((y_out_btn, y_in_btn))
+            # Smaller styling
+            y_in_btn.setStyleSheet(f"font-size: 11pt ;color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 26px;")
+            y_out_btn.setStyleSheet(f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 20px;")
+
+            # Create small YU / YD buttons (changes Y axis scale)
+            y_up_btn = QPushButton("Y+")
+            y_down_btn = QPushButton("Y-")
+            self.y_shift_buttons.append((y_down_btn, y_up_btn))
             # Smaller styling
             y_up_btn.setStyleSheet(f"font-size: 11pt ;color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 26px;")
             y_down_btn.setStyleSheet(f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 20px;")
@@ -457,6 +466,8 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             btn_col = QVBoxLayout()
             btn_col.setSpacing(1)
             btn_col.setContentsMargins(0,0,0,0)
+            btn_col.addWidget(y_out_btn)
+            btn_col.addWidget(y_in_btn)
             btn_col.addWidget(y_up_btn)
             btn_col.addWidget(y_down_btn)
 
@@ -475,11 +486,16 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             main_layout.addWidget(plot_row)
             self.waveform_plots.append(plt)
 
-        # Connect buttons to handlers
-        for idx, (down_btn, up_btn) in enumerate(self.y_zoom_buttons):
-            down_btn.clicked.connect(lambda _, i=idx: self.adjust_y_scale(i, zoom="down"))
-            up_btn.clicked.connect(lambda _, i=idx: self.adjust_y_scale(i, zoom="up"))
-        
+        # Connect Shift buttons to handlers
+        for idx_shift, (down_btn, up_btn) in enumerate(self.y_shift_buttons):
+            down_btn.clicked.connect(lambda _, i=idx_shift: self.shift_y_scale(i, shift="down"))
+            up_btn.clicked.connect(lambda _, i=idx_shift: self.shift_y_scale(i, shift="up"))
+
+        # Connect Zoom buttons to handlers
+        for idx_zoom, (out_btn, in_btn) in enumerate(self.y_zoom_buttons):
+            out_btn.clicked.connect(lambda _, i=idx_zoom: self.adjust_y_scale(i, zoom="out"))
+            in_btn.clicked.connect(lambda _, i=idx_zoom: self.adjust_y_scale(i, zoom="in"))
+
         for i, plt in enumerate(self.waveform_plots):
             plt.scene().sigMouseClicked.connect(self.make_plot_click_handler(i))
 
@@ -495,7 +511,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             f"color:{UM_BLUE}; font-size:13px; background-color:{UM_MAIZE}; font-weight:bold;")
         table_header = self.ann_table.horizontalHeader()
         table_header.setSectionResizeMode(QHeaderView.Stretch)
-        LIGHT_UM_ACCENT = "#e6f0fa"  # or your preferred light color
+        LIGHT_UM_ACCENT = "#e6f0fa" 
         self.ann_table.setStyleSheet(
             f"alternate-background-color: {LIGHT_UM_ACCENT}; background-color:#ffffff; color:{UM_BLUE};")
         self.ann_table.setAlternatingRowColors(True)
