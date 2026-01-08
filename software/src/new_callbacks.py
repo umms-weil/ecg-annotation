@@ -127,6 +127,7 @@ class AnnotationAppCallbacks:
         new_max = center + new_span / 2
         plt.setYRange(new_min, new_max, padding=0)
 
+
     def shift_y_scale(self, plot_idx, shift="up"):
         """
         Shifts the Y-axis center of the selected PlotWidget by moving it up or down.
@@ -296,6 +297,34 @@ class AnnotationAppCallbacks:
         if hasattr(self, 'manifest_events') and self.manifest_events is not None:
             self.plot_event_markers()
 
+
+    def handle_remove_last_mark(self):
+        """
+        Removes the most recent annotation ('last mark') from table and plots.
+        Resets sidebar and markers to previous state or initial if no marks remain.
+        """
+        if not self.annotations:
+            return  # Nothing to remove
+
+        # Remove last annotation
+        removed_ann = self.annotations.pop()
+        print(f"Removed last annotation: {removed_ann}")
+
+        # Reset last_mark to previous annotation end (if any), else initial
+        if self.annotations:
+            self.last_mark = self.annotations[-1]['end']
+        else:
+            # If no annotations, reset to initial state (e.g., start of data or None)
+            self.last_mark = None
+            self.current_marker = None
+
+        # Clear pending marker (you may want to clear other sidebar fields too)
+        self.current_marker = None
+
+        # Update the UI: table, plots, sidebar
+        self.update_table_data()
+        self.update_waveform_and_mark()
+        self.update_sidebar_ui()
 
     def load_subject_data(self):
         subject_idx = self.subject_dropdown.currentIndex()
@@ -503,6 +532,7 @@ class AnnotationAppCallbacks:
         self.mark_warning.setText(warning_msg)
         self.mark_warning.setWordWrap(True)
         self.mark_btn.setDisabled(bool(warnings))
+        self.remove_last_btn.setDisabled(len(self.annotations) == 0)
 
 
     def make_plot_click_handler(self, lead_idx):
@@ -594,6 +624,7 @@ class AnnotationAppCallbacks:
                 item = QTableWidgetItem(str(value))
                 self.ann_table.setItem(idx, col, item)
 
+        self.remove_last_btn.setDisabled(len(self.annotations) == 0)
 
     def update_waveform_and_mark(self):
         marker = getattr(self, "current_marker", None)
