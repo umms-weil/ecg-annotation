@@ -604,21 +604,22 @@ class AnnotationAppCallbacks:
     def update_table_data(self):
         self.ann_table.setRowCount(len(self.annotations))
         for idx, ann in enumerate(self.annotations):
-            # Adjust these keys/fields to match your annotation dict!
             user = ann.get("user", "")
             subject = ann.get("subject", "")
-            interp = ann.get("interp", "")
-            cardiac_arrest = ann.get("ca", "")
             cpr = ann.get("cpr", "")
             rhythm = ann.get("rhythm_label", "")
-            noninterp_expl = ann.get("comment", "")
-            rhythm_expl = ann.get("rhythm_expl", "")
+            signal_exp = ann.get("rhythm_expl", "")
             start = ann.get("start", "")
             end = ann.get("end", "")
 
             row_data = [
-                user, subject, interp, cardiac_arrest, cpr, rhythm,
-                noninterp_expl, rhythm_expl, str(start), str(end)
+                user,
+                subject,
+                cpr,
+                rhythm,
+                signal_exp,
+                str(start),
+                str(end)
             ]
             for col, value in enumerate(row_data):
                 item = QTableWidgetItem(str(value))
