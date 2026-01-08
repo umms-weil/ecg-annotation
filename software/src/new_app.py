@@ -362,6 +362,25 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.mark_warning.setStyleSheet(f"font-size:24px; font-weight:bold; color:{UM_RED};")
         self.mark_warning.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         sidebar_layout.addWidget(self.mark_warning)
+
+        # --- Undo Marking Button ---
+        self.remove_last_btn = QPushButton("Remove Last Mark")
+        self.remove_last_btn.setStyleSheet("""
+            background: #B71234;     /* U-M Red */
+            color: #FFFFFF;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 4px;
+            padding: 8px 16px;
+        """)
+
+        # If no marks have been made, disable the button
+        self.remove_last_btn.setDisabled(True)
+        sidebar_layout.addWidget(self.remove_last_btn)
+
+        # Connect the button to a handler that removes the last mark from the annotations list and updates the UI
+        self.remove_last_btn.clicked.connect(self.handle_remove_last_mark)
+
         # saved_ann = sidebar_layout.addWidget(QLabel("Saved Annotations:")); saved_ann.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
 
         # --- Save All Annotation button ---
@@ -503,6 +522,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         for plt in self.waveform_plots[1:]:
             plt.setXLink(self.waveform_plots[0])
 
+        # --- Annotation Table ---
         self.ann_table = QTableWidget(0, 7)
         self.ann_table.setHorizontalHeaderLabels([
             "User", "Subject", "CPR", "Rhythm", "Signal Exp.", "Start", "End"
@@ -543,6 +563,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # self.cardiac_arrest_no.toggled.connect(self.update_sidebar_ui)
         self.cpr_yes.toggled.connect(self.update_sidebar_ui)
         self.cpr_no.toggled.connect(self.update_sidebar_ui)
+        self.cpr_U2D.toggled.connect(self.update_sidebar_ui)
         self.rhythm_dropdown.currentTextChanged.connect(self.update_sidebar_ui)
         # self.comment_box.textChanged.connect(self.update_sidebar_ui)
         self.rhythm_explanation.textChanged.connect(self.update_sidebar_ui)
