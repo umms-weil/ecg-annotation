@@ -123,6 +123,13 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # self.plot_btn = QPushButton("Plot")
         row.addWidget(self.load_subject_btn); 
         # row.addWidget(self.plot_btn)
+        
+
+        # --- Load Annotations Button ---
+        self.load_annotation_btn = QPushButton("Load Annotations")
+        self.load_annotation_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
+        row.addWidget(self.load_annotation_btn)
+
         sidebar_layout.addLayout(row)
 
         # --- Block styling for Question buttons ---
@@ -554,6 +561,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # -- SIGNALS wiring - same as before
         self.set_folder_btn.clicked.connect(self.set_base_folder)
         self.load_subject_btn.clicked.connect(self.load_subject_data)
+        self.load_annotation_btn.clicked.connect(self.handle_load_annotation)
         self.save_all_btn.clicked.connect(self.save_all_to_file)
         self.mark_btn.clicked.connect(self.handle_mark_clicked)
 

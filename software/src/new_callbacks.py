@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from processing import list_subjects, load_waveforms_for_subject, get_code_time_bounds, get_events_for_window, datetime_string_to_seconds_since_1970
-from PyQt5.QtWidgets import QTableWidgetItem
+from PyQt5.QtWidgets import QTableWidgetItem, QMessageBox
 from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
@@ -325,6 +325,83 @@ class AnnotationAppCallbacks:
         self.update_table_data()
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
+
+    def handle_load_annotation(self):
+        print("LOAD ANNOTATIONS BUTTON CLICKED")
+        user_name = self.username_input.text().strip()
+        subject = self.subject_dropdown.currentData()
+
+        # 1. Username check
+        if not user_name:
+            # Style update, as discussed
+            self.mark_warning.setText("Please enter your User Name before loading annotations.")
+            self.mark_warning.setWordWrap(True)
+            self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
+            return
+
+        if not subject:
+            self.mark_warning.setText("Please select a subject before loading annotations.")
+            self.mark_warning.setWordWrap(True)
+            self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
+            return
+
+        # 2. Build the annotation file path
+        subject_folder = os.path.join(self.base_folder, subject)
+        output_folder = os.path.join(subject_folder, "output")
+        filename = f"annotations_{subject}_{user_name}.csv"
+        fullpath = os.path.join(output_folder, filename)
+
+        # 3. File existence check
+        if not os.path.exists(fullpath):
+            self.mark_warning.setText(
+                f"No previous annotations found for '{user_name}' and subject '{subject}'."
+            )
+            self.mark_warning.setWordWrap(True)
+            self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
+            return
+
+        # 4. Load the annotation file
+        try:
+            df = pd.read_csv(fullpath)
+            # Convert DataFrame to list of dicts for self.annotations
+            # Assumes CSV columns: user, subject, cpr, rhythm_label, rhythm_expl, start, end
+            self.annotations = df.to_dict(orient='records')
+        except Exception as e:
+            self.mark_warning.setText(f"Failed to load annotations: {e}")
+            self.mark_warning.setWordWrap(True)
+            self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
+            return
+
+        # 5. Sync table and plots to match loaded annotations
+        self.update_table_data()
+        self.update_waveform_and_mark()
+        self.update_sidebar_ui()
+
+        # 6. Set marker state for continued marking
+        if self.annotations:
+            self.last_mark = self.annotations[-1]['end']
+            self.current_marker = None  # Reset for next marking
+        else:
+            self.last_mark = None
+            self.current_marker = None
+
+        # 7. Show annotation session resume message and file modification date
+        try:
+            mod_time = os.path.getmtime(fullpath)
+            import datetime
+            dt_str = datetime.datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
+            self.mark_warning.setText(
+                f"Resuming annotation session for '{user_name}' on '{subject}'.\n"
+                f"Last saved: {dt_str}"
+            )
+            self.mark_warning.setStyleSheet("color: #285680; font-size: 13px; font-weight: bold;")
+            self.mark_warning.setWordWrap(True)
+        except Exception:
+            self.mark_warning.setText(
+                f"Resuming annotation session for '{user_name}' on '{subject}'."
+            )
+            self.mark_warning.setStyleSheet("color: #285680; font-size: 13px; font-weight: bold;")
+            self.mark_warning.setWordWrap(True)
 
     def load_subject_data(self):
         subject_idx = self.subject_dropdown.currentIndex()
@@ -717,19 +794,20 @@ class AnnotationAppCallbacks:
     def save_all_to_file(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
+        user_name = self.username_input.text().strip()
         base_folder = getattr(self, "base_folder", None)
+
         if not annotations:
             self.save_message.setText("No annotations to save.")
             return
-        if not subject or not base_folder:
-            self.save_message.setText("Subject or base folder not set.")
+        if not subject or not base_folder or not user_name:
+            self.save_message.setText("Subject, base folder, or User Name not set.")
             return
 
         subject_folder = os.path.join(base_folder, subject)
         output_folder = os.path.join(subject_folder, "output")
         os.makedirs(output_folder, exist_ok=True)
-        now = datetime.now().strftime("%Y%m%d")
-        filename = f"annotations_{subject}_{now}.csv"
+        filename = f"annotations_{subject}_{user_name}.csv"
         fullpath = os.path.join(output_folder, filename)
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Saved to {fullpath}")
@@ -738,16 +816,19 @@ class AnnotationAppCallbacks:
     def autosave_annotations(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
+        user_name = self.username_input.text().strip()
         base_folder = getattr(self, "base_folder", None)
-        if not annotations or not subject or not base_folder:
+
+        if not annotations or not subject or not base_folder or not user_name:
             return
+
         subject_folder = os.path.join(base_folder, subject)
         output_folder = os.path.join(subject_folder, "output")
         os.makedirs(output_folder, exist_ok=True)
-        filename = f"annotations_{subject}.csv"
+        filename = f"annotations_{subject}_{user_name}.csv"
         fullpath = os.path.join(output_folder, filename)
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
-        self.save_message.setText(f"Autoaved to {fullpath}")
+        self.save_message.setText(f"Auto-saved to {fullpath}")
 
     # --- Utility slots for GUI logic that you will implement: ---
     def get_cpr_val(self):
