@@ -115,12 +115,14 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sidebar_layout.addWidget(sep)
 
         # --- Subject dropdown ---
-        self.subject_dropdown = QComboBox(); self.subject_dropdown.setStyleSheet(font_css)
+        self.subject_dropdown = QComboBox(); 
+        self.subject_dropdown.setStyleSheet(font_css)
+        self.subject_dropdown.view().setMinimumWidth(500)
         sidebar_layout.addWidget(self.subject_dropdown)
 
         # --- Load / Plot buttons ---
         row = QHBoxLayout()
-        self.load_subject_btn = QPushButton("Load Subject");
+        self.load_subject_btn = QPushButton("Load Subject")
         self.load_subject_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
         # self.plot_btn = QPushButton("Plot")
         row.addWidget(self.load_subject_btn); 

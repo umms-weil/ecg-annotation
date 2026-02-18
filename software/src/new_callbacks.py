@@ -339,7 +339,7 @@ class AnnotationAppCallbacks:
         user_name = self.username_input.text().strip()
         subject = self.subject_dropdown.currentData()
 
-        # 1. Username check
+        # --- Username check ---
         if not user_name:
             # Style update, as discussed
             self.mark_warning.setText("Please enter your User Name before loading annotations.")
@@ -353,13 +353,13 @@ class AnnotationAppCallbacks:
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # 2. Build the annotation file path
+        # --- Build the annotation file path ---
         subject_folder = os.path.join(self.base_folder, subject)
         output_folder = os.path.join(subject_folder, "output")
         filename = f"annotations_{subject}_{user_name}.csv"
         fullpath = os.path.join(output_folder, filename)
 
-        # 3. File existence check
+        # --- File existence check ---
         if not os.path.exists(fullpath):
             self.mark_warning.setText(
                 f"No previous annotations found for '{user_name}' and subject '{subject}'."
@@ -368,7 +368,7 @@ class AnnotationAppCallbacks:
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # 4. Load the annotation file
+        # --- Load the annotation file ---
         try:
             df = pd.read_csv(fullpath)
             # Convert DataFrame to list of dicts for self.annotations
@@ -380,12 +380,12 @@ class AnnotationAppCallbacks:
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # 5. Sync table and plots to match loaded annotations
+        # --- Sync table and plots to match loaded annotations ---
         self.update_table_data()
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
 
-        # 6. Set marker state for continued marking
+        # --- Set marker state for continued marking ---
         if self.annotations:
             self.last_mark = self.annotations[-1]['end']
             self.current_marker = None  # Reset for next marking
@@ -393,7 +393,17 @@ class AnnotationAppCallbacks:
             self.last_mark = None
             self.current_marker = None
 
-        # 7. Show annotation session resume message and file modification date
+        # --- Center plot(s) on last annotation's end if loaded ---
+        if self.annotations:
+            last_mark_end = self.annotations[-1]["end"]
+            winlen = float(self.win_size.value()) if hasattr(self, 'win_size') else 10
+            left = max(last_mark_end - winlen / 2, self.time_axis[0])
+            right = left + winlen
+            self.waveform_plots[0].setXRange(left, right, padding=0)
+            for plt in self.waveform_plots[1:]:
+                plt.setXLink(self.waveform_plots[0])
+
+        # --- Show annotation session resume message and file modification date ---
         try:
             mod_time = os.path.getmtime(fullpath)
             import datetime
@@ -850,6 +860,14 @@ class AnnotationAppCallbacks:
         # Determine completion
         if getattr(self, "waveform_complete", False):
             filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+            partial_filename = f"annotations_{subject}_{user_name}.csv"
+            partial_path = os.path.join(output_folder, partial_filename)
+            if os.path.exists(partial_path):
+                try:
+                    os.remove(partial_path)
+                    print(f"Deleted partial annotation file: {partial_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete partial annotation file: {e}")
         else:
             filename = f"annotations_{subject}_{user_name}.csv"
 
@@ -873,6 +891,14 @@ class AnnotationAppCallbacks:
 
         if getattr(self, "waveform_complete", False):
             filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+            partial_filename = f"annotations_{subject}_{user_name}.csv"
+            partial_path = os.path.join(output_folder, partial_filename)
+            if os.path.exists(partial_path):
+                try:
+                    os.remove(partial_path)
+                    print(f"Deleted partial annotation file: {partial_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete partial annotation file: {e}")
         else:
             filename = f"annotations_{subject}_{user_name}.csv"
 
