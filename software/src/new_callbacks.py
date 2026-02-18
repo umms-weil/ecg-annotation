@@ -69,17 +69,18 @@ class AnnotationAppCallbacks:
         subjects = list_subjects(base_folder)
         for subj in subjects:
             output_folder = os.path.join(base_folder, subj["name"], "output")
-            n_annotations = 0
-            has_annotations = False
+            total_annotations = 0
+            complete_annotations = 0
             if os.path.isdir(output_folder):
                 # Count all CSV files in the output folder:
                 files = [f for f in os.listdir(output_folder) if f.endswith('.csv')]
-                n_annotations = len(files)
-                has_annotations = n_annotations > 0
-            if has_annotations:
-                label = f"✅ {subj['name']} ({n_annotations} annots)"
+                total_annotations = len(files)
+                # Count those with '_COMPLETE' in the filename
+                complete_annotations = sum(1 for f in files if f.endswith('_COMPLETE.csv'))
+            if total_annotations > 0:
+                label = f"✅ {subj['name']} ({complete_annotations}/{total_annotations} complete)"
             else:
-                label = f"⭕ {subj['name']} (0 annots)"
+                label = f"⭕ {subj['name']} (0/0 complete)"
             combo.addItem(label, userData=subj["name"])
         combo.setDisabled(False)
 
@@ -304,11 +305,18 @@ class AnnotationAppCallbacks:
         Resets sidebar and markers to previous state or initial if no marks remain.
         """
         if not self.annotations:
-            return  # Nothing to remove
+            # Nothing to remove
+            return
 
         # Remove last annotation
         removed_ann = self.annotations.pop()
         print(f"Removed last annotation: {removed_ann}")
+
+        # Reset completion flag if removed interval was at waveform end
+        waveform_end = self.time_axis[-1]
+        # Only set to False if annotation table is now empty or last annotation does NOT end at waveform end
+        if not self.annotations or self.annotations[-1]["end"] != waveform_end:
+            self.waveform_complete = False
 
         # Reset last_mark to previous annotation end (if any), else initial
         if self.annotations:
@@ -331,7 +339,7 @@ class AnnotationAppCallbacks:
         user_name = self.username_input.text().strip()
         subject = self.subject_dropdown.currentData()
 
-        # 1. Username check
+        # --- Username check ---
         if not user_name:
             # Style update, as discussed
             self.mark_warning.setText("Please enter your User Name before loading annotations.")
@@ -345,13 +353,13 @@ class AnnotationAppCallbacks:
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # 2. Build the annotation file path
+        # --- Build the annotation file path ---
         subject_folder = os.path.join(self.base_folder, subject)
         output_folder = os.path.join(subject_folder, "output")
         filename = f"annotations_{subject}_{user_name}.csv"
         fullpath = os.path.join(output_folder, filename)
 
-        # 3. File existence check
+        # --- File existence check ---
         if not os.path.exists(fullpath):
             self.mark_warning.setText(
                 f"No previous annotations found for '{user_name}' and subject '{subject}'."
@@ -360,7 +368,7 @@ class AnnotationAppCallbacks:
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # 4. Load the annotation file
+        # --- Load the annotation file ---
         try:
             df = pd.read_csv(fullpath)
             # Convert DataFrame to list of dicts for self.annotations
@@ -372,12 +380,12 @@ class AnnotationAppCallbacks:
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # 5. Sync table and plots to match loaded annotations
+        # --- Sync table and plots to match loaded annotations ---
         self.update_table_data()
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
 
-        # 6. Set marker state for continued marking
+        # --- Set marker state for continued marking ---
         if self.annotations:
             self.last_mark = self.annotations[-1]['end']
             self.current_marker = None  # Reset for next marking
@@ -385,7 +393,17 @@ class AnnotationAppCallbacks:
             self.last_mark = None
             self.current_marker = None
 
-        # 7. Show annotation session resume message and file modification date
+        # --- Center plot(s) on last annotation's end if loaded ---
+        if self.annotations:
+            last_mark_end = self.annotations[-1]["end"]
+            winlen = float(self.win_size.value()) if hasattr(self, 'win_size') else 10
+            left = max(last_mark_end - winlen / 2, self.time_axis[0])
+            right = left + winlen
+            self.waveform_plots[0].setXRange(left, right, padding=0)
+            for plt in self.waveform_plots[1:]:
+                plt.setXLink(self.waveform_plots[0])
+
+        # --- Show annotation session resume message and file modification date ---
         try:
             mod_time = os.path.getmtime(fullpath)
             import datetime
@@ -470,6 +488,9 @@ class AnnotationAppCallbacks:
         # --- Pass code bounds, events to the plotting function ---
         self.code_start_sec = code_start_sec
         self.code_stop_sec  = code_stop_sec
+
+        # Set waveform complete flag to False for new subject load, which controls whether marking is allowed
+        self.waveform_complete = False
         
         self.plot_all_leads()
 
@@ -574,7 +595,7 @@ class AnnotationAppCallbacks:
         # --- Warnings & mark button logic ---
         warnings = []
 
-        # 1. Plot marker requirements
+        # --- Plot marker requirements ---
         if marker is None:
             warnings.append("Click on the plot to place a marker before marking.")
         elif last_mark is None:
@@ -588,7 +609,7 @@ class AnnotationAppCallbacks:
                 if interval <= 0 or interval < 1.0:
                     warnings.append("Marked interval must be at least 1 second.")
 
-        # 2. Required annotation fields
+        # --- Required annotation fields ---
         if not warnings:
             if not user_name or not user_name.strip():
                 warnings.append("Enter your User Name before marking.")
@@ -611,6 +632,14 @@ class AnnotationAppCallbacks:
         self.mark_btn.setDisabled(bool(warnings))
         self.remove_last_btn.setDisabled(len(self.annotations) == 0)
 
+        # Check completed annotation
+        if getattr(self, "waveform_complete", False):
+            self.mark_btn.setDisabled(True)
+            self.mark_warning.setText("Waveform annotation complete! No further marking needed.")
+            self.mark_warning.setStyleSheet("font-size:13px; font-weight:bold; color:#199E40;")
+            # Disable other annotation fields if desired
+            return
+
 
     def make_plot_click_handler(self, lead_idx):
         def handler(mouse_event):
@@ -619,6 +648,15 @@ class AnnotationAppCallbacks:
             vb = self.waveform_plots[lead_idx].getViewBox()
             mouse_point = vb.mapSceneToView(mouse_event.scenePos())
             t_clicked = float(mouse_point.x())
+
+            waveform_end = self.time_axis[-1]
+            if t_clicked > waveform_end:
+                # Snap to end of waveform if clicked beyond it
+                t_clicked = waveform_end
+            elif (waveform_end - t_clicked) <= 1.0:
+                # Snap to end if within 1 second on waveform (due to 1 second min rhythm marking requirement)
+                t_clicked = waveform_end
+            
             if self.last_mark is None:
                 self.last_mark = t_clicked
                 self.current_marker = None
@@ -664,11 +702,22 @@ class AnnotationAppCallbacks:
             print(f"APPENDING ANNOTATION: {ann}")
             self.annotations.append(ann)
 
-            # Prepare for next marking
-            self.last_mark = self.current_marker
-            self.current_marker = None
-            self.pending_clear_sidebar = True
-            self.update_sidebar_ui()
+            # Completion detection logic
+            waveform_end = self.time_axis[-1]
+            if self.current_marker == waveform_end:
+                # If this is the last mark needed
+                self.waveform_complete = True
+                self.mark_warning.setText("Waveform annotation complete! No further marking needed.")
+                self.mark_warning.setStyleSheet("font-size:13px; font-weight:bold; color:#199E40;")
+                # Trigger save and disable further marking
+                self.save_all_to_file()
+                self.mark_btn.setDisabled(True)
+            else:
+                # Prepare for next marking
+                self.last_mark = self.current_marker
+                self.current_marker = None
+                self.pending_clear_sidebar = True
+                self.update_sidebar_ui()
         else:
             print("Attempted to mark invalid or zero-length region.")
 
@@ -807,7 +856,21 @@ class AnnotationAppCallbacks:
         subject_folder = os.path.join(base_folder, subject)
         output_folder = os.path.join(subject_folder, "output")
         os.makedirs(output_folder, exist_ok=True)
-        filename = f"annotations_{subject}_{user_name}.csv"
+
+        # Determine completion
+        if getattr(self, "waveform_complete", False):
+            filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+            partial_filename = f"annotations_{subject}_{user_name}.csv"
+            partial_path = os.path.join(output_folder, partial_filename)
+            if os.path.exists(partial_path):
+                try:
+                    os.remove(partial_path)
+                    print(f"Deleted partial annotation file: {partial_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete partial annotation file: {e}")
+        else:
+            filename = f"annotations_{subject}_{user_name}.csv"
+
         fullpath = os.path.join(output_folder, filename)
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Saved to {fullpath}")
@@ -825,7 +888,20 @@ class AnnotationAppCallbacks:
         subject_folder = os.path.join(base_folder, subject)
         output_folder = os.path.join(subject_folder, "output")
         os.makedirs(output_folder, exist_ok=True)
-        filename = f"annotations_{subject}_{user_name}.csv"
+
+        if getattr(self, "waveform_complete", False):
+            filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+            partial_filename = f"annotations_{subject}_{user_name}.csv"
+            partial_path = os.path.join(output_folder, partial_filename)
+            if os.path.exists(partial_path):
+                try:
+                    os.remove(partial_path)
+                    print(f"Deleted partial annotation file: {partial_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete partial annotation file: {e}")
+        else:
+            filename = f"annotations_{subject}_{user_name}.csv"
+
         fullpath = os.path.join(output_folder, filename)
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Auto-saved to {fullpath}")

@@ -14,6 +14,7 @@ UM_BLUE = "#00274C"
 UM_ACCENT = "#285680"
 UM_WHITE = "#FFFFFF"
 UM_RED = "#D50032"
+COMPLETION_GREEN = "#199E40"
 
 
 class MainApp(QMainWindow, AnnotationAppCallbacks):
@@ -35,6 +36,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.last_mark = 0.0
         self.n_mark_clicks = 0
         self.triggered_by_mark_btn = False
+        self.waveform_complete = False
 
         font_css = f"font-size:13px; color:{UM_BLUE}; background:white; border:2px solid black;"
 
@@ -113,12 +115,14 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sidebar_layout.addWidget(sep)
 
         # --- Subject dropdown ---
-        self.subject_dropdown = QComboBox(); self.subject_dropdown.setStyleSheet(font_css)
+        self.subject_dropdown = QComboBox(); 
+        self.subject_dropdown.setStyleSheet(font_css)
+        self.subject_dropdown.view().setMinimumWidth(500)
         sidebar_layout.addWidget(self.subject_dropdown)
 
         # --- Load / Plot buttons ---
         row = QHBoxLayout()
-        self.load_subject_btn = QPushButton("Load Subject");
+        self.load_subject_btn = QPushButton("Load Subject")
         self.load_subject_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
         # self.plot_btn = QPushButton("Plot")
         row.addWidget(self.load_subject_btn); 
@@ -362,6 +366,8 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             padding: 8px 32px;
         """)
         sidebar_layout.addWidget(self.mark_btn)
+        # self.waveform_complete is True after annotation ends and should disable further marking
+        self.mark_btn.setDisabled(self.waveform_complete)
 
         # --- Marking warning label ---
         self.mark_warning = QLabel("")
