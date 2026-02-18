@@ -46,7 +46,7 @@ Annotating Waveforms
 3. **Choose a Patient/Subject** from the dropdown and click "Load Subject."
     The dropdown lists all available subjects found in the base data folder. The subjects are listed by their unique identifier (e.g., `subject_DEID1`, `subject_DEID2`, etc.).
     
-    The dropdown will also show the number of annotations that have been completed for each subject (e.g., `subject_DEID1 (3 annotations)`). This is across users, not just your own annotations.
+    The dropdown will also show the number of annotations that have been completed for each subject (e.g., `subject_DEID1 (1/3 annotations)`). This is across users, not just your own annotations.
     
     Select the desired patient and click "Load Subject" to load their waveform data.
 
@@ -87,6 +87,20 @@ Resuming and Saving Work
 - **Autosave** will regularly update your annotation file.
 
 - Manually save with "Save All Annotations" to ensure data integrity.
+
+Annotation Completion Statistics in Subject Dropdown
+---------------------------------------------------
+
+When you select a patient/subject in the sidebar dropdown, you will see a completion ratio next to each subject. For example:
+
+  ``subject_DEID1 (1/3 complete)``
+
+This means:
+
+- **1** completed annotation (waveforms fully marked and saved with `_COMPLETE`)
+- **3** total annotation files present (including both completed and partial sessions)
+
+Use this information to identify subjects who still require annotation and track your progress.
 
 
 Error Messages
@@ -193,6 +207,51 @@ File Storage and Autosave Details
         To load your previous annotations, ensure you enter your User Name correctly (uniqname, all lowercase) and select the correct subject before clicking "Load Annotations."
 
 - Do **not** manually move, edit, or rename annotation files or waveform data. All data should only be accessed via the application to prevent corruption or data loss.
+
+Annotation Completion & Snap-to-End Logic
+-----------------------------------------
+
+As you approach the end of the waveform, the app assists in marking the final interval:
+
+- If you place the end marker within **one second of the end of the waveform**, the application will automatically snap the interval to the exact last point of data.
+- If you try to mark past the last data point, it will also snap to the end automatically.
+
+When you mark the final segment:
+
+- You will see a **green completion message** in the sidebar:
+
+  .. raw:: html
+
+     <span style="color: #199E40; font-weight: bold;">Waveform annotation complete! No further marking needed.</span>
+
+- Once complete, you cannot add more marks (unless you undo the last one to adjust your last mark).
+- The annotation will be **autosaved** immediately, ensuring your work is preserved.
+
+Filename for Completed Annotations
+----------------------------------
+
+- When you finish annotating a waveform, the app saves your annotation file with **_COMPLETE** appended:
+  ``annotations_{subject}_{user}_COMPLETE.csv``
+- Partial annotation sessions (if you haven't fully covered the waveform) are still saved as
+  ``annotations_{subject}_{user}.csv``
+
+- You can resume or edit unfinished annotations via the usual loading workflow. Completed files help you and your team distinguish **fully reviewed waveforms** from partial annotation sessions.
+
+Undo After Completion
+---------------------
+If you undo the final mark after completion:
+
+- The app re-enables marking for the remaining segment(s).
+- The annotation file reverts to the non-`_COMPLETE` name on autosave.
+- You may re-mark the end or extend/edit the last interval as needed.
+
+Best Practices for Completing Annotation
+----------------------------------------
+
+- Proceed sequentially along the waveform—place intervals with care.
+- At the end, allow the app to snap your last marking for accuracy and traceability.
+- Confirm the green completion message and check for the `_COMPLETE` file after saving.
+
 
 .. _troubleshooting:
 
