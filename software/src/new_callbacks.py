@@ -336,13 +336,13 @@ class AnnotationAppCallbacks:
 
     def handle_load_annotation(self):
         print("LOAD ANNOTATIONS BUTTON CLICKED")
-        user_name = self.username_input.text().strip()
+        user_name = self.username_input.currentText().strip()
         subject = self.subject_dropdown.currentData()
 
         # --- Username check ---
         if not user_name:
             # Style update, as discussed
-            self.mark_warning.setText("Please enter your User Name before loading annotations.")
+            self.mark_warning.setText("Please select your User Name before loading annotations.")
             self.mark_warning.setWordWrap(True)
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
@@ -539,7 +539,7 @@ class AnnotationAppCallbacks:
         cpr      = self.get_cpr_val()
         rhythm   = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else ""
         rex      = self.rhythm_explanation.toPlainText()
-        user_name = self.username_input.text()
+        user_name = self.username_input.currentText()
         marker    = self.current_marker
         last_mark = self.last_mark
 
@@ -612,7 +612,7 @@ class AnnotationAppCallbacks:
         # --- Required annotation fields ---
         if not warnings:
             if not user_name or not user_name.strip():
-                warnings.append("Enter your User Name before marking.")
+                warnings.append("Select your User Name before marking.")
             if not cpr:
                 warnings.append("Select the CPR question before marking.")
 
@@ -691,7 +691,7 @@ class AnnotationAppCallbacks:
             rhythm_label = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else None
 
             ann = {
-                "user": self.username_input.text(),
+                "user": self.username_input.currentText().strip(),
                 "subject": self.subject_dropdown.currentData(),
                 "cpr": self.get_cpr_val(),
                 "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
@@ -843,7 +843,7 @@ class AnnotationAppCallbacks:
     def save_all_to_file(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
-        user_name = self.username_input.text().strip()
+        user_name = self.username_input.currentText().strip()
         base_folder = getattr(self, "base_folder", None)
 
         if not annotations:
@@ -879,7 +879,7 @@ class AnnotationAppCallbacks:
     def autosave_annotations(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
-        user_name = self.username_input.text().strip()
+        user_name = self.username_input.currentText().strip()
         base_folder = getattr(self, "base_folder", None)
 
         if not annotations or not subject or not base_folder or not user_name:

@@ -85,8 +85,21 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sidebar_layout.addWidget(sep)
 
         # --- Username input ---
-        self.username_input = QLineEdit(); self.username_input.setStyleSheet(font_css)
+        # self.username_input = QLineEdit(); 
+        # self.username_input.setStyleSheet(font_css)
+        # sidebar_layout.addWidget(self.username_input)
+
+        self.username_input = QComboBox()
+        self.username_input.setStyleSheet(font_css)
+        # Static User List
+        usernames = ["", "pwalczyk", "sardara", "ghamid"]
+        self.username_input.addItems(usernames)
+        # Prevent free-form text input
+        self.username_input.setEditable(False)
+        self.username_input.view().setMinimumWidth(500)
         sidebar_layout.addWidget(self.username_input)
+        # Default to the first item (empty)
+        self.username_input.setCurrentIndex(0)
 
         # --- Subject selection ---
         # Horizontal separator
@@ -140,6 +153,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         block_css = """
         QPushButton {
             background-color: #FFCB05;
+            color: #00274C;
             border: 2px solid #00274C;
             border-radius: 8px;
             font-size: 16px;
@@ -581,7 +595,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.rhythm_dropdown.currentTextChanged.connect(self.update_sidebar_ui)
         # self.comment_box.textChanged.connect(self.update_sidebar_ui)
         self.rhythm_explanation.textChanged.connect(self.update_sidebar_ui)
-        self.username_input.textChanged.connect(self.update_sidebar_ui)
+        self.username_input.currentTextChanged.connect(self.update_sidebar_ui)
         # self.win_size.valueChanged.connect(self.update_waveform_and_mark)
         # self.x_scrollbar.valueChanged.connect(self.handle_x_scrollbar)
 
