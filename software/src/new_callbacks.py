@@ -71,12 +71,16 @@ class AnnotationAppCallbacks:
             output_folder = os.path.join(base_folder, subj["name"], "output")
             total_annotations = 0
             complete_annotations = 0
+
             if os.path.isdir(output_folder):
-                # Count all CSV files in the output folder:
-                files = [f for f in os.listdir(output_folder) if f.endswith('.csv')]
-                total_annotations = len(files)
-                # Count those with '_COMPLETE' in the filename
-                complete_annotations = sum(1 for f in files if f.endswith('_COMPLETE.csv'))
+                # Go through each user subfolder inside the output folder
+                user_folders = [os.path.join(output_folder, u) for u in os.listdir(output_folder) 
+                                if os.path.isdir(os.path.join(output_folder, u))]
+                for user_folder in user_folders:
+                    files = [f for f in os.listdir(user_folder) if f.endswith('.csv')]
+                    total_annotations += len(files)
+                    complete_annotations += sum(1 for f in files if f.endswith('_COMPLETE.csv'))
+
             if total_annotations > 0:
                 label = f"✅ {subj['name']} ({complete_annotations}/{total_annotations} complete)"
             else:
@@ -355,7 +359,8 @@ class AnnotationAppCallbacks:
 
         # --- Build the annotation file path ---
         subject_folder = os.path.join(self.base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output")
+        user_name = self.username_input.currentText().strip()
+        output_folder = os.path.join(subject_folder, "output", user_name)
         filename = f"annotations_{subject}_{user_name}.csv"
         fullpath = os.path.join(output_folder, filename)
 
@@ -854,7 +859,8 @@ class AnnotationAppCallbacks:
             return
 
         subject_folder = os.path.join(base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output")
+        user_name = self.username_input.currentText().strip()
+        output_folder = os.path.join(subject_folder, "output", user_name)
         os.makedirs(output_folder, exist_ok=True)
 
         # Determine completion
@@ -886,7 +892,8 @@ class AnnotationAppCallbacks:
             return
 
         subject_folder = os.path.join(base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output")
+        user_name = self.username_input.currentText().strip()
+        output_folder = os.path.join(subject_folder, "output", user_name)
         os.makedirs(output_folder, exist_ok=True)
 
         if getattr(self, "waveform_complete", False):
