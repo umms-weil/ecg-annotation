@@ -124,6 +124,7 @@ class AnnotationAppCallbacks:
         - plot_idx: Index of the PlotWidget to adjust
         - zoom: "up" to zoom in (shrink), "down" to zoom out (expand)
         """
+        self.disable_auto_y_for_plot(plot_idx)
         plt = self.waveform_plots[plot_idx]
         y_min, y_max = plt.viewRange()[1]
         center = (y_min + y_max) / 2
@@ -148,6 +149,7 @@ class AnnotationAppCallbacks:
         - plot_idx: Index of the PlotWidget to adjust
         - shift: "up" to shift up (move center up), "down" to shift down (move center down)
         """
+        self.disable_auto_y_for_plot(plot_idx)
         plt = self.waveform_plots[plot_idx]
         y_min, y_max = plt.viewRange()[1]
         span = (y_max - y_min) or 1.0
@@ -166,6 +168,264 @@ class AnnotationAppCallbacks:
         plt.setYRange(new_min, new_max, padding=0)
 
 
+    def update_auto_y_button_state(self, plot_idx, paused=False):
+        """
+        Update the visual state of one per-plot Auto-Y button.
+
+        States:
+        - AUTO ON: user wants Auto-Y and current X-window is small enough.
+        - PAUSED: user wants Auto-Y but current X-window exceeds max_auto_y_window_sec.
+        - OFF: user manually disabled Auto-Y.
+        """
+        if not hasattr(self, "auto_y_buttons"):
+            return
+        if plot_idx < 0 or plot_idx >= len(self.auto_y_buttons):
+            return
+
+        btn = self.auto_y_buttons[plot_idx]
+
+        user_enabled = (
+            hasattr(self, "auto_y_enabled_by_user")
+            and plot_idx < len(self.auto_y_enabled_by_user)
+            and self.auto_y_enabled_by_user[plot_idx]
+        )
+
+        if not user_enabled:
+            btn.setText("OFF")
+            btn.setToolTip("Manual Y-axis mode. Click to re-enable Auto-Y for this lead.")
+            btn.setStyleSheet(
+                "font-size: 8pt; color: #FFFFFF; background: #666666; "
+                "min-width: 20px; min-height: 22px;"
+            )
+        elif paused:
+            btn.setText("PAUSED")
+            btn.setToolTip(
+                "Auto-Y is paused because the visible time window is too large. "
+                "Zoom in to resume."
+            )
+            btn.setStyleSheet(
+                "font-size: 8pt; color: #FFFFFF; background: #B8860B; "
+                "min-width: 20px; min-height: 22px;"
+            )
+        else:
+            btn.setText("AUTO ON")
+            btn.setToolTip("Automatically rescales this lead when the time window changes.")
+            btn.setStyleSheet(
+                "font-size: 8pt; color: #00274C; background: #FFCB05; "
+                "min-width: 20px; min-height: 22px;"
+            )
+
+
+    def update_all_auto_y_button_states(self):
+        """
+        Update all Auto-Y buttons based on user preference and current X-window size.
+        """
+        if not hasattr(self, "waveform_plots") or not self.waveform_plots:
+            return
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            visible_span = float(x_max) - float(x_min)
+        except Exception:
+            visible_span = 0.0
+
+        max_window = getattr(self, "max_auto_y_window_sec", 300.0)
+        paused = visible_span > max_window
+
+        for i in range(len(getattr(self, "auto_y_buttons", []))):
+            self.update_auto_y_button_state(i, paused=paused)
+
+
+    def toggle_auto_y_for_plot(self, plot_idx):
+        """
+        Toggle per-plot Auto-Y.
+
+        If Auto-Y is ON or PAUSED, clicking turns it OFF.
+        If Auto-Y is OFF, clicking turns it ON and immediately attempts to autoscale
+        that plot using the current visible X-window.
+        """
+        if not hasattr(self, "auto_y_enabled_by_user"):
+            return
+        if plot_idx < 0 or plot_idx >= len(self.auto_y_enabled_by_user):
+            return
+
+        currently_enabled = self.auto_y_enabled_by_user[plot_idx]
+
+        if currently_enabled:
+            # ON or PAUSED -> user manually turns it OFF.
+            self.auto_y_enabled_by_user[plot_idx] = False
+            self.update_all_auto_y_button_states()
+        else:
+            # OFF -> user turns it ON.
+            self.auto_y_enabled_by_user[plot_idx] = True
+            self.update_all_auto_y_button_states()
+
+            # Immediately autoscale this plot if current X-window is allowed.
+            self.autoscale_visible_y_for_plot(plot_idx, force=False)
+            self.update_all_auto_y_button_states()
+
+    def disable_auto_y_for_plot(self, plot_idx):
+        """
+        Disable Auto-Y for a plot after manual Y-axis intervention.
+        """
+        if not hasattr(self, "auto_y_enabled_by_user"):
+            return
+        if plot_idx < 0 or plot_idx >= len(self.auto_y_enabled_by_user):
+            return
+
+        self.auto_y_enabled_by_user[plot_idx] = False
+        self.update_all_auto_y_button_states()
+
+
+    def schedule_visible_y_autoscale(self, *args):
+        """
+        Debounce Auto-Y scaling after an X-axis view change.
+
+        This prevents expensive autoscale computations from firing continuously
+        while the user is rapidly scrolling or zooming.
+        """
+        if not hasattr(self, "auto_y_timer"):
+            return
+
+        debounce_ms = getattr(self, "auto_y_debounce_ms", 200)
+        self.auto_y_timer.start(debounce_ms)
+
+
+    def autoscale_visible_y_all(self):
+        """
+        Autoscale Y-axis for all plots whose Auto-Y is enabled by the user,
+        using the current visible X-window plus a small time buffer.
+
+        If the visible X-window is larger than max_auto_y_window_sec, Auto-Y is
+        temporarily paused and no plots are autoscaled.
+        """
+        if not hasattr(self, "time_axis") or self.time_axis is None:
+            return
+        if not hasattr(self, "leads_ds") or self.leads_ds is None:
+            return
+        if not hasattr(self, "waveform_plots") or not self.waveform_plots:
+            return
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            visible_span = float(x_max) - float(x_min)
+        except Exception:
+            return
+
+        max_window = getattr(self, "max_auto_y_window_sec", 300.0)
+
+        # If visible window is too large, show PAUSED for user-enabled plots.
+        if visible_span > max_window:
+            self.update_all_auto_y_button_states()
+            return
+
+        # Otherwise autoscale each plot that user has not manually turned off.
+        for plot_idx in range(min(len(self.waveform_plots), len(self.leads_ds))):
+            if (
+                hasattr(self, "auto_y_enabled_by_user")
+                and plot_idx < len(self.auto_y_enabled_by_user)
+                and self.auto_y_enabled_by_user[plot_idx]
+            ):
+                self.autoscale_visible_y_for_plot(plot_idx, force=True)
+
+        self.update_all_auto_y_button_states()
+
+        
+    def autoscale_visible_y_for_plot(self, plot_idx, force=False):
+        """
+        Autoscale one plot's Y-axis using the current visible X-window plus buffer.
+
+        Parameters
+        ----------
+        plot_idx : int
+            Index of the plot/lead to autoscale.
+        force : bool
+            If True, perform autoscale even if this method was called directly.
+            The max-window limit is still respected.
+        """
+        if not hasattr(self, "time_axis") or self.time_axis is None:
+            return False
+        if not hasattr(self, "leads_ds") or self.leads_ds is None:
+            return False
+        if plot_idx < 0 or plot_idx >= len(self.waveform_plots):
+            return False
+        if plot_idx >= len(self.leads_ds):
+            return False
+
+        sig = self.leads_ds[plot_idx]
+        if sig is None:
+            return False
+
+        time_axis = np.asarray(self.time_axis, dtype=float)
+        sig = np.asarray(sig, dtype=float)
+
+        if time_axis.size == 0 or sig.size == 0:
+            return False
+
+        # Protect against length mismatch.
+        n = min(time_axis.size, sig.size)
+        time_axis = time_axis[:n]
+        sig = sig[:n]
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            x_min = float(x_min)
+            x_max = float(x_max)
+        except Exception:
+            return False
+
+        visible_span = x_max - x_min
+        max_window = getattr(self, "max_auto_y_window_sec", 300.0)
+
+        if visible_span > max_window:
+            self.update_all_auto_y_button_states()
+            return False
+
+        buffer_sec = getattr(self, "auto_y_buffer_sec", 10.0)
+
+        scale_start = max(float(time_axis[0]), x_min - buffer_sec)
+        scale_end = min(float(time_axis[-1]), x_max + buffer_sec)
+
+        if scale_end <= scale_start:
+            return False
+
+        # Fast slicing using sorted time axis.
+        i0 = np.searchsorted(time_axis, scale_start, side="left")
+        i1 = np.searchsorted(time_axis, scale_end, side="right")
+
+        if i1 <= i0:
+            return False
+
+        segment = sig[i0:i1]
+        segment = segment[np.isfinite(segment)]
+
+        if segment.size < 2:
+            return False
+
+        try:
+            y_lo, y_hi = np.nanpercentile(segment, [0.5, 99.5])
+        except Exception:
+            return False
+
+        if not np.isfinite(y_lo) or not np.isfinite(y_hi):
+            return False
+
+        span = y_hi - y_lo
+        min_span = getattr(self, "auto_y_min_span", 0.25)
+        margin_fraction = getattr(self, "auto_y_margin_fraction", 0.05)
+
+        if span <= 0:
+            center = (y_hi + y_lo) / 2.0
+            y_min = center - min_span / 2.0
+            y_max = center + min_span / 2.0
+        else:
+            margin = max(span * margin_fraction, min_span * margin_fraction)
+            y_min = y_lo - margin
+            y_max = y_hi + margin
+
+        self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
+        return True
+        
     def plot_event_markers(self):
         """
         Plots vertical dashed lines and labels for each event in self.manifest_events,
@@ -483,11 +743,16 @@ class AnnotationAppCallbacks:
         print("data x:", times_ds[:10], "...", times_ds[-10:])
         print("annot", [ (a['start'], a['end']) for a in self.annotations ])
         print("viewRange before region:", self.waveform_plots[0].viewRange())
+
         self.time_axis = times_ds          
         self.leads_ds = leads_ds            
         self.lead_names = lead_names
         self.units = units
         self.Fs = Fs
+
+        # Reset Auto-Y state for newly loaded subject.
+        self.auto_y_enabled_by_user = [True for _ in self.waveform_plots]
+        self.update_all_auto_y_button_states()
 
         if len(self.time_axis) > 0:
             self.last_mark = float(self.time_axis[0])
@@ -512,6 +777,8 @@ class AnnotationAppCallbacks:
         self.waveform_complete = False
         
         self.plot_all_leads()
+        
+        self.schedule_visible_y_autoscale()
 
         self.update_waveform_and_mark()
         self.update_table_data()

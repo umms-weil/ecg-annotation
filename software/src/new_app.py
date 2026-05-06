@@ -480,6 +480,15 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.waveform_plots = []
         self.y_shift_buttons = []  # To store Y+ / Y– buttons for each plot
         self.y_zoom_buttons = [] # To store Y-IN / Y–Out buttons for each plot
+        self.auto_y_buttons = [] # To store Y autoscale button for each plot
+
+        # ---- Auto-Y behavior settings ----
+        self.auto_y_enabled_by_user = []   # One bool per plot. True = user wants Auto-Y ON.
+        self.auto_y_buffer_sec = 10.0      # Extra time around visible window for smoother scaling.
+        self.max_auto_y_window_sec = 300.0 # Adjustable max visible time window for Auto-Y.
+        self.auto_y_debounce_ms = 200      # Delay after X zoom/scroll before autoscaling.
+        self.auto_y_margin_fraction = 0.1 # 5% y-padding above/below signal.
+        self.auto_y_min_span = 0.25        # Minimum y-span if signal is flat/nearly flat.
 
         # ---- Create (up to) 7 waveform plots with Y+ / Y– buttons ----
         for lead_idx in range(7):
@@ -508,6 +517,17 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             y_up_btn.setStyleSheet(f"font-size: 11pt ;color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 26px;")
             y_down_btn.setStyleSheet(f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 20px;")
 
+            # Create and Auto Y scaling button
+            auto_y_btn = QPushButton("AUTO-ON")
+            auto_y_btn.setToolTip("Automatically rescales this lead when the visible time window changes.")
+            auto_y_btn.setStyleSheet(
+                f"font-size: 8pt; color:{UM_BLUE}; background: #FFCB05; "
+                "min-width: 20px; min-height: 22px;"
+            )
+
+            self.auto_y_buttons.append(auto_y_btn)
+            self.auto_y_enabled_by_user.append(True)
+
             # Stack buttons vertically
             btn_col = QVBoxLayout()
             btn_col.setSpacing(1)
@@ -516,6 +536,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             btn_col.addWidget(y_in_btn)
             btn_col.addWidget(y_up_btn)
             btn_col.addWidget(y_down_btn)
+            btn_col.addWidget(auto_y_btn)
 
             btn_widget = QWidget()
             btn_widget.setLayout(btn_col)
@@ -542,12 +563,26 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             out_btn.clicked.connect(lambda _, i=idx_zoom: self.adjust_y_scale(i, zoom="out"))
             in_btn.clicked.connect(lambda _, i=idx_zoom: self.adjust_y_scale(i, zoom="in"))
 
+        # Connect auto Y button to handler
+        for idx, auto_btn in enumerate(self.auto_y_buttons):
+            auto_btn.clicked.connect(lambda _, i=idx: self.toggle_auto_y_for_plot(i))
+
         for i, plt in enumerate(self.waveform_plots):
             plt.scene().sigMouseClicked.connect(self.make_plot_click_handler(i))
 
         # ---- Synchronize all plots' x-axes ----
         for plt in self.waveform_plots[1:]:
             plt.setXLink(self.waveform_plots[0])
+
+        # ---- Auto-Y debounce timer ----
+        self.auto_y_timer = QTimer(self)
+        self.auto_y_timer.setSingleShot(True)
+        self.auto_y_timer.timeout.connect(self.autoscale_visible_y_all)
+
+        # Trigger Auto-Y only when the X view changes.
+        self.waveform_plots[0].getViewBox().sigXRangeChanged.connect(
+            self.schedule_visible_y_autoscale
+        )
 
         # --- Annotation Table ---
         self.ann_table = QTableWidget(0, 7)
