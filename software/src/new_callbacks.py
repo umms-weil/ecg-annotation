@@ -9,6 +9,12 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 import pyqtgraph as pg
 
+UM_MAIZE = "#FFCB05"
+UM_BLUE = "#00274C"
+UM_ACCENT = "#285680"
+UM_WHITE = "#FFFFFF"
+UM_RED = "#D50032"
+COMPLETION_GREEN = "#199E40"
 
 # LABEL_COLORS = {
 #     "Normal Heart Rhythm": "LightGreen",
@@ -271,9 +277,17 @@ class AnnotationAppCallbacks:
 
         # Plot signals on epic time axis
         for i, (plot, sig, name) in enumerate(zip(self.waveform_plots, self.leads_ds, self.lead_names)):
+            # Set y-axis label to real lead name with units
+            plot.setLabel(
+                'left',
+                f"{name} (mV)",
+                color=UM_BLUE,
+                size="10pt"
+            )
             if sig is not None and len(sig) > 0:
                 plot.plot(self.time_axis, sig, pen='b', name=name)
                 plot.setTitle(name)
+
                 # Autoscale Y axis (center at zero)
                 p_lo, p_hi = np.percentile(sig, [0.5, 99.5])
                 half_span = max(abs(p_lo), abs(p_hi))

@@ -8,3 +8,5 @@ pyinstaller
 scipy
 h5py
 hdf5storage
+PyQt5
+pyqtgraph

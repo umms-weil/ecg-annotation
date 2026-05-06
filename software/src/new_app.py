@@ -488,7 +488,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             plt.showGrid(x=True, y=True, alpha=0.3)
             plt.setMinimumHeight(75)
             plt.setStyleSheet(f"border: 1.5px solid {UM_ACCENT}; margin-bottom:2px;")
-            plt.setLabel('left', f"Lead {lead_idx+1}/7", color=UM_BLUE, size="10pt")
+            plt.setLabel('left', "", color=UM_BLUE, size="10pt")
             if lead_idx != 6:
                 plt.hideAxis('bottom')
 
