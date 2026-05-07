@@ -3,7 +3,16 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from processing import list_subjects, load_waveforms_for_subject, get_code_time_bounds, get_events_for_window, datetime_string_to_seconds_since_1970
-from PyQt5.QtWidgets import QTableWidgetItem, QMessageBox
+from PyQt5.QtWidgets import (
+    QTableWidgetItem,
+    QMessageBox,
+    QDialog,
+    QVBoxLayout,
+    QLabel,
+    QRadioButton,
+    QTextEdit,
+    QDialogButtonBox,
+)
 from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
@@ -426,6 +435,254 @@ class AnnotationAppCallbacks:
         self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
         return True
         
+    def get_waveform_end_time(self):
+        """
+        Return the final timestamp of the loaded waveform.
+
+        Returns
+        -------
+        float or None
+            Final waveform timestamp, or None if no waveform is loaded.
+        """
+        if not hasattr(self, "time_axis") or self.time_axis is None or len(self.time_axis) == 0:
+            return None
+        return float(self.time_axis[-1])
+    
+    def is_at_waveform_end(self, value, tolerance=1e-6):
+        """
+        Check whether a timestamp is effectively at the final waveform point.
+
+        Parameters
+        ----------
+        value : float
+            Timestamp to check.
+        tolerance : float
+            Allowed floating-point tolerance.
+
+        Returns
+        -------
+        bool
+            True if value is at the waveform end.
+        """
+        waveform_end = self.get_waveform_end_time()
+        if waveform_end is None or value is None:
+            return False
+
+        try:
+            return abs(float(value) - waveform_end) <= tolerance
+        except Exception:
+            return False
+    
+    def last_annotation_reaches_waveform_end(self):
+        """
+        Check whether the most recent annotation ends at the final waveform point.
+
+        Returns
+        -------
+        bool
+            True if the last annotation reaches the end of the waveform.
+        """
+        annotations = getattr(self, "annotations", [])
+        if not annotations:
+            return False
+
+        return self.is_at_waveform_end(annotations[-1].get("end", None))
+
+    def clear_terminal_completion_fields(self):
+        """
+        Clear waveform completion state and terminal event metadata.
+        """
+        self.waveform_complete = False
+        self.terminal_event_status = ""
+        self.terminal_event_comment = ""
+
+        for ann in getattr(self, "annotations", []):
+            ann["waveform_complete"] = False
+            ann["terminal_event_status"] = ""
+            ann["terminal_event_comment"] = ""
+
+    def apply_terminal_completion_to_annotations(self, status, comment):
+        """
+        Apply terminal completion metadata to the annotation list.
+
+        The final decision is stored on the last annotation row. Earlier rows
+        receive empty/default values so the saved CSV has consistent columns.
+
+        Parameters
+        ----------
+        status : str
+            Terminal event status.
+        comment : str
+            Final terminal event comment.
+        """
+        annotations = getattr(self, "annotations", [])
+
+        for ann in annotations:
+            ann["waveform_complete"] = False
+            ann["terminal_event_status"] = ""
+            ann["terminal_event_comment"] = ""
+
+        if annotations:
+            annotations[-1]["waveform_complete"] = True
+            annotations[-1]["terminal_event_status"] = status
+            annotations[-1]["terminal_event_comment"] = comment
+
+    def update_finalize_button_state(self):
+        """
+        Enable the Finalize Waveform button only when the latest annotation
+        reaches the final waveform point and the waveform is not already complete.
+        """
+        if not hasattr(self, "finalize_waveform_btn"):
+            return
+
+        can_finalize = (
+            bool(getattr(self, "annotations", []))
+            and self.last_annotation_reaches_waveform_end()
+            and not getattr(self, "waveform_complete", False)
+        )
+
+        self.finalize_waveform_btn.setDisabled(not can_finalize)
+
+    def show_final_completion_dialog(self):
+        """
+        Show a dialog asking whether the cardiac arrest/event continues beyond
+        the available waveform.
+
+        Returns
+        -------
+        tuple[str, str] or None
+            Returns (status, comment) if accepted, otherwise None.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Finalize Waveform Annotation")
+
+        layout = QVBoxLayout(dialog)
+
+        instructions = QLabel(
+            "The final annotation reaches the end of the waveform.\n\n"
+            "Please indicate whether the cardiac arrest/event continues beyond "
+            "the available waveform."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        radio_not_continue = QRadioButton(
+            "Cardiac arrest/event does NOT continue beyond waveform"
+        )
+        radio_continues = QRadioButton(
+            "Cardiac arrest/event CONTINUES beyond waveform"
+        )
+
+        layout.addWidget(radio_not_continue)
+        layout.addWidget(radio_continues)
+
+        comment_label = QLabel("Final comment:")
+        layout.addWidget(comment_label)
+
+        comment_box = QTextEdit()
+        comment_box.setPlaceholderText(
+            "Optional: Add final context or note for the last annotation..."
+        )
+        comment_box.setMinimumHeight(80)
+        layout.addWidget(comment_box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+
+        result = {"accepted": False}
+
+        def accept_if_valid():
+            if not radio_not_continue.isChecked() and not radio_continues.isChecked():
+                QMessageBox.warning(
+                    dialog,
+                    "Selection Required",
+                    "Please select whether the cardiac arrest/event continues beyond the waveform.",
+                )
+                return
+
+            result["accepted"] = True
+            dialog.accept()
+
+        buttons.accepted.connect(accept_if_valid)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec_() != QDialog.Accepted or not result["accepted"]:
+            return None
+
+        if radio_continues.isChecked():
+            status = "continues_beyond_waveform"
+        else:
+            status = "does_not_continue_beyond_waveform"
+
+        comment = comment_box.toPlainText().strip()
+
+        return status, comment
+
+    def handle_finalize_waveform_clicked(self):
+        """
+        Finalize waveform annotation after the final annotation reaches the
+        waveform end.
+
+        This explicitly records whether the cardiac arrest/event continues beyond
+        the available waveform, saves the file as COMPLETE, and deletes the
+        redundant partial file.
+        """
+        if not self.last_annotation_reaches_waveform_end():
+            self.mark_warning.setText(
+                "Finalize is only available after the last annotation reaches the end of the waveform."
+            )
+            self.mark_warning.setStyleSheet(
+                "font-size:13px; font-weight:bold; color:#B71234;"
+            )
+            self.mark_warning.setWordWrap(True)
+            self.update_finalize_button_state()
+            return
+
+        dialog_result = self.show_final_completion_dialog()
+        if dialog_result is None:
+            self.mark_warning.setText(
+                "End of waveform reached. Finalize waveform when ready."
+            )
+            self.mark_warning.setStyleSheet(
+                "font-size:13px; font-weight:bold; color:#285680;"
+            )
+            self.mark_warning.setWordWrap(True)
+            self.update_finalize_button_state()
+            return
+
+        status, comment = dialog_result
+
+        self.waveform_complete = True
+        self.terminal_event_status = status
+        self.terminal_event_comment = comment
+
+        self.apply_terminal_completion_to_annotations(status, comment)
+
+        self.update_table_data()
+        self.update_waveform_and_mark()
+
+        # Save immediately with _COMPLETE naming.
+        self.save_all_to_file()
+
+        if status == "continues_beyond_waveform":
+            msg = (
+                "Waveform annotation complete! Cardiac arrest/event marked as "
+                "continuing beyond available waveform."
+            )
+        else:
+            msg = (
+                "Waveform annotation complete! Cardiac arrest/event marked as "
+                "not continuing beyond available waveform."
+            )
+
+        self.mark_warning.setText(msg)
+        self.mark_warning.setStyleSheet(
+            "font-size:13px; font-weight:bold; color:#199E40;"
+        )
+        self.mark_warning.setWordWrap(True)
+
+        self.update_sidebar_ui()
+
     def plot_event_markers(self):
         """
         Plots vertical dashed lines and labels for each event in self.manifest_events,
@@ -577,40 +834,69 @@ class AnnotationAppCallbacks:
             self.plot_event_markers()
 
 
+    def delete_annotation_files_for_current_user(self):
+        """
+        Delete both partial and COMPLETE annotation files for current user/subject.
+
+        Used when all annotations are removed.
+        """
+        subject = self.subject_dropdown.currentData()
+        base_folder = getattr(self, "base_folder", None)
+
+        if hasattr(self, "username_dropdown"):
+            user_name = self.username_dropdown.currentText().strip()
+        else:
+            user_name = self.get_user_name()
+
+        if not subject or not base_folder or not user_name:
+            return
+
+        subject_folder = os.path.join(base_folder, subject)
+        output_folder = os.path.join(subject_folder, "output", user_name)
+
+        partial_path = os.path.join(output_folder, f"annotations_{subject}_{user_name}.csv")
+        complete_path = os.path.join(output_folder, f"annotations_{subject}_{user_name}_COMPLETE.csv")
+
+        for path in [partial_path, complete_path]:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    print(f"Deleted annotation file: {path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete annotation file {path}: {e}")
+
     def handle_remove_last_mark(self):
         """
         Removes the most recent annotation ('last mark') from table and plots.
         Resets sidebar and markers to previous state or initial if no marks remain.
         """
         if not self.annotations:
-            # Nothing to remove
             return
 
-        # Remove last annotation
         removed_ann = self.annotations.pop()
         print(f"Removed last annotation: {removed_ann}")
 
-        # Reset completion flag if removed interval was at waveform end
-        waveform_end = self.time_axis[-1]
-        # Only set to False if annotation table is now empty or last annotation does NOT end at waveform end
-        if not self.annotations or self.annotations[-1]["end"] != waveform_end:
-            self.waveform_complete = False
+        # If removing after completion, clear terminal completion state.
+        self.clear_terminal_completion_fields()
 
-        # Reset last_mark to previous annotation end (if any), else initial
         if self.annotations:
-            self.last_mark = self.annotations[-1]['end']
+            self.last_mark = self.annotations[-1]["end"]
         else:
-            # If no annotations, reset to initial state (e.g., start of data or None)
             self.last_mark = None
             self.current_marker = None
 
-        # Clear pending marker (you may want to clear other sidebar fields too)
         self.current_marker = None
 
-        # Update the UI: table, plots, sidebar
         self.update_table_data()
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
+        self.update_finalize_button_state()
+
+        # Keep files synced after undo.
+        if self.annotations:
+            self.save_all_to_file()
+        else:
+            self.delete_annotation_files_for_current_user()
 
     def handle_load_annotation(self):
         print("LOAD ANNOTATIONS BUTTON CLICKED")
@@ -619,7 +905,6 @@ class AnnotationAppCallbacks:
 
         # --- Username check ---
         if not user_name:
-            # Style update, as discussed
             self.mark_warning.setText("Please select your User Name before loading annotations.")
             self.mark_warning.setWordWrap(True)
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
@@ -633,13 +918,21 @@ class AnnotationAppCallbacks:
 
         # --- Build the annotation file path ---
         subject_folder = os.path.join(self.base_folder, subject)
-        user_name = self.username_input.currentText().strip()
         output_folder = os.path.join(subject_folder, "output", user_name)
-        filename = f"annotations_{subject}_{user_name}.csv"
-        fullpath = os.path.join(output_folder, filename)
 
-        # --- File existence check ---
-        if not os.path.exists(fullpath):
+        partial_filename = f"annotations_{subject}_{user_name}.csv"
+        complete_filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+
+        partial_path = os.path.join(output_folder, partial_filename)
+        complete_path = os.path.join(output_folder, complete_filename)
+
+        if os.path.exists(complete_path):
+            fullpath = complete_path
+            loaded_complete_file = True
+        elif os.path.exists(partial_path):
+            fullpath = partial_path
+            loaded_complete_file = False
+        else:
             self.mark_warning.setText(
                 f"No previous annotations found for '{user_name}' and subject '{subject}'."
             )
@@ -650,55 +943,134 @@ class AnnotationAppCallbacks:
         # --- Load the annotation file ---
         try:
             df = pd.read_csv(fullpath)
-            # Convert DataFrame to list of dicts for self.annotations
-            # Assumes CSV columns: user, subject, cpr, rhythm_label, rhythm_expl, start, end
-            self.annotations = df.to_dict(orient='records')
+            self.annotations = df.to_dict(orient="records")
         except Exception as e:
             self.mark_warning.setText(f"Failed to load annotations: {e}")
             self.mark_warning.setWordWrap(True)
             self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
             return
 
-        # --- Sync table and plots to match loaded annotations ---
-        self.update_table_data()
-        self.update_waveform_and_mark()
-        self.update_sidebar_ui()
+        # --- Normalize expected columns for old/partial files ---
+        for ann in self.annotations:
+            ann.setdefault("waveform_complete", False)
+            ann.setdefault("terminal_event_status", "")
+            ann.setdefault("terminal_event_comment", "")
+
+            # Ensure start/end are numeric after CSV load
+            try:
+                ann["start"] = float(ann["start"])
+            except Exception:
+                pass
+
+            try:
+                ann["end"] = float(ann["end"])
+            except Exception:
+                pass
+
+        # --- Restore completion state ---
+        self.waveform_complete = loaded_complete_file
+        self.terminal_event_status = ""
+        self.terminal_event_comment = ""
+
+        if self.annotations and loaded_complete_file:
+            last_ann = self.annotations[-1]
+            self.terminal_event_status = str(last_ann.get("terminal_event_status", "") or "")
+            self.terminal_event_comment = str(last_ann.get("terminal_event_comment", "") or "")
+
+            # Make sure loaded complete file has completion metadata on final row
+            last_ann["waveform_complete"] = True
+
+        elif self.annotations:
+            # Partial/in-progress file
+            self.waveform_complete = False
+            self.terminal_event_status = ""
+            self.terminal_event_comment = ""
+
+            # Ensure partial file rows are not marked complete
+            for ann in self.annotations:
+                ann["waveform_complete"] = False
+                ann["terminal_event_status"] = ""
+                ann["terminal_event_comment"] = ""
+
+        else:
+            self.waveform_complete = False
+            self.terminal_event_status = ""
+            self.terminal_event_comment = ""
 
         # --- Set marker state for continued marking ---
         if self.annotations:
-            self.last_mark = self.annotations[-1]['end']
-            self.current_marker = None  # Reset for next marking
+            self.last_mark = float(self.annotations[-1]["end"])
+            self.current_marker = None
         else:
             self.last_mark = None
             self.current_marker = None
 
+        # --- Sync table and plots to match loaded annotations ---
+        self.update_table_data()
+        self.update_waveform_and_mark()
+        self.update_sidebar_ui()
+        self.update_finalize_button_state()
+
         # --- Center plot(s) on last annotation's end if loaded ---
-        if self.annotations:
-            last_mark_end = self.annotations[-1]["end"]
-            winlen = float(self.win_size.value()) if hasattr(self, 'win_size') else 10
-            left = max(last_mark_end - winlen / 2, self.time_axis[0])
+        if self.annotations and hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
+            last_mark_end = float(self.annotations[-1]["end"])
+            winlen = float(self.win_size.value()) if hasattr(self, "win_size") else 10.0
+
+            left = max(last_mark_end - winlen / 2.0, float(self.time_axis[0]))
             right = left + winlen
+
+            # Prevent right side from extending past waveform end if possible
+            waveform_end = float(self.time_axis[-1])
+            if right > waveform_end:
+                right = waveform_end
+                left = max(float(self.time_axis[0]), right - winlen)
+
             self.waveform_plots[0].setXRange(left, right, padding=0)
             for plt in self.waveform_plots[1:]:
                 plt.setXLink(self.waveform_plots[0])
 
-        # --- Show annotation session resume message and file modification date ---
+        # --- Show annotation session resume/completion message and file modification date ---
+        if self.waveform_complete:
+            if self.terminal_event_status == "continues_beyond_waveform":
+                resume_msg = (
+                    f"Loaded COMPLETE annotation session for '{user_name}' on '{subject}'.\n"
+                    f"Cardiac arrest/event continues beyond waveform."
+                )
+            elif self.terminal_event_status == "does_not_continue_beyond_waveform":
+                resume_msg = (
+                    f"Loaded COMPLETE annotation session for '{user_name}' on '{subject}'.\n"
+                    f"Cardiac arrest/event does not continue beyond waveform."
+                )
+            else:
+                resume_msg = (
+                    f"Loaded COMPLETE annotation session for '{user_name}' on '{subject}'."
+                )
+        else:
+            resume_msg = f"Resuming annotation session for '{user_name}' on '{subject}'."
+
         try:
             mod_time = os.path.getmtime(fullpath)
             import datetime
-            dt_str = datetime.datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
-            self.mark_warning.setText(
-                f"Resuming annotation session for '{user_name}' on '{subject}'.\n"
-                f"Last saved: {dt_str}"
-            )
-            self.mark_warning.setStyleSheet("color: #285680; font-size: 13px; font-weight: bold;")
-            self.mark_warning.setWordWrap(True)
+            dt_str = datetime.datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d %H:%M:%S")
+            resume_msg = f"{resume_msg}\nLast saved: {dt_str}"
         except Exception:
-            self.mark_warning.setText(
-                f"Resuming annotation session for '{user_name}' on '{subject}'."
+            pass
+
+        self.mark_warning.setText(resume_msg)
+        self.mark_warning.setWordWrap(True)
+
+        if self.waveform_complete:
+            self.mark_warning.setStyleSheet(
+                "color: #199E40; font-size: 13px; font-weight: bold;"
             )
-            self.mark_warning.setStyleSheet("color: #285680; font-size: 13px; font-weight: bold;")
-            self.mark_warning.setWordWrap(True)
+        else:
+            self.mark_warning.setStyleSheet(
+                "color: #285680; font-size: 13px; font-weight: bold;"
+            )
+
+        # Make sure final visual state is correct after message override
+        self.update_finalize_button_state()
+
 
     def load_subject_data(self):
         subject_idx = self.subject_dropdown.currentIndex()
@@ -777,7 +1149,7 @@ class AnnotationAppCallbacks:
         self.waveform_complete = False
         
         self.plot_all_leads()
-        
+
         self.schedule_visible_y_autoscale()
 
         self.update_waveform_and_mark()
@@ -821,6 +1193,37 @@ class AnnotationAppCallbacks:
             self.mark_btn.setDisabled(True)
             return
 
+        if getattr(self, "waveform_complete", False):
+            self.mark_btn.setDisabled(True)
+
+            self.cpr_yes.setDisabled(True)
+            self.cpr_no.setDisabled(True)
+            self.cpr_U2D.setDisabled(True)
+            self.rhythm_dropdown.setDisabled(True)
+            self.rhythm_explanation.setDisabled(True)
+
+            if hasattr(self, "finalize_waveform_btn"):
+                self.finalize_waveform_btn.setDisabled(True)
+
+            if getattr(self, "terminal_event_status", "") == "continues_beyond_waveform":
+                msg = (
+                    "Waveform annotation complete! Cardiac arrest/event continues "
+                    "beyond available waveform."
+                )
+            else:
+                msg = (
+                    "Waveform annotation complete! No further marking needed."
+                )
+
+            self.mark_warning.setText(msg)
+            self.mark_warning.setStyleSheet(
+                "font-size:13px; font-weight:bold; color:#199E40;"
+            )
+            self.mark_warning.setWordWrap(True)
+
+            self.remove_last_btn.setDisabled(len(self.annotations) == 0)
+            return
+    
         # --- Main logic ---
         cpr      = self.get_cpr_val()
         rhythm   = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else ""
@@ -918,6 +1321,8 @@ class AnnotationAppCallbacks:
         self.mark_btn.setDisabled(bool(warnings))
         self.remove_last_btn.setDisabled(len(self.annotations) == 0)
 
+        self.update_finalize_button_state()
+
         # Check completed annotation
         if getattr(self, "waveform_complete", False):
             self.mark_btn.setDisabled(True)
@@ -931,18 +1336,30 @@ class AnnotationAppCallbacks:
         def handler(mouse_event):
             if mouse_event.button() != Qt.LeftButton:
                 return
+
+            if getattr(self, "waveform_complete", False):
+                self.mark_warning.setText(
+                    "Waveform annotation is complete. Remove the last mark if you need to revise it."
+                )
+                self.mark_warning.setStyleSheet(
+                    "font-size:13px; font-weight:bold; color:#199E40;"
+                )
+                self.mark_warning.setWordWrap(True)
+                return
+
             vb = self.waveform_plots[lead_idx].getViewBox()
             mouse_point = vb.mapSceneToView(mouse_event.scenePos())
             t_clicked = float(mouse_point.x())
 
-            waveform_end = self.time_axis[-1]
-            if t_clicked > waveform_end:
-                # Snap to end of waveform if clicked beyond it
-                t_clicked = waveform_end
-            elif (waveform_end - t_clicked) <= 1.0:
-                # Snap to end if within 1 second on waveform (due to 1 second min rhythm marking requirement)
-                t_clicked = waveform_end
-            
+            waveform_end = self.get_waveform_end_time()
+            if waveform_end is not None:
+                # Do not allow marking beyond waveform.
+                # If within <= 1 second of end, snap to final point.
+                if t_clicked > waveform_end:
+                    t_clicked = waveform_end
+                elif (waveform_end - t_clicked) <= 1.0:
+                    t_clicked = waveform_end
+
             if self.last_mark is None:
                 self.last_mark = t_clicked
                 self.current_marker = None
@@ -956,6 +1373,7 @@ class AnnotationAppCallbacks:
                 self.update_waveform_and_mark()
             else:
                 print(f"Ignored click at {t_clicked:.2f} (must be after last_mark={self.last_mark:.2f})")
+
         return handler
 
 
@@ -969,49 +1387,82 @@ class AnnotationAppCallbacks:
 
     def handle_mark_clicked(self):
         print("handle_mark_clicked CALLED")
+
+        if getattr(self, "waveform_complete", False):
+            self.mark_warning.setText(
+                "Waveform annotation is already complete. Remove the last mark to revise."
+            )
+            self.mark_warning.setStyleSheet(
+                "font-size:13px; font-weight:bold; color:#199E40;"
+            )
+            self.mark_warning.setWordWrap(True)
+            return
+
+        final_segment_reached = False
+
         if (
             self.current_marker is not None
             and self.last_mark is not None
             and self.current_marker > self.last_mark
         ):
-            rhythm_label = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else None
-
             ann = {
-                "user": self.username_input.currentText().strip(),
+                "user": self.get_user_name(),
                 "subject": self.subject_dropdown.currentData(),
                 "cpr": self.get_cpr_val(),
                 "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
                 "rhythm_expl": self.rhythm_explanation.toPlainText(),
                 "start": self.last_mark,
                 "end": self.current_marker,
+                "waveform_complete": False,
+                "terminal_event_status": "",
+                "terminal_event_comment": "",
             }
+
+            final_segment_reached = self.is_at_waveform_end(ann["end"])
+
             print(f"APPENDING ANNOTATION: {ann}")
             self.annotations.append(ann)
 
-            # Completion detection logic
-            waveform_end = self.time_axis[-1]
-            if self.current_marker == waveform_end:
-                # If this is the last mark needed
-                self.waveform_complete = True
-                self.mark_warning.setText("Waveform annotation complete! No further marking needed.")
-                self.mark_warning.setStyleSheet("font-size:13px; font-weight:bold; color:#199E40;")
-                # Trigger save and disable further marking
-                self.save_all_to_file()
-                self.mark_btn.setDisabled(True)
-            else:
-                # Prepare for next marking
-                self.last_mark = self.current_marker
-                self.current_marker = None
-                self.pending_clear_sidebar = True
-                self.update_sidebar_ui()
+            # Prepare for next marking
+            self.last_mark = self.current_marker
+            self.current_marker = None
+            self.pending_clear_sidebar = True
+            self.update_sidebar_ui()
         else:
             print("Attempted to mark invalid or zero-length region.")
 
         self.update_sidebar_ui()
         self.update_waveform_and_mark()
         self.update_table_data()
+        self.update_finalize_button_state()
+
+        if final_segment_reached and not getattr(self, "waveform_complete", False):
+            self.mark_warning.setText(
+                "End of waveform reached. Please finalize waveform annotation."
+            )
+            self.mark_warning.setStyleSheet(
+                "font-size:13px; font-weight:bold; color:#285680;"
+            )
+            self.mark_warning.setWordWrap(True)
+
+            # Optional: automatically open the explicit dialog immediately.
+            # If user cancels, the Finalize Waveform button remains enabled.
+            self.handle_finalize_waveform_clicked()
+
         print("Current ANNOTATIONS LIST after marking:", self.annotations)
 
+
+    def get_user_name(self):
+        """
+        Return the selected username from the username widget.
+
+        Supports both QComboBox and QLineEdit in case the UI changes later.
+        """
+        if hasattr(self.username_input, "currentText"):
+            return self.username_input.currentText().strip()
+        elif hasattr(self.username_input, "text"):
+            return self.get_user_name()
+        return ""
 
     def update_table_data(self):
         self.ann_table.setRowCount(len(self.annotations))
@@ -1129,26 +1580,35 @@ class AnnotationAppCallbacks:
     def save_all_to_file(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
-        user_name = self.username_input.currentText().strip()
+
+        if hasattr(self, "username_dropdown"):
+            user_name = self.username_dropdown.currentText().strip()
+        else:
+            user_name = self.get_user_name()
+
         base_folder = getattr(self, "base_folder", None)
 
         if not annotations:
             self.save_message.setText("No annotations to save.")
             return
+
         if not subject or not base_folder or not user_name:
             self.save_message.setText("Subject, base folder, or User Name not set.")
             return
 
         subject_folder = os.path.join(base_folder, subject)
-        user_name = self.username_input.currentText().strip()
         output_folder = os.path.join(subject_folder, "output", user_name)
         os.makedirs(output_folder, exist_ok=True)
 
-        # Determine completion
+        partial_filename = f"annotations_{subject}_{user_name}.csv"
+        complete_filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+
+        partial_path = os.path.join(output_folder, partial_filename)
+        complete_path = os.path.join(output_folder, complete_filename)
+
         if getattr(self, "waveform_complete", False):
-            filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
-            partial_filename = f"annotations_{subject}_{user_name}.csv"
-            partial_path = os.path.join(output_folder, partial_filename)
+            fullpath = complete_path
+
             if os.path.exists(partial_path):
                 try:
                     os.remove(partial_path)
@@ -1156,9 +1616,15 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete partial annotation file: {e}")
         else:
-            filename = f"annotations_{subject}_{user_name}.csv"
+            fullpath = partial_path
 
-        fullpath = os.path.join(output_folder, filename)
+            if os.path.exists(complete_path):
+                try:
+                    os.remove(complete_path)
+                    print(f"Deleted complete annotation file after reverting to partial: {complete_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete complete annotation file: {e}")
+
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Saved to {fullpath}")
 
@@ -1166,21 +1632,30 @@ class AnnotationAppCallbacks:
     def autosave_annotations(self):
         annotations = getattr(self, "annotations", [])
         subject = self.subject_dropdown.currentData()
-        user_name = self.username_input.currentText().strip()
+
+        if hasattr(self, "username_dropdown"):
+            user_name = self.username_dropdown.currentText().strip()
+        else:
+            user_name = self.get_user_name()
+
         base_folder = getattr(self, "base_folder", None)
 
         if not annotations or not subject or not base_folder or not user_name:
             return
 
         subject_folder = os.path.join(base_folder, subject)
-        user_name = self.username_input.currentText().strip()
         output_folder = os.path.join(subject_folder, "output", user_name)
         os.makedirs(output_folder, exist_ok=True)
 
+        partial_filename = f"annotations_{subject}_{user_name}.csv"
+        complete_filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+
+        partial_path = os.path.join(output_folder, partial_filename)
+        complete_path = os.path.join(output_folder, complete_filename)
+
         if getattr(self, "waveform_complete", False):
-            filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
-            partial_filename = f"annotations_{subject}_{user_name}.csv"
-            partial_path = os.path.join(output_folder, partial_filename)
+            fullpath = complete_path
+
             if os.path.exists(partial_path):
                 try:
                     os.remove(partial_path)
@@ -1188,9 +1663,15 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete partial annotation file: {e}")
         else:
-            filename = f"annotations_{subject}_{user_name}.csv"
+            fullpath = partial_path
 
-        fullpath = os.path.join(output_folder, filename)
+            if os.path.exists(complete_path):
+                try:
+                    os.remove(complete_path)
+                    print(f"Deleted complete annotation file after reverting to partial: {complete_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete complete annotation file: {e}")
+
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Auto-saved to {fullpath}")
 

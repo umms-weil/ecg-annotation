@@ -29,6 +29,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.move(screen.left() + int(screen.width()*0.025), screen.top() + int(screen.height()*0.025))
 
         # ---- State variables ----
+        self.username_list = ["", "pwalczyk", "sardara", "ghamid"]
         self.base_folder = ""
         self.data_store = {}
         self.annotations = []
@@ -37,6 +38,9 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.n_mark_clicks = 0
         self.triggered_by_mark_btn = False
         self.waveform_complete = False
+        self.waveform_complete = False
+        self.terminal_event_status = ""
+        self.terminal_event_comment = ""
 
         font_css = f"font-size:13px; color:{UM_BLUE}; background:white; border:2px solid black;"
 
@@ -85,14 +89,10 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sidebar_layout.addWidget(sep)
 
         # --- Username input ---
-        # self.username_input = QLineEdit(); 
-        # self.username_input.setStyleSheet(font_css)
-        # sidebar_layout.addWidget(self.username_input)
-
         self.username_input = QComboBox()
         self.username_input.setStyleSheet(font_css)
         # Static User List
-        usernames = ["", "pwalczyk", "sardara", "ghamid"]
+        usernames = self.username_list
         self.username_input.addItems(usernames)
         # Prevent free-form text input
         self.username_input.setEditable(False)
@@ -169,65 +169,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         }
         """
 
-        # lab = QLabel("Is this segment Interpretable?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # sidebar_layout.addWidget(lab)
-
-        # self.radio_interp_yes = QRadioButton("Yes"); self.radio_interp_no = QRadioButton("No")
-        # self.radio_interp_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # self.radio_interp_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # interp_row = QHBoxLayout(); interp_row.addWidget(self.radio_interp_yes); interp_row.addWidget(self.radio_interp_no)
-        # sidebar_layout.addLayout(interp_row)
-        # Exclusive block-style radio for Interpretable
-        # self.radio_interp_yes = QPushButton('YES')
-        # self.radio_interp_no = QPushButton('NO')
-        # self.radio_interp_yes.setCheckable(True)
-        # self.radio_interp_no.setCheckable(True)
-        # Exclusive group:
-        # self.interp_btn_group = QButtonGroup()
-        # self.interp_btn_group.addButton(self.radio_interp_yes)
-        # self.interp_btn_group.addButton(self.radio_interp_no)
-        # self.interp_btn_group.setExclusive(True)
-
-
-        # self.radio_interp_yes.setStyleSheet(block_css)
-        # self.radio_interp_no.setStyleSheet(block_css)
-
-        # # --- Layout for Interpretable ---
-        # interp_row = QHBoxLayout()
-        # interp_row.addWidget(self.radio_interp_yes)
-        # interp_row.addWidget(self.radio_interp_no)
-        # sidebar_layout.addLayout(interp_row)
-
-        # lab = QLabel("Comment/Explanation"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # sidebar_layout.addWidget(lab)
-        # self.comment_box = QTextEdit()
-        # self.comment_box.setMaximumHeight(40)  
-        # self.comment_box.setStyleSheet(font_css)
-        # sidebar_layout.addWidget(self.comment_box)
-
-        # lab = QLabel("Is this Cardiac Arrest?"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # sidebar_layout.addWidget(lab)
-
-        # self.cardiac_arrest_yes = QRadioButton("Yes"); self.cardiac_arrest_no = QRadioButton("No")
-        # self.cardiac_arrest_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # self.cardiac_arrest_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # ca_row = QHBoxLayout(); ca_row.addWidget(self.cardiac_arrest_yes); ca_row.addWidget(self.cardiac_arrest_no)
-        # sidebar_layout.addLayout(ca_row)
-        # self.cardiac_arrest_yes = QPushButton('YES')
-        # self.cardiac_arrest_no = QPushButton('NO')
-        # self.cardiac_arrest_yes.setCheckable(True)
-        # self.cardiac_arrest_no.setCheckable(True)
-        # self.ca_btn_group = QButtonGroup()
-        # self.ca_btn_group.addButton(self.cardiac_arrest_yes)
-        # self.ca_btn_group.addButton(self.cardiac_arrest_no)
-        # self.ca_btn_group.setExclusive(True)
-        # self.cardiac_arrest_yes.setStyleSheet(block_css)
-        # self.cardiac_arrest_no.setStyleSheet(block_css)
-        # ca_row = QHBoxLayout()
-        # ca_row.addWidget(self.cardiac_arrest_yes)
-        # ca_row.addWidget(self.cardiac_arrest_no)
-        # sidebar_layout.addLayout(ca_row)
-
         # Horizontal separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -255,12 +196,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sep.setStyleSheet(f"background-color: {UM_ACCENT}; min-height: 2px; border:none;")
         sidebar_layout.addWidget(sep)
 
-        # Old way of showing buttons
-        # self.cpr_yes = QRadioButton("Yes"); self.cpr_no = QRadioButton("No")
-        # self.cpr_yes.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # self.cpr_no.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # cpr_row = QHBoxLayout(); cpr_row.addWidget(self.cpr_yes); cpr_row.addWidget(self.cpr_no)
-        # sidebar_layout.addLayout(cpr_row)
         self.cpr_yes = QPushButton('YES')
         self.cpr_no = QPushButton('NO')
         self.cpr_U2D = QPushButton('Unable to Determine')
@@ -355,18 +290,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.rhythm_explanation.setStyleSheet(font_css)
         sidebar_layout.addWidget(self.rhythm_explanation)
 
-        # lab = QLabel("Navigation step size (seconds):"); lab.setStyleSheet(f"font-size:13px; color:{UM_BLUE};")
-        # sidebar_layout.addWidget(lab)
-        # self.nav_step_size = QSpinBox(); self.nav_step_size.setMinimum(1); self.nav_step_size.setValue(1)
-        # self.nav_step_size.setStyleSheet(font_css)
-        # sidebar_layout.addWidget(self.nav_step_size)
-        # navrow = QHBoxLayout()
-        # self.prev_btn = QPushButton("←"); self.next_btn = QPushButton("→")
-        # for btn in [self.prev_btn, self.next_btn]:
-        #     btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:4px;")
-        # navrow.addWidget(self.prev_btn); navrow.addWidget(self.next_btn)
-        # sidebar_layout.addLayout(navrow)
-
         # --- Marking button ---
         self.mark_btn = QPushButton("Mark"); 
         self.mark_btn.setMinimumHeight(48)
@@ -380,6 +303,27 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             padding: 8px 32px;
         """)
         sidebar_layout.addWidget(self.mark_btn)
+
+        self.finalize_waveform_btn = QPushButton("Finalize Waveform")
+        self.finalize_waveform_btn.setDisabled(True)
+        self.finalize_waveform_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+                font-size:13px;
+                font-weight:bold;
+                border-radius:4px;
+                padding:6px;
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        sidebar_layout.addWidget(self.finalize_waveform_btn)
+
         # self.waveform_complete is True after annotation ends and should disable further marking
         self.mark_btn.setDisabled(self.waveform_complete)
 
@@ -425,21 +369,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         sidebar_layout.addWidget(self.save_all_btn)
         self.save_message = QLabel(""); sidebar_layout.addWidget(self.save_message)
 
-        # self.interp_group = QButtonGroup()
-        # self.interp_group.addButton(self.radio_interp_yes)
-        # self.interp_group.addButton(self.radio_interp_no)
-        # self.interp_group.setExclusive(True)
-
-        # self.ca_group = QButtonGroup()
-        # self.ca_group.addButton(self.cardiac_arrest_yes)
-        # self.ca_group.addButton(self.cardiac_arrest_no)
-        # self.ca_group.setExclusive(True)
-
-        # self.cpr_group = QButtonGroup()
-        # self.cpr_group.addButton(self.cpr_yes)
-        # self.cpr_group.addButton(self.cpr_no)
-        # self.cpr_group.addButton(self.cpr_U2D)
-        # self.cpr_group.setExclusive(True)
 
         sidebar_layout.setSpacing(4)
         sidebar_layout.setContentsMargins(4, 2, 4, 2)
@@ -463,18 +392,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.folder_status = QLabel("")
         self.folder_status.setStyleSheet(f"font-size:12px; color:{UM_BLUE}; margin-top:0px; margin-bottom:0px; font-weight:bold;")
         main_layout.addWidget(self.folder_status)
-
-        # winrow = QHBoxLayout()
-        # winlab = QLabel("Waveform view window (seconds):"); winlab.setStyleSheet(f"font-size:13px; color:{UM_BLUE}; font-weight: bold;")
-        # winrow.addWidget(winlab)
-        # self.win_size = QSpinBox(); self.win_size.setMinimum(1); self.win_size.setMaximum(10000); self.win_size.setValue(10)
-        # self.win_size.setStyleSheet(font_css)
-        # winrow.addWidget(self.win_size)
-        # main_layout.addLayout(winrow)
-
-        # self.x_scrollbar = QSlider(Qt.Horizontal); self.x_scrollbar.setMinimum(0); self.x_scrollbar.setMaximum(100)
-        # self.x_scrollbar.setStyleSheet(f"background:{UM_ACCENT};")
-        # main_layout.addWidget(self.x_scrollbar)
 
         # ---- Waveform plots State Variable ----
         self.waveform_plots = []
@@ -619,11 +536,8 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.load_annotation_btn.clicked.connect(self.handle_load_annotation)
         self.save_all_btn.clicked.connect(self.save_all_to_file)
         self.mark_btn.clicked.connect(self.handle_mark_clicked)
+        self.finalize_waveform_btn.clicked.connect(self.handle_finalize_waveform_clicked)
 
-        # self.radio_interp_yes.toggled.connect(self.update_sidebar_ui)
-        # self.radio_interp_no.toggled.connect(self.update_sidebar_ui)
-        # self.cardiac_arrest_yes.toggled.connect(self.update_sidebar_ui)
-        # self.cardiac_arrest_no.toggled.connect(self.update_sidebar_ui)
         self.cpr_yes.toggled.connect(self.update_sidebar_ui)
         self.cpr_no.toggled.connect(self.update_sidebar_ui)
         self.cpr_U2D.toggled.connect(self.update_sidebar_ui)
@@ -643,22 +557,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.update_sidebar_ui()
         self.update_table_data()
 
-    # ---- Helper functions for your callbacks.py ----
-    # def get_interp_val(self):
-    #     if self.radio_interp_yes.isChecked():
-    #         return "Yes"
-    #     elif self.radio_interp_no.isChecked():
-    #         return "No"
-    #     else:
-    #         return None
-
-    # def get_ca_val(self):
-    #     if self.cardiac_arrest_yes.isChecked():
-    #         return "Yes"
-    #     elif self.cardiac_arrest_no.isChecked():
-    #         return "No"
-    #     else:
-    #         return None
 
     def get_cpr_val(self):
         if self.cpr_yes.isChecked():
@@ -670,12 +568,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         else:
             return None
 
-    # def clear_cardiac_arrest(self):
-    #     self.cardiac_arrest_yes.setAutoExclusive(False)
-    #     self.cardiac_arrest_yes.setChecked(False)
-    #     self.cardiac_arrest_no.setChecked(False)
-    #     self.cardiac_arrest_yes.setAutoExclusive(True)
-
     def clear_cpr(self):
         self.cpr_yes.setChecked(False)
         self.cpr_no.setChecked(False)
@@ -685,16 +577,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.cpr_U2D.setAutoExclusive(False)
         # self.cpr_yes.setAutoExclusive(True)
 
-
-    # def handle_mark_clicked(self):
-    #     self.triggered_by_mark_btn = True
-    #     self.n_mark_clicks += 1
-    #     self.update_waveform_and_mark()
-    #     self.triggered_by_mark_btn = False
-    #     # Move the start up: next mark starts here!
-    #     self.last_mark = self.current_marker
-    #     self.current_marker = None
-    #     self.update_sidebar_ui()
 
 if __name__ == "__main__":
     import pyqtgraph.exporters
