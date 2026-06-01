@@ -75,32 +75,39 @@ class AnnotationAppCallbacks:
 
 
     def update_subject_dropdown(self):
-        base_folder = getattr(self, 'base_folder', None)
+        base_folder = getattr(self, "base_folder", None)
         combo = self.subject_dropdown
+
         combo.clear()
         combo.setDisabled(True)
+
         if not base_folder or not os.path.isdir(base_folder):
             return
-        subjects = list_subjects(base_folder)
-        for subj in subjects:
-            output_folder = os.path.join(base_folder, subj["name"], "output")
-            total_annotations = 0
-            complete_annotations = 0
 
-            if os.path.isdir(output_folder):
-                # Go through each user subfolder inside the output folder
-                user_folders = [os.path.join(output_folder, u) for u in os.listdir(output_folder) 
-                                if os.path.isdir(os.path.join(output_folder, u))]
-                for user_folder in user_folders:
-                    files = [f for f in os.listdir(user_folder) if f.endswith('.csv')]
-                    total_annotations += len(files)
-                    complete_annotations += sum(1 for f in files if f.endswith('_COMPLETE.csv'))
+        subjects = list_subjects(base_folder)
+
+        print(f"FOUND {len(subjects)} waveform records")
+        for s in subjects[:5]:
+            print("SUBJECT RECORD:", s)
+
+        for subj in subjects:
+            total_annotations = subj.get("n_annotations", 0)
+            complete_annotations = subj.get("n_complete_annotations", 0)
 
             if total_annotations > 0:
                 label = f"✅ {subj['name']} ({complete_annotations}/{total_annotations} complete)"
             else:
                 label = f"⭕ {subj['name']} (0/0 complete)"
-            combo.addItem(label, userData=subj["name"])
+
+            # Store full record dict, not just subject name
+            combo.addItem(label, userData=subj)
+
+            idx = combo.count() - 1
+            if subj.get("kind") == "h5":
+                combo.setItemData(idx, subj.get("h5_path", ""), Qt.ToolTipRole)
+            elif subj.get("kind") == "csv":
+                combo.setItemData(idx, subj.get("csv_path", ""), Qt.ToolTipRole)
+
         combo.setDisabled(False)
 
 
@@ -836,26 +843,16 @@ class AnnotationAppCallbacks:
 
     def delete_annotation_files_for_current_user(self):
         """
-        Delete both partial and COMPLETE annotation files for current user/subject.
-
-        Used when all annotations are removed.
+        Delete both partial and COMPLETE annotation files for current user/selected waveform.
         """
-        subject = self.subject_dropdown.currentData()
-        base_folder = getattr(self, "base_folder", None)
-
-        if hasattr(self, "username_dropdown"):
-            user_name = self.username_dropdown.currentText().strip()
-        else:
-            user_name = self.get_user_name()
-
-        if not subject or not base_folder or not user_name:
+        output_folder = self.get_annotation_output_folder()
+        if not output_folder:
             return
 
-        subject_folder = os.path.join(base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output", user_name)
+        partial_filename, complete_filename = self.get_annotation_filenames()
 
-        partial_path = os.path.join(output_folder, f"annotations_{subject}_{user_name}.csv")
-        complete_path = os.path.join(output_folder, f"annotations_{subject}_{user_name}_COMPLETE.csv")
+        partial_path = os.path.join(output_folder, partial_filename)
+        complete_path = os.path.join(output_folder, complete_filename)
 
         for path in [partial_path, complete_path]:
             if os.path.exists(path):
@@ -900,8 +897,8 @@ class AnnotationAppCallbacks:
 
     def handle_load_annotation(self):
         print("LOAD ANNOTATIONS BUTTON CLICKED")
-        user_name = self.username_input.currentText().strip()
-        subject = self.subject_dropdown.currentData()
+        user_name = self.get_user_name()
+        subject = self.get_selected_subject_name()
 
         # --- Username check ---
         if not user_name:
@@ -917,11 +914,15 @@ class AnnotationAppCallbacks:
             return
 
         # --- Build the annotation file path ---
-        subject_folder = os.path.join(self.base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output", user_name)
+        output_folder = self.get_annotation_output_folder()
 
-        partial_filename = f"annotations_{subject}_{user_name}.csv"
-        complete_filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+        if not output_folder:
+            self.mark_warning.setText("Could not determine annotation output folder.")
+            self.mark_warning.setWordWrap(True)
+            self.mark_warning.setStyleSheet("color: #B71234; font-size: 13px; font-weight: bold;")
+            return
+
+        partial_filename, complete_filename = self.get_annotation_filenames()
 
         partial_path = os.path.join(output_folder, partial_filename)
         complete_path = os.path.join(output_folder, complete_filename)
@@ -1077,18 +1078,41 @@ class AnnotationAppCallbacks:
         if subject_idx < 0:
             print("No subject selected.")
             return
-        subject_name = self.subject_dropdown.itemData(subject_idx)
-        base_folder = getattr(self, 'base_folder', None)
-        print(f"Button clicked: load subject {subject_name} from {base_folder}")
-        if not subject_name or not base_folder or not os.path.isdir(base_folder):
-            print('No data loaded.')
+
+        record = self.subject_dropdown.currentData()
+        base_folder = getattr(self, "base_folder", None)
+
+        if not isinstance(record, dict):
+            print("Invalid subject selection. Expected subject record dict.")
             self.data_store = {}
             return
+
+        subject_name = record.get("subject", "")
+        encounter_name = record.get("encounter", "")
+        h5_path = record.get("h5_path", "")
+
+        print(f"Button clicked: load subject {subject_name} from {base_folder}")
+        print(f"Selected record: {record}")
+
+        if not subject_name or not base_folder or not os.path.isdir(base_folder):
+            print("No data loaded.")
+            self.data_store = {}
+            return
+
+        # Store selected record for annotation save/load paths
+        self.current_subject_record = record
+        self.current_subject = subject_name
+        self.current_encounter = encounter_name
+        self.current_namespace = record.get("namespace", "")
+        self.current_file_tag = record.get("file_tag", "")
+        self.current_output_path = record.get("output_path", "")
+        self.current_h5_path = h5_path
         code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/waveform_manifest.csv'
         # code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/data/FAKE_DATA/waveform_manifest.csv'
         self.recording_start_sec, self.recording_end_sec, code_start_sec, code_stop_sec = get_code_time_bounds(subject_name, code_csv_path)
         loaded_waveforms = load_waveforms_for_subject(
-            base_folder, subject_name,
+            base_folder,
+            record,
             recording_start_sec=self.recording_start_sec,
             code_start_sec=code_start_sec,
             code_stop_sec=code_stop_sec,
@@ -1137,6 +1161,9 @@ class AnnotationAppCallbacks:
             "leads": [l.tolist() if l is not None else None for l in leads_ds],
             "lead_names": lead_names,
             "subject": subject_name,
+            "encounter": encounter_name,
+            "file_tag": record.get("file_tag", ""),
+            "source_path": record.get("h5_path", record.get("csv_path", "")),
         }
         self.annotations = []
         print("Loaded data for:", subject_name)
@@ -1405,9 +1432,16 @@ class AnnotationAppCallbacks:
             and self.last_mark is not None
             and self.current_marker > self.last_mark
         ):
+            record = self.get_selected_subject_record()
+            subject_name = self.get_selected_subject_name()
+
             ann = {
                 "user": self.get_user_name(),
-                "subject": self.subject_dropdown.currentData(),
+                "subject": subject_name,
+                "encounter": record.get("encounter", "") if record else "",
+                "namespace": record.get("namespace", "") if record else "",
+                "file_tag": record.get("file_tag", "") if record else "",
+                "source_path": record.get("h5_path", record.get("csv_path", "")) if record else "",
                 "cpr": self.get_cpr_val(),
                 "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
                 "rhythm_expl": self.rhythm_explanation.toPlainText(),
@@ -1456,13 +1490,88 @@ class AnnotationAppCallbacks:
         """
         Return the selected username from the username widget.
 
-        Supports both QComboBox and QLineEdit in case the UI changes later.
+        Supports both QComboBox and QLineEdit.
         """
         if hasattr(self.username_input, "currentText"):
             return self.username_input.currentText().strip()
         elif hasattr(self.username_input, "text"):
-            return self.get_user_name()
+            return self.username_input.text().strip()
         return ""
+    
+    def get_selected_subject_record(self):
+        """
+        Return the selected subject/waveform record from the subject dropdown.
+
+        With the new H5 loader, currentData() should be a dict returned by
+        processing.list_subjects().
+        """
+        record = self.subject_dropdown.currentData()
+        return record if isinstance(record, dict) else None
+
+
+    def get_selected_subject_name(self):
+        """
+        Return the selected subject identifier as a string.
+        """
+        record = self.get_selected_subject_record()
+        if record:
+            return record.get("subject", "")
+        data = self.subject_dropdown.currentData()
+        return str(data) if data else ""
+
+
+    def get_selected_file_tag(self):
+        """
+        Return file_tag for the selected H5 record, if available.
+        """
+        record = self.get_selected_subject_record()
+        if record:
+            return record.get("file_tag", "")
+        return ""
+
+
+    def get_annotation_output_folder(self):
+        """
+        Return the annotation output folder for the current subject/user.
+
+        New H5 structure:
+            record["output_path"] / username
+
+        Old fallback:
+            base_folder / subject / output / username
+        """
+        user_name = self.get_user_name()
+        subject = self.get_selected_subject_name()
+        base_folder = getattr(self, "base_folder", None)
+        record = self.get_selected_subject_record()
+
+        if not user_name or not subject:
+            return None
+
+        if record and record.get("output_path"):
+            return os.path.join(record["output_path"], user_name)
+
+        if base_folder:
+            return os.path.join(base_folder, subject, "output", user_name)
+
+        return None
+
+
+    def get_annotation_filenames(self):
+        """
+        Return partial and complete annotation filenames for the current selection.
+        """
+        subject = self.get_selected_subject_name()
+        user_name = self.get_user_name()
+        file_tag = self.get_selected_file_tag()
+
+        # Include file_tag if present for readability and extra collision protection.
+        if file_tag:
+            base = f"annotations_{subject}_{file_tag}_{user_name}"
+        else:
+            base = f"annotations_{subject}_{user_name}"
+
+        return f"{base}.csv", f"{base}_COMPLETE.csv"
 
     def update_table_data(self):
         self.ann_table.setRowCount(len(self.annotations))
@@ -1579,13 +1688,8 @@ class AnnotationAppCallbacks:
 
     def save_all_to_file(self):
         annotations = getattr(self, "annotations", [])
-        subject = self.subject_dropdown.currentData()
-
-        if hasattr(self, "username_dropdown"):
-            user_name = self.username_dropdown.currentText().strip()
-        else:
-            user_name = self.get_user_name()
-
+        subject = self.get_selected_subject_name()
+        user_name = self.get_user_name()
         base_folder = getattr(self, "base_folder", None)
 
         if not annotations:
@@ -1596,12 +1700,14 @@ class AnnotationAppCallbacks:
             self.save_message.setText("Subject, base folder, or User Name not set.")
             return
 
-        subject_folder = os.path.join(base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output", user_name)
+        output_folder = self.get_annotation_output_folder()
+        if not output_folder:
+            self.save_message.setText("Could not determine annotation output folder.")
+            return
+
         os.makedirs(output_folder, exist_ok=True)
 
-        partial_filename = f"annotations_{subject}_{user_name}.csv"
-        complete_filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+        partial_filename, complete_filename = self.get_annotation_filenames()
 
         partial_path = os.path.join(output_folder, partial_filename)
         complete_path = os.path.join(output_folder, complete_filename)
@@ -1631,24 +1737,20 @@ class AnnotationAppCallbacks:
 
     def autosave_annotations(self):
         annotations = getattr(self, "annotations", [])
-        subject = self.subject_dropdown.currentData()
-
-        if hasattr(self, "username_dropdown"):
-            user_name = self.username_dropdown.currentText().strip()
-        else:
-            user_name = self.get_user_name()
-
+        subject = self.get_selected_subject_name()
+        user_name = self.get_user_name()
         base_folder = getattr(self, "base_folder", None)
 
         if not annotations or not subject or not base_folder or not user_name:
             return
 
-        subject_folder = os.path.join(base_folder, subject)
-        output_folder = os.path.join(subject_folder, "output", user_name)
+        output_folder = self.get_annotation_output_folder()
+        if not output_folder:
+            return
+
         os.makedirs(output_folder, exist_ok=True)
 
-        partial_filename = f"annotations_{subject}_{user_name}.csv"
-        complete_filename = f"annotations_{subject}_{user_name}_COMPLETE.csv"
+        partial_filename, complete_filename = self.get_annotation_filenames()
 
         partial_path = os.path.join(output_folder, partial_filename)
         complete_path = os.path.join(output_folder, complete_filename)
