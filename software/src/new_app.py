@@ -2,9 +2,10 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QRadioButton, QComboBox, QTextEdit, QSlider, QSpinBox, QTableWidget,
-    QAbstractItemView, QButtonGroup, QHeaderView, QFrame, 
+    QAbstractItemView, QButtonGroup, QHeaderView, QFrame,
+    QToolButton, QSizePolicy
 )
-from PyQt5.QtCore import (Qt, QTimer)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import pyqtgraph as pg
 from new_callbacks import AnnotationAppCallbacks
 import pyqtgraph as pg
@@ -16,6 +17,96 @@ UM_WHITE = "#FFFFFF"
 UM_RED = "#D50032"
 COMPLETION_GREEN = "#199E40"
 
+# Dropdown wrapper for signals
+class CollapsibleWaveformSection(QWidget):
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, title, content_widget, parent=None):
+        super().__init__(parent)
+
+        self.content_widget = content_widget
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setText(title)
+        self.toggle_button.setToolTip(title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(True)
+        self.toggle_button.setArrowType(Qt.DownArrow)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+
+        # Narrower button.
+        # Adjust 72/80/90 depending on how much label you want visible.
+        self.toggle_button.setFixedWidth(78)
+        self.toggle_button.setFixedHeight(28)
+
+        self.toggle_button.setStyleSheet(f"""
+            QToolButton {{
+                background-color: {UM_BLUE};
+                color: {UM_MAIZE};
+                font-size: 10px;
+                font-weight: bold;
+                border: 1px solid {UM_ACCENT};
+                border-radius: 3px;
+                padding-left: 2px;
+                text-align: left;
+            }}
+            QToolButton:hover {{
+                background-color: {UM_ACCENT};
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Key part:
+        # Align the caret button to the top-left so it does not float in the center
+        # when the row gets taller.
+        layout.addWidget(self.toggle_button, 0, Qt.AlignLeft | Qt.AlignTop)
+
+        # Plot/content gets all remaining horizontal space.
+        layout.addWidget(self.content_widget, 1)
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.toggle_button.toggled.connect(self.set_expanded)
+
+        self.set_expanded(True)
+
+    def set_title(self, title):
+        if title is None:
+            return
+
+        title = str(title).strip()
+        if not title:
+            return
+
+        self.toggle_button.setText(title)
+        self.toggle_button.setToolTip(title)
+
+    def set_expanded(self, expanded):
+        self.content_widget.setVisible(expanded)
+
+        if expanded:
+            self.toggle_button.setArrowType(Qt.DownArrow)
+
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+        else:
+            self.toggle_button.setArrowType(Qt.RightArrow)
+
+            collapsed_h = self.toggle_button.height() + 2
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setMinimumHeight(collapsed_h)
+            self.setMaximumHeight(collapsed_h)
+
+        self.updateGeometry()
+        self.toggled.emit(expanded)
+
+    def is_expanded(self):
+        return self.content_widget.isVisible()
 
 class MainApp(QMainWindow, AnnotationAppCallbacks):
     def __init__(self):
@@ -27,6 +118,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # For a margin:
         self.resize(int(screen.width() * 0.95), int(screen.height() * 0.95))
         self.move(screen.left() + int(screen.width()*0.025), screen.top() + int(screen.height()*0.025))
+        self.setMaximumSize(screen.width(), screen.height())
 
         # ---- State variables ----
         self.username_list = ["", "pwalczyk", "sardara", "ghamid"]
@@ -395,6 +487,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         # ---- Waveform plots State Variable ----
         self.waveform_plots = []
+        self.waveform_sections = []
         self.y_shift_buttons = []  # To store Y+ / Y– buttons for each plot
         self.y_zoom_buttons = [] # To store Y-IN / Y–Out buttons for each plot
         self.auto_y_buttons = [] # To store Y autoscale button for each plot
@@ -407,34 +500,63 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.auto_y_margin_fraction = 0.1 # 5% y-padding above/below signal.
         self.auto_y_min_span = 0.25        # Minimum y-span if signal is flat/nearly flat.
 
-        # ---- Create (up to) 7 waveform plots with Y+ / Y– buttons ----
+        # Container for all waveform sections.
+        # This lets collapsed plots shrink while expanded plots share the newly available space.
+        plots_container = QWidget()
+        self.plots_layout = QVBoxLayout(plots_container)
+        self.plots_layout.setContentsMargins(0, 0, 0, 0)
+        self.plots_layout.setSpacing(1)
+        plots_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+
+        # ---- Create up to 7 collapsible waveform plots with existing controls ----
         for lead_idx in range(7):
+            default_waveform_label = f"Waveform {lead_idx + 1}"
+
             plt = pg.PlotWidget()
             plt.setBackground(UM_WHITE)
             plt.showGrid(x=True, y=True, alpha=0.3)
-            plt.setMinimumHeight(75)
+
+            # Slightly lower than 75 because each waveform now also has a 24px header.
+            # You can increase this if your window has enough vertical room.
+            plt.setMinimumHeight(50)
+            plt.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             plt.setStyleSheet(f"border: 1.5px solid {UM_ACCENT}; margin-bottom:2px;")
             plt.setLabel('left', "", color=UM_BLUE, size="10pt")
-            if lead_idx != 6:
-                plt.hideAxis('bottom')
 
-            # Create small Y+ / Y– buttons (changes Y axis scale)
+            # Bottom axis visibility will be managed dynamically so that the last
+            # currently expanded plot shows the x-axis.
+            plt.hideAxis('bottom')
+
+            # Create small Y+ / Y– buttons
             y_in_btn = QPushButton("Y-IN")
             y_out_btn = QPushButton("Y-OUT")
             self.y_zoom_buttons.append((y_out_btn, y_in_btn))
-            # Smaller styling
-            y_in_btn.setStyleSheet(f"font-size: 11pt ;color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 26px;")
-            y_out_btn.setStyleSheet(f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 20px;")
 
-            # Create small YU / YD buttons (changes Y axis scale)
+            y_in_btn.setStyleSheet(
+                f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; "
+                "min-width: 20px; min-height: 26px;"
+            )
+            y_out_btn.setStyleSheet(
+                f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; "
+                "min-width: 20px; min-height: 20px;"
+            )
+
+            # Create small YU / YD buttons
             y_up_btn = QPushButton("Y+")
             y_down_btn = QPushButton("Y-")
             self.y_shift_buttons.append((y_down_btn, y_up_btn))
-            # Smaller styling
-            y_up_btn.setStyleSheet(f"font-size: 11pt ;color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 26px;")
-            y_down_btn.setStyleSheet(f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; min-width: 20px; min-height: 20px;")
 
-            # Create and Auto Y scaling button
+            y_up_btn.setStyleSheet(
+                f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; "
+                "min-width: 20px; min-height: 26px;"
+            )
+            y_down_btn.setStyleSheet(
+                f"font-size: 11pt; color:{UM_BLUE}; background: #FFCB05; "
+                "min-width: 20px; min-height: 20px;"
+            )
+
+            # Existing Auto-Y scaling button
             auto_y_btn = QPushButton("AUTO-ON")
             auto_y_btn.setToolTip("Automatically rescales this lead when the visible time window changes.")
             auto_y_btn.setStyleSheet(
@@ -448,7 +570,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             # Stack buttons vertically
             btn_col = QVBoxLayout()
             btn_col.setSpacing(1)
-            btn_col.setContentsMargins(0,0,0,0)
+            btn_col.setContentsMargins(0, 0, 0, 0)
             btn_col.addWidget(y_out_btn)
             btn_col.addWidget(y_in_btn)
             btn_col.addWidget(y_up_btn)
@@ -457,18 +579,48 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
             btn_widget = QWidget()
             btn_widget.setLayout(btn_col)
-            btn_widget.setMaximumWidth(36)
+            btn_widget.setFixedWidth(44)
+            # Increased slightly so AUTO-ON is not clipped.
+            btn_widget.setMaximumWidth(52)
+            btn_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
             # Row widget: buttons on the left, plot fills rest
             plot_row = QWidget()
             row_layout = QHBoxLayout(plot_row)
-            row_layout.setContentsMargins(0,0,0,0)
+            row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(2)
             row_layout.addWidget(btn_widget)
-            row_layout.addWidget(plt)
+            row_layout.addWidget(plt, stretch=1)
 
-            main_layout.addWidget(plot_row)
+            plot_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+            # Wrap row in compact collapsible section.
+            # The caret/label button will sit to the LEFT of btn_widget.
+            section = CollapsibleWaveformSection(f"Waveform {lead_idx + 1}", plot_row)
+            section.toggled.connect(lambda _expanded: self.handle_waveform_section_toggled())
+
+            self.plots_layout.addWidget(section, stretch=1)
+
+            self.waveform_sections.append(section)
             self.waveform_plots.append(plt)
+
+            # Keeps collapsible title synced if callbacks later do:
+            # self.waveform_plots[i].setLabel('left', real_lead_name, ...)
+            self._patch_plot_set_label_to_update_section(plt, section)
+
+            # Important:
+            # If your callbacks later call plt.setLabel('left', real_lead_name, ...),
+            # this keeps the collapsible header synchronized with that real lead name.
+            self._patch_plot_set_label_to_update_section(plt, section)
+            
+
+        # Add the waveform container to the main layout.
+        # Expanded plots share this area; collapsed plots shrink to just their headers.
+        main_layout.addWidget(plots_container, stretch=7)
+
+        # Make sure one visible plot has a bottom x-axis.
+        self.update_waveform_section_stretches()
+        self.update_visible_plot_axes()
 
         # Connect Shift buttons to handlers
         for idx_shift, (down_btn, up_btn) in enumerate(self.y_shift_buttons):
@@ -556,6 +708,236 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # ---- UI update ----
         self.update_sidebar_ui()
         self.update_table_data()
+
+        QTimer.singleShot(0, self.finalize_initial_waveform_layout)
+
+    # --- HELPER FUNCTIONS ---
+
+    def finalize_initial_waveform_layout(self):
+        """
+        Run after the window is actually visible.
+
+        Qt/PyQtGraph can calculate tiny initial plot heights while widgets are still
+        being constructed. A delayed layout refresh fixes the initial squished plots
+        without needing the user to click a button.
+        """
+        if hasattr(self, "waveform_sections"):
+            self.update_waveform_section_stretches()
+
+        if hasattr(self, "waveform_plots"):
+            self.update_visible_plot_axes()
+
+            for plt in self.waveform_plots:
+                plt.updateGeometry()
+                plt.repaint()
+
+        if hasattr(self, "plots_layout"):
+            self.plots_layout.invalidate()
+            self.plots_layout.activate()
+
+        central = self.centralWidget()
+        if central is not None and central.layout() is not None:
+            central.layout().invalidate()
+            central.layout().activate()
+
+        self.updateGeometry()
+        self.repaint()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+
+        if getattr(self, "_initial_waveform_layout_done", False):
+            return
+
+        self._initial_waveform_layout_done = True
+
+        # Run once immediately after show, then again shortly after.
+        # The second call helps PyQtGraph after it receives its final size.
+        QTimer.singleShot(0, self.finalize_initial_waveform_layout)
+        QTimer.singleShot(150, self.finalize_initial_waveform_layout)
+
+    def handle_waveform_section_toggled(self):
+        self.update_visible_plot_axes()
+        self.update_waveform_section_stretches()
+
+        # Let Qt finish show/hide first, then force relayout inside current window.
+        QTimer.singleShot(0, self.refresh_waveform_layout)
+
+    def update_waveform_section_stretches(self):
+        """
+        Expanded rows share available vertical space.
+        Collapsed rows take only compact button height.
+        """
+        if not hasattr(self, "plots_layout"):
+            return
+
+        expanded_min_height = 65
+
+        for i, section in enumerate(self.waveform_sections):
+            if section.is_expanded():
+                self.plots_layout.setStretch(i, 1)
+                section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                section.setMinimumHeight(expanded_min_height)
+                section.setMaximumHeight(16777215)
+            else:
+                self.plots_layout.setStretch(i, 0)
+
+                collapsed_h = section.toggle_button.height() + 2
+                section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                section.setMinimumHeight(collapsed_h)
+                section.setMaximumHeight(collapsed_h)
+
+        self.plots_layout.invalidate()
+        self.plots_layout.activate()
+
+    def refresh_waveform_layout(self):
+        """
+        Recompute layout without allowing the main window to grow off-screen.
+        """
+        if hasattr(self, "plots_layout"):
+            self.plots_layout.activate()
+
+        central = self.centralWidget()
+        if central is not None and central.layout() is not None:
+            central.layout().activate()
+
+        self.updateGeometry()
+
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        if screen is None:
+            return
+
+        available = screen.availableGeometry()
+        current = self.geometry()
+
+        new_width = min(current.width(), available.width())
+        new_height = min(current.height(), available.height())
+
+        new_x = current.x()
+        new_y = current.y()
+
+        if new_x < available.left():
+            new_x = available.left()
+        if new_y < available.top():
+            new_y = available.top()
+        if new_x + new_width > available.right():
+            new_x = available.right() - new_width
+        if new_y + new_height > available.bottom():
+            new_y = available.bottom() - new_height
+
+        self.setGeometry(new_x, new_y, new_width, new_height)
+
+    def update_visible_plot_axes(self):
+        """
+        Show the bottom x-axis only on the last currently expanded waveform.
+        """
+        if not hasattr(self, "waveform_sections") or not hasattr(self, "waveform_plots"):
+            return
+
+        visible_indices = [
+            i for i, section in enumerate(self.waveform_sections)
+            if section.is_expanded()
+        ]
+
+        for plt in self.waveform_plots:
+            plt.hideAxis('bottom')
+
+        if visible_indices:
+            self.waveform_plots[visible_indices[-1]].showAxis('bottom')
+
+
+    def _patch_plot_set_label_to_update_section(self, plot_widget, section):
+        """
+        Keeps collapsible header text synced with plot left-axis labels.
+        """
+        original_set_label = plot_widget.setLabel
+
+        def set_label_and_update_header(axis, text=None, units=None, unitPrefix=None, **kwargs):
+            result = original_set_label(
+                axis,
+                text=text,
+                units=units,
+                unitPrefix=unitPrefix,
+                **kwargs
+            )
+
+            if axis in ("left", "l") and text is not None and str(text).strip():
+                section.set_title(str(text))
+
+            return result
+
+        plot_widget.setLabel = set_label_and_update_header
+
+
+    def set_waveform_label(self, plot_idx, label):
+        """
+        Optional explicit helper if you want to update both the plot axis label
+        and collapsible header yourself.
+        """
+        if plot_idx < 0 or plot_idx >= len(self.waveform_plots):
+            return
+
+        label = str(label).strip()
+
+        self.waveform_plots[plot_idx].setLabel(
+            'left',
+            label,
+            color=UM_BLUE,
+            size="10pt"
+        )
+
+        if hasattr(self, "waveform_sections"):
+            self.waveform_sections[plot_idx].set_title(label)
+
+    def handle_waveform_section_toggled(self):
+        self.update_visible_plot_axes()
+        self.update_waveform_section_stretches()
+
+        QTimer.singleShot(0, self.refresh_waveform_layout)
+
+
+    def refresh_waveform_layout(self):
+        """
+        Force a layout recalculation inside the current window size.
+        This helps prevent reopen/collapse actions from making the top-level
+        window grow beyond the screen.
+        """
+        central = self.centralWidget()
+        if central is not None and central.layout() is not None:
+            central.layout().activate()
+
+        self.updateGeometry()
+
+        # Clamp the window back inside the available screen if Qt ever nudges it.
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        if screen is None:
+            return
+
+        available = screen.availableGeometry()
+        current = self.geometry()
+
+        new_width = min(current.width(), available.width())
+        new_height = min(current.height(), available.height())
+
+        new_x = current.x()
+        new_y = current.y()
+
+        if new_x < available.left():
+            new_x = available.left()
+        if new_y < available.top():
+            new_y = available.top()
+        if new_x + new_width > available.right():
+            new_x = available.right() - new_width
+        if new_y + new_height > available.bottom():
+            new_y = available.bottom() - new_height
+
+        self.setGeometry(new_x, new_y, new_width, new_height)
 
 
     def get_cpr_val(self):
