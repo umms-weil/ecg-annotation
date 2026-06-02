@@ -478,6 +478,14 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         folderrow.addWidget(self.folder_input)
         self.set_folder_btn = QPushButton("Set Folder"); self.set_folder_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:1px;")
         folderrow.addWidget(self.set_folder_btn)
+
+        self.toggle_event_labels_btn = QPushButton("Hide Event Labels")
+        self.toggle_event_labels_btn.setStyleSheet(
+            f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; "
+            "font-weight:bold; border-radius:1px;"
+        )
+        folderrow.addWidget(self.toggle_event_labels_btn)
+
         main_layout.addLayout(folderrow)
 
         # -- Folder status label --
@@ -485,12 +493,18 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.folder_status.setStyleSheet(f"font-size:12px; color:{UM_BLUE}; margin-top:0px; margin-bottom:0px; font-weight:bold;")
         main_layout.addWidget(self.folder_status)
 
+
+
+
         # ---- Waveform plots State Variable ----
         self.waveform_plots = []
         self.waveform_sections = []
         self.y_shift_buttons = []  # To store Y+ / Y– buttons for each plot
         self.y_zoom_buttons = [] # To store Y-IN / Y–Out buttons for each plot
         self.auto_y_buttons = [] # To store Y autoscale button for each plot
+
+        # Label state variable
+        self.event_labels_visible = True
 
         # ---- Auto-Y behavior settings ----
         self.auto_y_enabled_by_user = []   # One bool per plot. True = user wants Auto-Y ON.
@@ -684,6 +698,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         # -- SIGNALS wiring - same as before
         self.set_folder_btn.clicked.connect(self.set_base_folder)
+        self.toggle_event_labels_btn.clicked.connect(self.toggle_event_labels_visibility)
         self.load_subject_btn.clicked.connect(self.load_subject_data)
         self.load_annotation_btn.clicked.connect(self.handle_load_annotation)
         self.save_all_btn.clicked.connect(self.save_all_to_file)

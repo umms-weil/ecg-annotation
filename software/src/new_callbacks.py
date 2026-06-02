@@ -441,6 +441,34 @@ class AnnotationAppCallbacks:
 
         self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
         return True
+    
+    def toggle_event_labels_visibility(self):
+        """
+        Show/hide all event marker text labels without replotting waveforms or lines.
+        """
+        self.event_labels_visible = not getattr(self, "event_labels_visible", True)
+
+        self.set_event_labels_visible(self.event_labels_visible)
+
+        if hasattr(self, "toggle_event_labels_btn"):
+            if self.event_labels_visible:
+                self.toggle_event_labels_btn.setText("Hide Event Labels")
+            else:
+                self.toggle_event_labels_btn.setText("Show Event Labels")
+
+
+    def set_event_labels_visible(self, visible):
+        """
+        Set visibility for event marker TextItems only.
+        Keeps vertical event lines visible.
+        """
+        if not hasattr(self, "waveform_plots"):
+            return
+
+        for plot in self.waveform_plots:
+            for item in list(plot.items()):
+                if isinstance(item, pg.TextItem) and getattr(item, "is_event_marker", False):
+                    item.setVisible(visible)
         
     def get_waveform_end_time(self):
         """
@@ -735,14 +763,42 @@ class AnnotationAppCallbacks:
                 plot.addItem(vline)
 
                 # Add label
-                label = pg.TextItem(event_name, color="#FF0808", anchor=(0, 0))
-                font = QFont('Arial')
-                font.setPointSize(20)
+                label_text = event_name
+
+                # Optional: include value too, but keep it compact
+                # label_text = f"{event_name}: {event_value}"
+                label_color = pg.mkColor(event_color)
+                label = pg.TextItem(
+                    label_text,
+                    color=label_color,
+                    anchor=(0, 0.5),
+                    fill=pg.mkBrush(255, 255, 255, 210),
+                    border=pg.mkPen(label_color, width=1),
+                )
+                label.is_event_marker = True
+                label.setVisible(getattr(self, "event_labels_visible", True))
+
+                font = QFont("Arial")
+                font.setPointSize(8)
+                font.setBold(True)
                 label.setFont(font)
-                label.setPos(event_sec, label_y)
-                label.setZValue(100)
-                plot.addItem(label)
+
+                y_min, y_max = plot.viewRange()[1]
+                y_span = y_max - y_min if y_max != y_min else 1.0
+
+                # Happy median: upper-middle, but not at the top edge
+                label_y = y_max - 0.35 * y_span
+
+                x_min, x_max = plot.viewRange()[0]
+                x_span = x_max - x_min if x_max != x_min else 1.0
+                label_x = event_sec + 0.003 * x_span
+
+                label.setPos(label_x, label_y)
+                label.setZValue(1000)
+
+                plot.addItem(label, ignoreBounds=True)
                 self.event_labels.append(label)
+
         
         # Put in the Code start and End as Red markers
         event_color = (128, 0, 0)
@@ -1107,7 +1163,12 @@ class AnnotationAppCallbacks:
         self.current_file_tag = record.get("file_tag", "")
         self.current_output_path = record.get("output_path", "")
         self.current_h5_path = h5_path
-        code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/waveform_manifest.csv'
+        code_csv_path = os.path.join(base_folder, "waveform_manifest.csv")
+
+        if not os.path.exists(code_csv_path):
+            print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
+
+        #code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/waveform_manifest.csv'
         # code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/data/FAKE_DATA/waveform_manifest.csv'
         self.recording_start_sec, self.recording_end_sec, code_start_sec, code_stop_sec = get_code_time_bounds(subject_name, code_csv_path)
         loaded_waveforms = load_waveforms_for_subject(
@@ -1609,10 +1670,16 @@ class AnnotationAppCallbacks:
         for plot in self.waveform_plots:
             items_to_remove = []
             for item in list(plot.items()):
-                if isinstance(item, (pg.LinearRegionItem, pg.TextItem)) or (
-                    isinstance(item, pg.InfiniteLine) and getattr(item, 'is_marker', False)
-                ):
+                if isinstance(item, pg.LinearRegionItem):
                     items_to_remove.append(item)
+
+                elif isinstance(item, pg.TextItem):
+                    if not getattr(item, "is_event_marker", False):
+                        items_to_remove.append(item)
+
+                elif isinstance(item, pg.InfiniteLine):
+                    if getattr(item, "is_marker", False) and not getattr(item, "is_event_marker", False):
+                        items_to_remove.append(item)
             for itm in items_to_remove:
                 plot.removeItem(itm)
 
