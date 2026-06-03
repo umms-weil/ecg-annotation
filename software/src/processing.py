@@ -1351,8 +1351,7 @@ def load_waveforms_for_subject(
     subject_name = str(subject)
     subj_path = os.path.join(base_folder, subject_name)
 
-    h5_files = sorted(glob.glob(os.path.join(subj_path, "*.h5")))
-    h5_files += sorted(glob.glob(os.path.join(subj_path, "*", "*.h5")))
+    h5_files = find_waveform_files_recursive(subj_path, ".h5")
 
     if h5_files:
         if len(h5_files) > 1:
@@ -1369,14 +1368,10 @@ def load_waveforms_for_subject(
             desired_fs=DESIRED_FS_DEFAULT,
         )
 
-    csv_files = sorted(
-        f for f in glob.glob(os.path.join(subj_path, "*.csv"))
+    csv_files = [
+        f for f in find_waveform_files_recursive(subj_path, ".csv")
         if not _is_annotation_csv(f)
-    )
-    csv_files += sorted(
-        f for f in glob.glob(os.path.join(subj_path, "*", "*.csv"))
-        if not _is_annotation_csv(f)
-    )
+    ]
 
     if csv_files:
         if len(csv_files) > 1:
@@ -1513,13 +1508,16 @@ def annotation_output_folder_for_record(record: Dict, user_name: str) -> str:
 
         subject_path/output/user/
     """
+    if record.get("output_path"):
+        return os.path.join(record["output_path"], user_name)
+
     if record.get("encounter_path"):
         return os.path.join(record["encounter_path"], "output", user_name)
 
     if record.get("subject_path"):
         return os.path.join(record["subject_path"], "output", user_name)
 
-    raise ValueError("Record does not contain encounter_path or subject_path.")
+    raise ValueError("Record does not contain output_path, encounter_path, or subject_path.")
 
 
 def load_annotations_csv(subject_folder: str) -> Optional[pd.DataFrame]:
@@ -1570,3 +1568,34 @@ def subject_folder(base_folder: str, subject: Union[str, Dict]) -> str:
         return subject.get("subject_path", "")
 
     return os.path.join(base_folder, str(subject))
+
+
+# =============================================================================
+# Windows Helpers
+# =============================================================================
+
+def find_waveform_files_recursive(root_folder: str, extension: str) -> List[str]:
+    """
+    Recursively find waveform files while skipping annotation output folders.
+    """
+    matches = []
+
+    if not os.path.isdir(root_folder):
+        return matches
+
+    extension = extension.lower()
+
+    for root, dirs, files in os.walk(root_folder):
+        dirs[:] = [
+            d for d in dirs
+            if d.lower() not in {"output", "__pycache__"} and not d.startswith(".")
+        ]
+
+        for fname in files:
+            if fname.startswith("."):
+                continue
+
+            if fname.lower().endswith(extension):
+                matches.append(os.path.join(root, fname))
+
+    return sorted(matches)
