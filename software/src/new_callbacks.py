@@ -63,7 +63,8 @@ class RelativeAxis(pg.AxisItem):
 
 class AnnotationAppCallbacks:
     def set_base_folder(self):
-        folder_path = self.folder_input.text()
+        folder_path = self.folder_input.text().strip().strip('"').strip("'")
+        folder_path = os.path.normpath(folder_path)
         print("SET FOLDER CLICKED", folder_path)
         if not folder_path or not os.path.isdir(folder_path):
             self.base_folder = ""
@@ -801,36 +802,38 @@ class AnnotationAppCallbacks:
 
         
         # Put in the Code start and End as Red markers
-        event_color = (128, 0, 0)
-        event_pen   = pg.mkPen(event_color, width=5, style=QtCore.Qt.DashLine)
-        for plot in self.waveform_plots:
-            y_min, y_max = plot.viewRange()[1]
-            label_y = y_max - 0.05 * (y_max - y_min)
-            # Add vertical line marker
-            # Start Marker
-            vline = pg.InfiniteLine(pos=self.code_start_sec, angle=90, pen=event_pen)
-            vline.is_event_marker = True
-            plot.addItem(vline)
-            # End Marker
-            vline = pg.InfiniteLine(pos=self.code_stop_sec, angle=90, pen=event_pen)
-            vline.is_event_marker = True
-            plot.addItem(vline)
+        if self.code_start_sec is not None and self.code_stop_sec is not None:
+            event_color = (128, 0, 0)
+            event_pen   = pg.mkPen(event_color, width=5, style=QtCore.Qt.DashLine)
+            for plot in self.waveform_plots:
+                y_min, y_max = plot.viewRange()[1]
+                label_y = y_max - 0.05 * (y_max - y_min)
+                # Add vertical line marker
+                # Start Marker
+                vline = pg.InfiniteLine(pos=self.code_start_sec, angle=90, pen=event_pen)
+                vline.is_event_marker = True
+                plot.addItem(vline)
+                # End Marker
+                vline = pg.InfiniteLine(pos=self.code_stop_sec, angle=90, pen=event_pen)
+                vline.is_event_marker = True
+                plot.addItem(vline)
 
         # Put in the Recording start and End as Purple markers
-        event_color = (128, 128, 0)
-        event_pen   = pg.mkPen(event_color, width=5, style=QtCore.Qt.DashLine)
-        for plot in self.waveform_plots:
-            y_min, y_max = plot.viewRange()[1]
-            label_y = y_max - 0.05 * (y_max - y_min)
-            # Add vertical line marker
-            # Start Marker
-            vline = pg.InfiniteLine(pos=self.recording_start_sec, angle=90, pen=event_pen)
-            vline.is_event_marker = True
-            plot.addItem(vline)
-            # End Marker
-            vline = pg.InfiniteLine(pos=self.recording_end_sec, angle=90, pen=event_pen)
-            vline.is_event_marker = True
-            plot.addItem(vline)
+        if self.recording_start_sec is not None and self.recording_end_sec is not None:
+            event_color = (128, 128, 0)
+            event_pen   = pg.mkPen(event_color, width=5, style=QtCore.Qt.DashLine)
+            for plot in self.waveform_plots:
+                y_min, y_max = plot.viewRange()[1]
+                label_y = y_max - 0.05 * (y_max - y_min)
+                # Add vertical line marker
+                # Start Marker
+                vline = pg.InfiniteLine(pos=self.recording_start_sec, angle=90, pen=event_pen)
+                vline.is_event_marker = True
+                plot.addItem(vline)
+                # End Marker
+                vline = pg.InfiniteLine(pos=self.recording_end_sec, angle=90, pen=event_pen)
+                vline.is_event_marker = True
+                plot.addItem(vline)
 
 
     def plot_all_leads(self):
@@ -848,6 +851,11 @@ class AnnotationAppCallbacks:
         # Clear all plots and set up axis
         for plot in self.waveform_plots:
             plot.clear()
+
+        if self.time_axis is None or len(self.time_axis) == 0:
+            for plot in self.waveform_plots:
+                plot.setTitle("No Data Loaded")
+            return
 
         t0 = self.time_axis[0]   # Epic time, start of window
 
@@ -1165,12 +1173,29 @@ class AnnotationAppCallbacks:
         self.current_h5_path = h5_path
         code_csv_path = os.path.join(base_folder, "waveform_manifest.csv")
 
-        if not os.path.exists(code_csv_path):
+        if os.path.exists(code_csv_path):
+            try:
+                self.recording_start_sec, self.recording_end_sec, code_start_sec, code_stop_sec = get_code_time_bounds(
+                    subject_name,
+                    code_csv_path,
+                    manifest_path=code_csv_path,
+                )
+            except Exception as e:
+                print(f"WARNING: Could not read code time bounds: {e}")
+                self.recording_start_sec = None
+                self.recording_end_sec = None
+                code_start_sec = None
+                code_stop_sec = None
+        else:
             print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
+            self.recording_start_sec = None
+            self.recording_end_sec = None
+            code_start_sec = None
+            code_stop_sec = None
 
         #code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/waveform_manifest.csv'
         # code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/data/FAKE_DATA/waveform_manifest.csv'
-        self.recording_start_sec, self.recording_end_sec, code_start_sec, code_stop_sec = get_code_time_bounds(subject_name, code_csv_path)
+
         loaded_waveforms = load_waveforms_for_subject(
             base_folder,
             record,
@@ -1189,13 +1214,33 @@ class AnnotationAppCallbacks:
 
         print(times_ds, leads_ds, lead_names, units, Fs)
         # --- Filter manifest events for current subject and code window ---
-        manifest_events_df = get_events_for_window(
-            code_csv_path, subject_name, code_start_sec, code_stop_sec
-        )
-        manifest_events_df['event_sec'] = manifest_events_df['RECORDED_TIME'].apply(datetime_string_to_seconds_since_1970)
-        manifest_events_df = manifest_events_df.drop_duplicates(subset=['FLO_MEAS_NAME', 'FLOWSHEET_VALUE', 'RECORDED_TIME'])
-        print(manifest_events_df)
-        self.manifest_events = manifest_events_df
+        if os.path.exists(code_csv_path):
+            try:
+                manifest_events_df = get_events_for_window(
+                    code_csv_path,
+                    subject_name,
+                    code_start_sec,
+                    code_stop_sec,
+                )
+
+                if "event_sec" not in manifest_events_df.columns and "RECORDED_TIME" in manifest_events_df.columns:
+                    manifest_events_df["event_sec"] = manifest_events_df["RECORDED_TIME"].apply(
+                        datetime_string_to_seconds_since_1970
+                    )
+
+                if {"FLO_MEAS_NAME", "FLOWSHEET_VALUE", "RECORDED_TIME"}.issubset(manifest_events_df.columns):
+                    manifest_events_df = manifest_events_df.drop_duplicates(
+                        subset=["FLO_MEAS_NAME", "FLOWSHEET_VALUE", "RECORDED_TIME"]
+                    )
+
+                print(manifest_events_df)
+                self.manifest_events = manifest_events_df
+
+            except Exception as e:
+                print(f"WARNING: Could not load manifest events: {e}")
+                self.manifest_events = pd.DataFrame()
+        else:
+            self.manifest_events = pd.DataFrame()
 
         print("data x:", times_ds[:10], "...", times_ds[-10:])
         print("annot", [ (a['start'], a['end']) for a in self.annotations ])

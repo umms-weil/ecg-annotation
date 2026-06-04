@@ -1,9 +1,10 @@
 import sys
+import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QRadioButton, QComboBox, QTextEdit, QSlider, QSpinBox, QTableWidget,
     QAbstractItemView, QButtonGroup, QHeaderView, QFrame,
-    QToolButton, QSizePolicy
+    QToolButton, QSizePolicy, QFileDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import pyqtgraph as pg
@@ -474,9 +475,22 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         folderrow = QHBoxLayout()
         folderlab = QLabel("Select Base Data Folder:"); folderlab.setStyleSheet(f"font-size:13px; color:{UM_ACCENT}; font-weight: bold;")
         folderrow.addWidget(folderlab)
-        self.folder_input = QLineEdit(); self.folder_input.setStyleSheet(font_css)
+        self.folder_input = QLineEdit()
+        self.folder_input.setStyleSheet(font_css)
         folderrow.addWidget(self.folder_input)
-        self.set_folder_btn = QPushButton("Set Folder"); self.set_folder_btn.setStyleSheet(f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; font-weight:bold; border-radius:1px;")
+
+        self.browse_folder_btn = QPushButton("Browse")
+        self.browse_folder_btn.setStyleSheet(
+            f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; "
+            "font-weight:bold; border-radius:1px;"
+        )
+        folderrow.addWidget(self.browse_folder_btn)
+
+        self.set_folder_btn = QPushButton("Set Folder")
+        self.set_folder_btn.setStyleSheet(
+            f"background:{UM_BLUE}; color:{UM_MAIZE}; font-size:13px; "
+            "font-weight:bold; border-radius:1px;"
+        )
         folderrow.addWidget(self.set_folder_btn)
 
         self.toggle_event_labels_btn = QPushButton("Hide Event Labels")
@@ -621,11 +635,6 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
             # Keeps collapsible title synced if callbacks later do:
             # self.waveform_plots[i].setLabel('left', real_lead_name, ...)
             self._patch_plot_set_label_to_update_section(plt, section)
-
-            # Important:
-            # If your callbacks later call plt.setLabel('left', real_lead_name, ...),
-            # this keeps the collapsible header synchronized with that real lead name.
-            self._patch_plot_set_label_to_update_section(plt, section)
             
 
         # Add the waveform container to the main layout.
@@ -698,6 +707,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         # -- SIGNALS wiring - same as before
         self.set_folder_btn.clicked.connect(self.set_base_folder)
+        self.browse_folder_btn.clicked.connect(self.browse_base_folder)
         self.toggle_event_labels_btn.clicked.connect(self.toggle_event_labels_visibility)
         self.load_subject_btn.clicked.connect(self.load_subject_data)
         self.load_annotation_btn.clicked.connect(self.handle_load_annotation)
@@ -727,6 +737,32 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         QTimer.singleShot(0, self.finalize_initial_waveform_layout)
 
     # --- HELPER FUNCTIONS ---
+
+    def browse_base_folder(self):
+        """
+        Open a native folder picker and insert the selected folder path
+        into the base folder input box.
+
+        The user can still manually edit/paste the path and then click Set Folder.
+        """
+        starting_dir = self.folder_input.text().strip().strip('"').strip("'")
+
+        if not starting_dir or not os.path.isdir(starting_dir):
+            starting_dir = os.path.expanduser("~")
+
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Base Data Folder",
+            starting_dir,
+        )
+
+        if folder:
+            folder = os.path.normpath(folder)
+            self.folder_input.setText(folder)
+
+            # Optional: automatically set folder immediately after browsing.
+            # If you prefer requiring the user to click Set Folder, comment this out.
+            self.set_base_folder()
 
     def finalize_initial_waveform_layout(self):
         """
