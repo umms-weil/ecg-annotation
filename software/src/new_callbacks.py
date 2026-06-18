@@ -25,6 +25,9 @@ UM_WHITE = "#FFFFFF"
 UM_RED = "#D50032"
 COMPLETION_GREEN = "#199E40"
 
+# WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
+WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
+
 # LABEL_COLORS = {
 #     "Normal Heart Rhythm": "LightGreen",
 #     "Sinus tachycardia": "LightBlue",
@@ -939,6 +942,7 @@ class AnnotationAppCallbacks:
 
         # If removing after completion, clear terminal completion state.
         self.clear_terminal_completion_fields()
+        self.mark_warning.setText("")
 
         if self.annotations:
             self.last_mark = self.annotations[-1]["end"]
@@ -1202,7 +1206,7 @@ class AnnotationAppCallbacks:
             recording_start_sec=self.recording_start_sec,
             code_start_sec=code_start_sec,
             code_stop_sec=code_stop_sec,
-            desired_waveforms=["I", "II", "III", "V", "AVF", "AVL", "AVR"]
+            desired_waveforms=WAVEFORM_PLOT_ORDER
         )
         print(type(loaded_waveforms))
         print(loaded_waveforms)
@@ -1356,7 +1360,12 @@ class AnnotationAppCallbacks:
 
             self.remove_last_btn.setDisabled(len(self.annotations) == 0)
             return
-    
+
+        # If we are no longer complete, make annotation controls usable again.
+        self.cpr_yes.setDisabled(False)
+        self.cpr_no.setDisabled(False)
+        self.cpr_U2D.setDisabled(False)
+
         # --- Main logic ---
         cpr      = self.get_cpr_val()
         rhythm   = self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else ""
@@ -1397,9 +1406,21 @@ class AnnotationAppCallbacks:
             # Enable rhythm dropdown & visually restore label
             self.rhythm_dropdown.setDisabled(False)
             self.rhythm_dropdown.blockSignals(False)
+
             if hasattr(self, "rhythm_label"):
                 self.rhythm_label.setText("Rhythm Type")
                 self.rhythm_label.setStyleSheet("font-size:13px; color: #00274C;")
+
+            rhythm = self.rhythm_dropdown.currentText()
+
+            # Explanation is required/editable only for these rhythm labels
+            if rhythm in ["Unable to Determine", "Other"]:
+                self.rhythm_explanation.setDisabled(False)
+            else:
+                self.rhythm_explanation.blockSignals(True)
+                self.rhythm_explanation.setPlainText("")
+                self.rhythm_explanation.setDisabled(True)
+                self.rhythm_explanation.blockSignals(False)
         else:
             # No CPR selection yet; everything disabled, visually gray
             self.rhythm_dropdown.blockSignals(True)
@@ -1578,16 +1599,14 @@ class AnnotationAppCallbacks:
 
         if final_segment_reached and not getattr(self, "waveform_complete", False):
             self.mark_warning.setText(
-                "End of waveform reached. Please finalize waveform annotation."
+                "End of waveform reached. Please click 'Finalize Waveform' when ready."
             )
             self.mark_warning.setStyleSheet(
                 "font-size:13px; font-weight:bold; color:#285680;"
             )
             self.mark_warning.setWordWrap(True)
 
-            # Optional: automatically open the explicit dialog immediately.
-            # If user cancels, the Finalize Waveform button remains enabled.
-            self.handle_finalize_waveform_clicked()
+            self.update_finalize_button_state()
 
         print("Current ANNOTATIONS LIST after marking:", self.annotations)
 

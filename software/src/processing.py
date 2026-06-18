@@ -18,7 +18,8 @@ import pytz
 # Constants
 # =============================================================================
 
-WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
+# WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
+WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
 
 H5_TIME_DATASET = "time_epoch_s"
 H5_SIGNALS_GROUP = "signals"
@@ -26,15 +27,68 @@ H5_SIGNALS_GROUP = "signals"
 DESIRED_FS_DEFAULT = 120.0
 
 SIGNAL_ALIASES = {
-    "I": ["I", "LEAD I", "ECG I"],
-    "II": ["II", "LEAD II", "ECG II"],
-    "III": ["III", "LEAD III", "ECG III"],
-    "V": ["V", "LEAD V", "ECG V"],
-    "AVF": ["AVF", "aVF", "LEAD AVF", "LEAD aVF"],
-    "AVL": ["AVL", "aVL", "LEAD AVL", "LEAD aVL"],
-    "AVR": ["AVR", "aVR", "LEAD AVR", "LEAD aVR"],
+    "I": [
+        "I",
+        "LEAD I",
+        "ECG I",
+        "GE ECG I",
+        "GE_ECG_I",
+    ],
+    "II": [
+        "II",
+        "LEAD II",
+        "ECG II",
+        "GE ECG II",
+        "GE_ECG_II",
+    ],
+    "III": [
+        "III",
+        "LEAD III",
+        "ECG III",
+        "GE ECG III",
+        "GE_ECG_III",
+    ],
+    "V": [
+        "V",
+        "LEAD V",
+        "ECG V",
+        "GE ECG V",
+        "GE_ECG_V",
+    ],
+    "AVF": [
+        "AVF",
+        "aVF",
+        "LEAD AVF",
+        "LEAD aVF",
+        "GE ECG AVF",
+        "GE_ECG_AVF",
+    ],
+    "AVL": [
+        "AVL",
+        "aVL",
+        "LEAD AVL",
+        "LEAD aVL",
+        "GE ECG AVL",
+        "GE_ECG_AVL",
+    ],
+    "AVR": [
+        "AVR",
+        "aVR",
+        "LEAD AVR",
+        "LEAD aVR",
+        "GE ECG AVR",
+        "GE_ECG_AVR",
+    ],
+    "CHEST_IMPEDANCE": [
+        "GE_Chest_Impedance_RR_1",
+        "CHEST_IMPEDANCE",
+        "Chest Impedance",
+        "IMPEDANCE",
+        "Chest Impedance Waveform",
+        "RESP",
+        "Respiration",
+    ],
 }
-
 
 # =============================================================================
 # Data structures
@@ -298,7 +352,7 @@ def list_subjects(base_folder: str) -> List[Dict]:
 
         base_folder/
             mrnnumber/
-                <NA>/
+                csnnumber/
                     GEVITAL/
                         file1.h5
                         file2.h5
@@ -368,13 +422,13 @@ def list_subjects(base_folder: str) -> List[Dict]:
 
                 # Relative path under subject.
                 # Example:
-                #   root = base/mrnnumber/<NA>/GEVITAL
-                #   rel_dir = <NA>/GEVITAL
+                #   root = base/mrnnumber/csnnumber/GEVITAL
+                #   rel_dir = CSN/GEVITAL
                 rel_dir = os.path.relpath(root, subject_path)
                 rel_parts = rel_dir.split(os.sep)
 
                 # For your current structure:
-                #   rel_parts[0] -> <NA>
+                #   rel_parts[0] -> CSN
                 #   rel_parts[-1] -> GEVITAL
                 encounter = rel_parts[0] if len(rel_parts) >= 1 and rel_parts[0] != "." else ""
                 namespace = rel_parts[-1] if len(rel_parts) >= 1 and rel_parts[-1] != "." else ""
@@ -420,7 +474,7 @@ def list_subjects(base_folder: str) -> List[Dict]:
                 # subject/encounter/namespace do not collide.
                 #
                 # Example:
-                #   .../<NA>/GEVITAL/output/<h5_stem>/<user>/annotations...
+                #   .../CSN/GEVITAL/output/<h5_stem>/<user>/annotations...
                 output_path = os.path.join(root, "output", h5_stem)
 
                 total_annotations, complete_annotations = _count_annotations_in_output(

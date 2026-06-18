@@ -1,0 +1,63 @@
+{
+  "base_output_dir": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/raw/DataPulls/Waveforms/sickbay-parser/WaveformsCPRValidation_Unfiltered",
+  "folder_template": "{MRN}/{CSN}",
+  "output_filename": "waveform_manifest.csv",
+
+  "dry_run": true,
+  "require_existing_encounter_folders": false,
+
+  "log_level": "INFO",
+  "log_file": "/path/to/logs/ehr_event_processing.log",
+
+  "drop_rows_missing_ids_or_time": true,
+  "drop_exact_duplicates": true,
+  "continue_on_file_error": false,
+  "write_progress_interval": 100,
+
+  "global_mrn_aliases": [
+    "MRN",
+    "mrn",
+    "PAT_MRN_ID",
+    "PatientMRN"
+  ],
+
+  "global_csn_aliases": [
+    "CSN",
+    "csn",
+    "PAT_ENC_CSN_ID",
+    "EncounterCSN"
+  ],
+
+  "files": [
+    {
+      "path": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/processed/Cohort/chief_complaint.csv",
+      "source_table": "chief_complaint",
+      "event_time_col": "adt_arrival_time"
+    },
+    {
+      "path": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/processed/Cohort/code_blue.csv",
+      "source_table": "code_blue",
+      "event_time_col": "event_time"
+    },
+    {
+      "path": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/processed/Cohort/diagnosis.csv",
+      "source_table": "diagnosis",
+      "event_time_col": "adt_arrival_time"
+    },
+    {
+      "path": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/processed/Cohort/flowsheet_cpr.csv",
+      "source_table": "flowsheet_cpr",
+      "event_time_col": "recorded_time"
+    },
+    {
+      "path": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/processed/Cohort/flowsheets_general.csv",
+      "source_table": "flowsheets_general",
+      "event_time_col": "recorded_time"
+    },
+    {
+      "path": "/nfs/turbo/umms-hcindy/projects/INSIGHT/data/processed/Cohort/problem_list.csv",
+      "source_table": "problem_list",
+      "event_time_col": "adt_arrival_time"
+    }
+  ]
+}
