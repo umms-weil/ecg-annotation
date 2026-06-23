@@ -1,0 +1,115 @@
+stages:
+  - docs
+  - build
+
+variables:
+  APP_NAME: "ECGWaveformAnnotationApp"
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+# -----------------------------
+# Build and compress Sphinx docs
+# -----------------------------
+docs_html:
+  stage: docs
+  tags:
+    - windows
+    - pyinstaller
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+  script:
+    - python --version
+
+    - if (Test-Path release_docs) { Remove-Item release_docs -Recurse -Force }
+    - if (Test-Path docs\build) { Remove-Item docs\build -Recurse -Force }
+
+    - python -m venv .venv-docs
+    - .\.venv-docs\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+
+    - .\.venv-docs\Scripts\python.exe -m pip install sphinx sphinx-rtd-theme sphinx-autodoc-typehints
+
+    # Install app dependencies too, if Sphinx autodoc imports your code.
+    - if (Test-Path software\requirements.txt) { .\.venv-docs\Scripts\python.exe -m pip install -r software\requirements.txt }
+
+    - $env:PYTHONPATH = "$((Get-Location).Path)\software"
+
+    - New-Item -ItemType Directory -Force -Path docs\source\_static\videos
+    - if (Test-Path software\assets) { Get-ChildItem software\assets -Filter *.mp4 -ErrorAction SilentlyContinue | Copy-Item -Destination docs\source\_static\videos -Force }
+
+    - .\.venv-docs\Scripts\python.exe -m sphinx -b html docs\source docs\build\html
+
+    - New-Item -ItemType Directory -Force -Path release_docs
+
+    - Compress-Archive -Path docs\build\html\* -DestinationPath "release_docs\ECGWaveformAnnotationApp-Docs-$env:CI_COMMIT_REF_SLUG.zip" -Force
+
+  artifacts:
+    name: "ECGWaveformAnnotationApp-docs-$CI_COMMIT_REF_SLUG"
+    paths:
+      - release_docs/*.zip
+    expire_in: never
+
+
+# -----------------------------
+# Build and compress Windows executable
+# Also includes compressed docs artifact
+# -----------------------------
+build_windows:
+  stage: build
+  tags:
+    - windows
+    - pyinstaller
+
+  needs:
+    - job: docs_html
+      artifacts: true
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+  script:
+    - python --version
+
+    - if (Test-Path build) { Remove-Item build -Recurse -Force }
+    - if (Test-Path dist) { Remove-Item dist -Recurse -Force }
+    - if (Test-Path release) { Remove-Item release -Recurse -Force }
+    - if (Test-Path software\build) { Remove-Item software\build -Recurse -Force }
+    - if (Test-Path software\dist) { Remove-Item software\dist -Recurse -Force }
+
+    - cd software
+
+    - python -m venv .venv
+    - .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+
+    - .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+    - .\.venv\Scripts\python.exe -m pip install pyinstaller
+
+    - .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name $env:APP_NAME new_app.py
+
+    - cd ..
+
+    - New-Item -ItemType Directory -Force -Path release
+    - New-Item -ItemType Directory -Force -Path release\app_package
+
+    - Copy-Item "software\dist\$env:APP_NAME.exe" "release\app_package\$env:APP_NAME.exe"
+
+    - |
+      @(
+        "Application: $env:APP_NAME"
+        "Commit: $env:CI_COMMIT_SHA"
+        "Branch: $env:CI_COMMIT_BRANCH"
+        "Pipeline: $env:CI_PIPELINE_URL"
+        "Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+      ) | Set-Content "release\app_package\BUILD_INFO.txt"
+
+    - Compress-Archive -Path release\app_package\* -DestinationPath "release\$env:APP_NAME-Windows-$env:CI_COMMIT_REF_SLUG.zip" -Force
+
+    - if (Test-Path release_docs) { Copy-Item release_docs\*.zip release\ -Force }
+
+  artifacts:
+    name: "ECGWaveformAnnotationApp-release-$CI_COMMIT_REF_SLUG"
+    paths:
+      - release/*.zip
+    expire_in: never
