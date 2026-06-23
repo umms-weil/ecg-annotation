@@ -119,7 +119,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # For a margin:
         self.resize(int(screen.width() * 0.95), int(screen.height() * 0.95))
         self.move(screen.left() + int(screen.width()*0.025), screen.top() + int(screen.height()*0.025))
-        self.setMaximumSize(screen.width(), screen.height())
+        # self.setMaximumSize(screen.width(), screen.height())
 
         # ---- State variables ----
         self.username_list = ["", "pwalczyk", "sardara", "ghamid"]
