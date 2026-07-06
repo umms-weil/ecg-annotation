@@ -1,6 +1,3 @@
-`README.md`
-
-````markdown
 # ECG Waveform Annotation App
 
 The ECG Waveform Annotation App is a desktop tool for reviewing and annotating physiological waveform data. It supports loading waveform records, marking sequential annotation intervals, saving/resuming work, and finalizing completed waveform reviews.
@@ -284,4 +281,3 @@ docs/build/html/index.html
 ```
 
 The documentation contains the user manual, developer manual, troubleshooting guide, FAQ, and support instructions.
-````
