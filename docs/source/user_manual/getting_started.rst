@@ -10,16 +10,76 @@ The ECG Waveform Annotation App enables clinical users to annotate physiological
 
 The application is designed for sequential waveform review. Users mark intervals, answer clinical annotation questions, save progress, and finalize waveforms when review is complete.
 
+Downloading and Extracting the Application
+------------------------------------------
+
+The application may be distributed as a compressed ``.zip`` file.
+
+Before launching the application, fully extract the zip file.
+
+.. warning::
+
+   Do not run the application directly from inside the zip file.
+
+   On Windows, running from inside the zip can cause the app to open from a temporary ``AppData`` folder. This may prevent required files and folders from loading correctly.
+
 Launching the Application
 -------------------------
 
-The application will be distributed as a standalone executable.
+Windows
+~~~~~~~
 
-To launch:
+The Windows version is distributed as a folder-based application so that it opens faster than a single-file executable.
 
-- On Windows, double-click ``waveform_annotation_app.exe``. (or similar name)
-- On Mac/Linux, double-click or run ``waveform_annotation_app``.
-- Ensure you have access to the base data folder containing waveform files.
+After extracting the zip file, the folder may look similar to this::
+
+   ECGWaveformAnnotationApp-Windows/
+   ├── BUILD_INFO.txt
+   ├── README_OPEN_ME_FIRST.txt
+   └── ECGWaveformAnnotationApp/
+       ├── ECGWaveformAnnotationApp.exe
+       └── _internal/
+
+To launch on Windows:
+
+1. Right-click the downloaded zip file.
+2. Select **Extract All...**.
+3. Open the extracted folder.
+4. Open the ``ECGWaveformAnnotationApp`` folder.
+5. Double-click ``ECGWaveformAnnotationApp.exe``.
+
+.. important::
+
+   Do not move ``ECGWaveformAnnotationApp.exe`` out of its folder.
+
+   The ``_internal`` folder is required. If the executable is copied elsewhere by itself, the app may fail to open or report missing modules.
+
+macOS
+~~~~~
+
+After extracting the zip file, double-click ``ECGWaveformAnnotationApp.app``.
+
+If macOS blocks the app with a message such as:
+
+``Apple could not verify “ECGWaveformAnnotationApp” is free of malware...``
+
+try:
+
+1. Right-click or Control-click ``ECGWaveformAnnotationApp.app``.
+2. Select **Open**.
+3. Confirm **Open** if prompted.
+
+If the app is still blocked, open Terminal and run::
+
+   xattr -dr com.apple.quarantine /path/to/ECGWaveformAnnotationApp.app
+
+Example::
+
+   xattr -dr com.apple.quarantine ~/Downloads/ECGWaveformAnnotationApp-macOS/ECGWaveformAnnotationApp.app
+
+.. note::
+
+   Some macOS builds may not be Apple Developer ID signed or notarized. This can trigger Gatekeeper warnings even when the app was built correctly.
 
 Network Access
 --------------
@@ -44,7 +104,7 @@ A typical folder structure may look like this::
        └── CSNNumberPlaceholder/
            ├── GEWAVE/
            │   ├── waveform_file_Event01.csv
-           │   ├── waveform_file_Event02.mat
+           │   └── waveform_file_Event02.mat
            ├── metadata_*.json
            └── waveform_manifest.csv
 
@@ -54,7 +114,7 @@ In the app, select the top-level base folder. For example::
 
 You will likely be provided with the exact base folder path. Keep this path available for future annotation sessions.
 
-Make sure you connect directly to the storage location through you Finder Window or File Explorer.
+Make sure you connect directly to the storage location through your Finder window or File Explorer before loading data in the app.
 
 Setting the Base Folder
 -----------------------
@@ -76,10 +136,10 @@ The app may display more than one waveform record for a subject.
 Common terms:
 
 ``Subject``
-   The patient or deidentified subject folder, often represented by an MRN-like identifier (or Deidentified UUID).
+   The patient or deidentified subject folder, often represented by an MRN-like identifier or deidentified UUID.
 
 ``Encounter``
-   The encounter folder, often represented by a CSN-like identifier (or Deidentified UUID).
+   The encounter folder, often represented by a CSN-like identifier or deidentified UUID.
 
 ``Waveform record``
    A specific waveform file or recording session for an event of interest available for annotation.

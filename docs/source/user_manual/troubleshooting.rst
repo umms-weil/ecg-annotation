@@ -8,17 +8,109 @@ Application Will Not Launch
 
 Possible causes:
 
+- The application zip file was not fully extracted.
 - The executable was not fully downloaded.
 - Your operating system blocked the application.
 - Required network access is unavailable.
 - The app is being launched from an unsupported location.
+- On Windows, the executable was moved away from its required support files.
 
 Try:
 
-1. Relaunch the application.
-2. Confirm you are using the correct executable for your operating system.
-3. Move the executable to a local folder if needed.
-4. Contact support if the issue persists.
+1. Fully extract the downloaded zip file before launching the app.
+2. Confirm you are using the correct application for your operating system.
+3. Move the extracted application folder to a local folder if needed.
+4. On Windows, confirm the ``_internal`` folder is still next to the executable.
+5. On macOS, try right-clicking the app and selecting **Open**.
+6. Contact support if the issue persists.
+
+Windows App Reports a Missing Module
+------------------------------------
+
+If Windows reports a missing module, such as ``PyQt5``, the app may have been run outside its extracted folder.
+
+The Windows version is distributed as a folder-based application. The executable depends on files in the same folder.
+
+Correct structure::
+
+   ECGWaveformAnnotationApp/
+   ├── ECGWaveformAnnotationApp.exe
+   └── _internal/
+
+Incorrect usage::
+
+   Desktop/
+   └── ECGWaveformAnnotationApp.exe
+
+Try:
+
+1. Re-extract the full application zip file.
+2. Open the extracted folder.
+3. Open the ``ECGWaveformAnnotationApp`` folder.
+4. Double-click ``ECGWaveformAnnotationApp.exe`` from inside that folder.
+5. Do not copy the executable by itself to another location.
+
+macOS Says the App Cannot Be Verified
+-------------------------------------
+
+macOS may display a message such as::
+
+   Apple could not verify “ECGWaveformAnnotationApp” is free of malware.
+
+This can happen when the app is not Apple Developer ID signed and notarized.
+
+Try:
+
+1. Make sure the zip file is fully extracted.
+2. Right-click or Control-click ``ECGWaveformAnnotationApp.app``.
+3. Select **Open**.
+4. Confirm **Open** if prompted.
+
+If the app is still blocked, open Terminal and run::
+
+   xattr -dr com.apple.quarantine /path/to/ECGWaveformAnnotationApp.app
+
+Example::
+
+   xattr -dr com.apple.quarantine ~/Downloads/ECGWaveformAnnotationApp-macOS/ECGWaveformAnnotationApp.app
+
+macOS App Does Not Open and Shows No Warning
+--------------------------------------------
+
+If the macOS app does not open and no warning appears, run it from Terminal to see the error.
+
+Example::
+
+   /path/to/ECGWaveformAnnotationApp.app/Contents/MacOS/ECGWaveformAnnotationApp
+
+If the app is in your Downloads folder, the command may look like::
+
+   ~/Downloads/ECGWaveformAnnotationApp-macOS/ECGWaveformAnnotationApp.app/Contents/MacOS/ECGWaveformAnnotationApp
+
+Copy any error output and include it when contacting support.
+
+Documentation Looks Broken on Windows
+-------------------------------------
+
+If the HTML documentation opens from a path containing ``AppData`` or ``Temp``, it was probably opened directly from inside the zip file.
+
+To fix:
+
+1. Right-click the documentation zip file.
+2. Select **Extract All...**.
+3. Open the extracted folder.
+4. Double-click ``index.html``.
+
+Do not open ``index.html`` directly from inside the zip file.
+
+If the documentation is opened from inside the zip, the browser may not be able to find:
+
+- ``_static`` files,
+- CSS styling,
+- JavaScript,
+- linked pages,
+- videos,
+- images.
 
 Base Folder Does Not Load
 -------------------------
@@ -163,8 +255,12 @@ When reporting an issue, include:
 - Your U-M uniqname.
 - Subject or waveform record ID.
 - Base folder path.
+- Operating system, Windows or macOS.
+- Whether you fully extracted the application zip file.
 - What you clicked before the issue occurred.
 - Any error message shown.
 - Screenshot if available.
+
+For macOS launch issues, include Terminal output if available.
 
 See :ref:`support`.

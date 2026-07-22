@@ -11,29 +11,55 @@ Clone the repository and enter the project directory.
 Example::
 
    git clone <repository-url>
-   cd ecg-annotation/software
+   cd ecg-annotation
+
+Repository Layout
+-----------------
+
+The expected repository layout is::
+
+   ecg-annotation/
+   ├── requirements.txt
+   ├── docs/
+   │   ├── Makefile
+   │   ├── make.bat
+   │   └── source/
+   │       ├── conf.py
+   │       ├── index.rst
+   │       ├── user_manual/
+   │       └── developer_manual/
+   └── software/
+       ├── src/
+       │   ├── new_app.py
+       │   ├── new_callbacks.py
+       │   └── processing.py
+       ├── assets/
+       └── tests/
 
 Python Environment
 ------------------
 
-Create and activate a Python environment.
+Create and activate a Python environment from the repository root.
 
-Example using ``venv``::
+Example using ``venv`` on macOS/Linux::
 
    python -m venv .venv
    source .venv/bin/activate
 
-On Windows::
+On Windows PowerShell::
 
    python -m venv .venv
-   .venv\Scripts\activate
+   .\.venv\Scripts\Activate.ps1
 
 Install Dependencies
 --------------------
 
-Install project dependencies::
+Install project dependencies from the repository root.
 
-   pip install -r requirements.txt
+.. code-block:: bash
+
+   python -m pip install --upgrade pip
+   python -m pip install -r requirements.txt
 
 Core Dependencies
 -----------------
@@ -47,29 +73,53 @@ The application depends on packages including:
 - ``h5py``
 - ``pytz``
 - ``sphinx`` for documentation builds
+- ``sphinx-rtd-theme`` for documentation styling
+- ``sphinx-autodoc-typehints`` for API documentation
 
 Running the Application
 -----------------------
 
-From the project directory, run:
+From the repository root, run:
 
 .. code-block:: bash
 
    python software/src/new_app.py
+
+Alternatively, from inside the ``software`` directory, run:
+
+.. code-block:: bash
+
+   cd software
+   python src/new_app.py
 
 Documentation Setup
 -------------------
 
 If Sphinx has already been initialized, do not run ``sphinx-quickstart`` again.
 
-To build documentation:
+The documentation source is located at::
+
+   docs/source/
+
+The Sphinx configuration file is located at::
+
+   docs/source/conf.py
+
+To build documentation from the repository root:
 
 .. code-block:: bash
 
    cd docs
    make html
 
-The generated HTML output is usually located at::
+On Windows PowerShell:
+
+.. code-block:: powershell
+
+   cd docs
+   .\make.bat html
+
+The generated HTML output is located at::
 
    docs/build/html/index.html
 
@@ -84,49 +134,103 @@ To clean and rebuild documentation:
    make clean
    make html
 
+On Windows PowerShell:
+
+.. code-block:: powershell
+
+   cd docs
+   .\make.bat clean
+   .\make.bat html
+
 Strict Documentation Build
 --------------------------
 
-To treat Sphinx warnings as errors:
+To treat Sphinx warnings as errors, run from the repository root:
 
 .. code-block:: bash
 
-   cd docs
-   sphinx-build -W -b html . build/html
+   python -m sphinx -W -b html docs/source docs/build/html
+
+Or from inside the ``docs`` directory:
+
+.. code-block:: bash
+
+   python -m sphinx -W -b html source build/html
 
 Sphinx Path Configuration
 -------------------------
 
-If autodoc cannot import project modules, ensure ``docs/conf.py`` includes the project source path.
+If autodoc cannot import project modules, ensure ``docs/source/conf.py`` includes the project source path.
 
-Example:
+Because the application code is located in ``software/src``, use:
 
 .. code-block:: python
 
    import os
    import sys
 
-   sys.path.insert(0, os.path.abspath(".."))
+   sys.path.insert(0, os.path.abspath("../../software/src"))
 
-If the docs are nested more deeply, adjust the path accordingly.
+This path is relative to ``docs/source/conf.py``.
 
 Video and Asset Files
 ---------------------
 
-Walkthrough videos are stored in the project ``assets`` folder.
+Walkthrough videos are stored in the Sphinx static directory so they are copied into the generated HTML documentation.
 
-Example local path::
+Expected source location::
 
-   ~/ecg-annotation/docs/source/_static/videos
+   docs/source/_static/videos/
 
-When building docs, ensure video files are accessible to the generated HTML.
+Expected built output location::
 
-Options include:
+   docs/build/html/_static/videos/
 
-- Referencing the relative ``assets`` path from RST files.
-- Copying videos into Sphinx ``_static``.
-- Configuring Sphinx to copy static assets.
-- Hosting videos externally and embedding them with HTML.
+If videos are stored temporarily in ``software/assets/``, copy them before building the docs.
+
+macOS/Linux example:
+
+.. code-block:: bash
+
+   mkdir -p docs/source/_static/videos
+   cp software/assets/*.mp4 docs/source/_static/videos/
+
+Windows PowerShell example:
+
+.. code-block:: powershell
+
+   New-Item -ItemType Directory -Force -Path docs\source\_static\videos
+   Copy-Item software\assets\*.mp4 docs\source\_static\videos\
+
+GitHub Actions
+--------------
+
+GitHub Actions workflows build:
+
+- Sphinx documentation,
+- Windows application artifacts,
+- macOS application artifacts.
+
+Artifacts are retained for 30 days and can be rebuilt manually.
+
+If GitHub is a mirror of a GitLab repository, workflow runs start only after the mirror update reaches GitHub. Mirror synchronization may take several minutes.
+
+Downloading GitHub Actions Artifacts
+------------------------------------
+
+To download an artifact:
+
+1. Open the GitHub repository.
+2. Click the **Actions** tab.
+3. Select the workflow run.
+4. Scroll to **Artifacts**.
+5. Download the desired artifact.
+
+Common artifacts include:
+
+- ``ECGWaveformAnnotationApp-Docs-<branch>``
+- ``ECGWaveformAnnotationApp-Windows-<branch>``
+- ``ECGWaveformAnnotationApp-macOS-<branch>``
 
 Environment Notes
 -----------------
