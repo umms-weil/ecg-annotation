@@ -1,4 +1,4 @@
-.. _connecting-to-network:
+.. _connect-to-network:
 
 Connecting to VPN and Turbo Storage
 ===================================

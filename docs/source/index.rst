@@ -10,6 +10,7 @@ For Annotators
 
 If you are using the app to annotate waveforms, start here:
 
+- :ref:`connect-to-network`
 - :ref:`getting-started`
 - :ref:`annotation-workflow`
 - :ref:`walkthrough-videos`
