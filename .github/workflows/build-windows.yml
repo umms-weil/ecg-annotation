@@ -39,13 +39,24 @@ jobs:
           Get-ChildItem
           Get-ChildItem software
           Get-ChildItem software\src
+          Get-Content requirements.txt
 
       - name: Install application dependencies
         run: |
-          cd software
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
+          python -m pip install "setuptools==70.3.0" wheel
           python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
+          python -m pip install "pyinstaller>=6.10" pyinstaller-hooks-contrib
+          python -m pip install "setuptools==70.3.0"
+
+          python -m pip show PyQt5
+          python -m pip show pyqtgraph
+          python -m pip show pyinstaller
+          python -m pip show pyinstaller-hooks-contrib
+
+          python -c "import PyQt5; print('PyQt5 import OK')"
+          python -c "from PyQt5.QtWidgets import QApplication; print('PyQt5.QtWidgets import OK')"
+          python -c "import pyqtgraph; print('pyqtgraph import OK')"
 
       - name: Clean previous build artifacts
         run: |
@@ -63,11 +74,17 @@ jobs:
             --windowed `
             --paths src `
             --name $env:APP_NAME `
+            --hidden-import PyQt5 `
+            --hidden-import PyQt5.QtCore `
+            --hidden-import PyQt5.QtGui `
+            --hidden-import PyQt5.QtWidgets `
+            --collect-all PyQt5 `
+            --collect-all pyqtgraph `
             src\new_app.py
 
       - name: Inspect Windows build output
         run: |
-          Get-ChildItem "software\dist" -Recurse | Select-Object -First 100
+          Get-ChildItem "software\dist" -Recurse | Select-Object -First 150
 
       - name: Package Windows application folder
         run: |
