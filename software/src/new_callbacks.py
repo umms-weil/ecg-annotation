@@ -88,31 +88,142 @@ class AnnotationAppCallbacks:
         if not base_folder or not os.path.isdir(base_folder):
             return
 
-        subjects = list_subjects(base_folder)
+        # IMPORTANT: get the active user directly from the widget.
+        user_name = self.get_user_name()
+
+        if user_name is not None:
+            user_name = str(user_name).strip()
+
+        # Keep self.user_name synchronized for any other code that uses it.
+        self.user_name = user_name
+
+        subjects = list_subjects(base_folder, user_name=user_name)
 
         print(f"FOUND {len(subjects)} waveform records")
+        print(f"COMPLETION USER: {user_name}")
+
         for s in subjects[:5]:
             print("SUBJECT RECORD:", s)
+
 
         for subj in subjects:
             total_annotations = subj.get("n_annotations", 0)
             complete_annotations = subj.get("n_complete_annotations", 0)
 
-            if total_annotations > 0:
-                label = f"✅ {subj['name']} ({complete_annotations}/{total_annotations} complete)"
+            if total_annotations == 0:
+                icon = "⭕"
+            elif complete_annotations == total_annotations:
+                icon = "✅"
             else:
-                label = f"⭕ {subj['name']} (0/0 complete)"
+                icon = "🟡"
 
-            # Store full record dict, not just subject name
+            label = (
+                f"{icon} {subj['name']} "
+                f"({complete_annotations}/{total_annotations} complete)"
+            )
+
             combo.addItem(label, userData=subj)
 
             idx = combo.count() - 1
+
             if subj.get("kind") == "h5":
                 combo.setItemData(idx, subj.get("h5_path", ""), Qt.ToolTipRole)
             elif subj.get("kind") == "csv":
                 combo.setItemData(idx, subj.get("csv_path", ""), Qt.ToolTipRole)
 
         combo.setDisabled(False)
+
+
+    def get_record_refresh_key(self, record):
+        """
+        Return a stable key for a subject/waveform record so we can preserve
+        selection after rebuilding the subject dropdown.
+        """
+        if not isinstance(record, dict):
+            return None
+
+        return (
+            record.get("h5_path")
+            or record.get("csv_path")
+            or record.get("output_path")
+            or record.get("name")
+        )
+
+
+    def refresh_subject_dropdown_preserve_selection(self):
+        """
+        Refresh the subject dropdown counts/icons while keeping the same selected
+        waveform record if possible.
+        """
+        old_record = self.get_selected_subject_record()
+        old_key = self.get_record_refresh_key(old_record)
+
+        self.update_subject_dropdown()
+
+        if not old_key:
+            return
+
+        for idx in range(self.subject_dropdown.count()):
+            record = self.subject_dropdown.itemData(idx)
+            new_key = self.get_record_refresh_key(record)
+
+            if new_key == old_key:
+                self.subject_dropdown.setCurrentIndex(idx)
+
+                if isinstance(record, dict):
+                    self.current_subject_record = record
+                    self.current_subject = record.get("subject", "")
+                    self.current_encounter = record.get("encounter", "")
+                    self.current_namespace = record.get("namespace", "")
+                    self.current_file_tag = record.get("file_tag", "")
+                    self.current_output_path = record.get("output_path", "")
+                    self.current_h5_path = record.get("h5_path", "")
+
+                break
+
+    def handle_user_changed(self, *args):
+        """
+        Called when selected user changes.
+
+        Refresh subject completion counts for the newly selected user and clear
+        currently displayed annotations from the previous user.
+        """
+        user_name = self.get_user_name()
+
+        if user_name is not None:
+            user_name = str(user_name).strip()
+
+        self.user_name = user_name
+
+        print(f"USER CHANGED TO: {self.user_name}")
+
+        # Refresh the dropdown counts/icons for this user.
+        self.update_subject_dropdown()
+
+        # Clear annotations currently shown from the old user.
+        self.annotations = []
+        self.waveform_complete = False
+        self.terminal_event_status = ""
+        self.terminal_event_comment = ""
+        self.current_marker = None
+
+        if hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
+            self.last_mark = float(self.time_axis[0])
+        else:
+            self.last_mark = None
+
+        self.update_table_data()
+        self.update_waveform_and_mark()
+        self.update_sidebar_ui()
+        self.update_finalize_button_state()
+
+        self.mark_warning.setText(
+            f"User changed to '{self.user_name}'. Load annotations for this user if needed."
+        )
+        self.mark_warning.setWordWrap(True)
+        self.mark_warning.setStyleSheet(
+            "color: #285680; font-size: 13px; font-weight: bold;"
+        )
 
 
     def autoscale_y(self, plot, signal):
@@ -929,6 +1040,8 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete annotation file {path}: {e}")
 
+        self.refresh_subject_dropdown_preserve_selection()
+
     def handle_remove_last_mark(self):
         """
         Removes the most recent annotation ('last mark') from table and plots.
@@ -1079,6 +1192,7 @@ class AnnotationAppCallbacks:
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
         self.update_finalize_button_state()
+        self.refresh_subject_dropdown_preserve_selection()
 
         # --- Center plot(s) on last annotation's end if loaded ---
         if self.annotations and hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
@@ -1605,6 +1719,8 @@ class AnnotationAppCallbacks:
 
             self.update_finalize_button_state()
 
+        self.autosave_annotations()
+
         print("Current ANNOTATIONS LIST after marking:", self.annotations)
 
 
@@ -1862,6 +1978,8 @@ class AnnotationAppCallbacks:
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Saved to {fullpath}")
 
+        self.refresh_subject_dropdown_preserve_selection()
+
 
     def autosave_annotations(self):
         annotations = getattr(self, "annotations", [])
@@ -1904,6 +2022,8 @@ class AnnotationAppCallbacks:
 
         pd.DataFrame(annotations).to_csv(fullpath, index=False)
         self.save_message.setText(f"Auto-saved to {fullpath}")
+
+        self.refresh_subject_dropdown_preserve_selection()
 
     # --- Utility slots for GUI logic that you will implement: ---
     def get_cpr_val(self):

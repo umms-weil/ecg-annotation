@@ -223,54 +223,76 @@ def _is_annotation_csv(path: str) -> bool:
     )
 
 
-def _count_annotations_in_output(output_path: str) -> Tuple[int, int]:
+def _count_annotations_in_output(
+    output_path: str,
+    user_name: Optional[str] = None,
+) -> Tuple[int, int]:
     """
     Count total and complete annotation CSVs inside an output directory.
 
-    Supports both:
+    If user_name is provided, count only that user's annotation folder:
 
-    - ``output/*.csv``
-    - ``output/user/*.csv``
+        output_path/user_name/annotations*.csv
 
-    Parameters
-    ----------
-    output_path : str
-        Path to output folder.
+    If user_name is None, preserve old behavior and count:
+
+        output_path/annotations*.csv
+        output_path/*/annotations*.csv
 
     Returns
     -------
     tuple[int, int]
-        ``(total_annotations, complete_annotations)``
+        (total_annotations, complete_annotations)
     """
+
+    def _count_csvs_in_folder(folder_path: str) -> Tuple[int, int]:
+        if not os.path.isdir(folder_path):
+            return 0, 0
+
+        csvs = [
+            f for f in os.listdir(folder_path)
+            if f.lower().endswith(".csv")
+            and f.lower().startswith("annotations")
+        ]
+
+        total = len(csvs)
+
+        complete = sum(
+            1 for f in csvs
+            if f.lower().endswith("_complete.csv")
+        )
+
+        return total, complete
+
+    if not os.path.isdir(output_path):
+        return 0, 0
+
+    # ------------------------------------------------------------------
+    # User Specific behavior: user-specific count.
+    # ------------------------------------------------------------------
+    if user_name:
+        user_output_path = os.path.join(output_path, user_name)
+        return _count_csvs_in_folder(user_output_path)
+
+    # ------------------------------------------------------------------
+    # Old behavior: aggregate everything.
+    # ------------------------------------------------------------------
     total_annotations = 0
     complete_annotations = 0
 
-    if not os.path.isdir(output_path):
-        return total_annotations, complete_annotations
+    direct_total, direct_complete = _count_csvs_in_folder(output_path)
+    total_annotations += direct_total
+    complete_annotations += direct_complete
 
-    # Direct annotation files.
-    direct_csvs = [
-        f for f in os.listdir(output_path)
-        if f.endswith(".csv") and f.startswith("annotations")
-    ]
-
-    total_annotations += len(direct_csvs)
-    complete_annotations += sum(1 for f in direct_csvs if f.endswith("_COMPLETE.csv"))
-
-    # User subfolders.
     for child in os.listdir(output_path):
         child_path = os.path.join(output_path, child)
 
         if not os.path.isdir(child_path):
             continue
 
-        csvs = [
-            f for f in os.listdir(child_path)
-            if f.endswith(".csv") and f.startswith("annotations")
-        ]
-
-        total_annotations += len(csvs)
-        complete_annotations += sum(1 for f in csvs if f.endswith("_COMPLETE.csv"))
+        child_total, child_complete = _count_csvs_in_folder(child_path)
+        total_annotations += child_total
+        complete_annotations += child_complete
 
     return total_annotations, complete_annotations
 
@@ -344,7 +366,7 @@ def _extract_time_epoch_s(df: pd.DataFrame) -> Tuple[np.ndarray, str]:
 # Subject / waveform discovery
 # =============================================================================
 
-def list_subjects(base_folder: str) -> List[Dict]:
+def list_subjects(base_folder: str, user_name: Optional[str] = None) -> List[Dict]:
     """
     Discover loadable waveform records in a base folder.
 
@@ -478,8 +500,9 @@ def list_subjects(base_folder: str) -> List[Dict]:
                 output_path = os.path.join(root, "output", h5_stem)
 
                 total_annotations, complete_annotations = _count_annotations_in_output(
-                    output_path
-                )
+                        output_path,
+                        user_name=user_name,
+                    )
 
                 label_parts = [
                     subject_name,
@@ -508,6 +531,7 @@ def list_subjects(base_folder: str) -> List[Dict]:
                         "n_annotations": total_annotations,
                         "n_complete_annotations": complete_annotations,
                         "has_annotations": total_annotations > 0,
+                        "completion_user": user_name,
                     }
                 )
 
@@ -519,9 +543,9 @@ def list_subjects(base_folder: str) -> List[Dict]:
         if mat_files:
             subject_output_path = os.path.join(subject_path, "output")
             total_annotations, complete_annotations = _count_annotations_in_output(
-                subject_output_path
+                subject_output_path,
+                user_name=user_name,
             )
-
             records.append(
                 {
                     "name": subject_name,
@@ -537,24 +561,55 @@ def list_subjects(base_folder: str) -> List[Dict]:
                     "n_annotations": total_annotations,
                     "n_complete_annotations": complete_annotations,
                     "has_annotations": total_annotations > 0,
+                    "completion_user": user_name,
                 }
             )
 
     return records
 
 
-def list_subject_names(base_folder: str) -> List[str]:
+def list_subject_names(
+    base_folder: str,
+    user_name: Optional[str] = None,
+) -> List[str]:
     """
     Return display names for discovered waveform records.
     """
-    return [subj["name"] for subj in list_subjects(base_folder)]
+    user_name = self.get_user_name()
+    return [
+        subj["name"]
+        for subj in list_subjects(base_folder, user_name=user_name)
+    ]
 
 
-def list_annotation_files(subject_folder: str) -> List[str]:
+def list_annotation_files_for_record(
+    record: Dict,
+    user_name: str,
+) -> List[str]:
     """
-    Returns annotation CSV files in a subject folder.
+    Return annotation CSV files for one waveform record and one user.
+
+    Looks in:
+
+        record["output_path"]/user_name/annotations*.csv
     """
-    return glob.glob(os.path.join(subject_folder, "annotations*.csv"))
+
+    if not record or not user_name:
+        return []
+
+    user_name = str(user_name).strip()
+
+    if not user_name:
+        return []
+
+    folder = annotation_output_folder_for_record(record, user_name)
+
+    if not os.path.isdir(folder):
+        return []
+
+    return sorted(
+        glob.glob(os.path.join(folder, "annotations*.csv"))
+    )
 
 
 # =============================================================================
@@ -1572,22 +1627,6 @@ def annotation_output_folder_for_record(record: Dict, user_name: str) -> str:
         return os.path.join(record["subject_path"], "output", user_name)
 
     raise ValueError("Record does not contain output_path, encounter_path, or subject_path.")
-
-
-def load_annotations_csv(subject_folder: str) -> Optional[pd.DataFrame]:
-    """
-    Load the first annotations CSV in a subject folder.
-
-    Returns
-    -------
-    pd.DataFrame or None
-    """
-    csvs = list_annotation_files(subject_folder)
-
-    if not csvs:
-        return None
-
-    return pd.read_csv(csvs[0])
 
 
 def save_annotations_csv(
