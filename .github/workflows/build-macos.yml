@@ -35,12 +35,15 @@ jobs:
           python --version
           pwd
           ls -la
-          ls -la software
-          ls -la software/src
+          echo "Repository files:"
+          find . -maxdepth 3 -type f | sort | head -100
+          echo "Finding requirements files:"
+          find . -maxdepth 4 -type f -name "requirements.txt" -print
+          echo "Finding source files:"
+          find . -maxdepth 4 -type f -name "new_app.py" -print
 
       - name: Install application dependencies
         run: |
-          cd software
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
