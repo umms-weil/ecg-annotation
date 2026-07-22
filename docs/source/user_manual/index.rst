@@ -10,6 +10,7 @@ Start with **Getting Started** if this is your first time using the app. Use **W
 Recommended Reading Order
 -------------------------
 
+0. :ref:`connect-to-network`
 1. :ref:`getting-started`
 2. :ref:`annotation-workflow`
 3. :ref:`interface-guide`
