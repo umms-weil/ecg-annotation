@@ -1,0 +1,9 @@
+.env
+.DS_Store
+test/
+docs/build/*
+software/build/*
+software/dist/*
+supplemental/
+data/
+wheelhouse_win

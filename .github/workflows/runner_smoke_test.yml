@@ -1,0 +1,30 @@
+name: Runner Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show Ubuntu info
+        run: |
+          uname -a
+          python3 --version
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Show Windows info
+        shell: pwsh
+        run: |
+          systeminfo | Select-String "OS Name", "OS Version"
+          python --version
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Show macOS info
+        run: |
+          sw_vers
+          python3 --version
