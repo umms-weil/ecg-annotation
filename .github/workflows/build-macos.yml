@@ -1,0 +1,124 @@
+name: Build macOS Application
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-macos:
+    name: Build macOS App Bundle
+    runs-on: macos-latest
+
+    env:
+      APP_NAME: ECGWaveformAnnotationApp
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Show environment info
+        run: |
+          sw_vers
+          uname -a
+          python --version
+          pwd
+          ls -la
+          ls -la software
+          ls -la software/src
+
+      - name: Install application dependencies
+        run: |
+          cd software
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Clean previous build artifacts
+        run: |
+          rm -rf software/build
+          rm -rf software/dist
+          rm -rf release
+
+      - name: Build macOS app bundle
+        run: |
+          cd software
+
+          python -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --paths src \
+            --name "$APP_NAME" \
+            src/new_app.py
+
+      - name: Inspect macOS build output
+        run: |
+          find software/dist -maxdepth 4 | head -100
+
+      - name: Package macOS application
+        run: |
+          mkdir -p "release/$APP_NAME-macOS"
+
+          if [ -d "software/dist/$APP_NAME.app" ]; then
+            cp -R "software/dist/$APP_NAME.app" "release/$APP_NAME-macOS/"
+          else
+            echo "Could not find expected macOS .app bundle."
+            ls -la software/dist
+            exit 1
+          fi
+
+          cat > "release/$APP_NAME-macOS/BUILD_INFO.txt" << EOF
+          Application: $APP_NAME
+          OS: macOS
+          Build mode: PyInstaller windowed .app bundle
+          Entry point: software/src/new_app.py
+          Commit: $GITHUB_SHA
+          Branch: $GITHUB_REF_NAME
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          Built: $(date '+%Y-%m-%d %H:%M:%S')
+          EOF
+
+          cat > "release/$APP_NAME-macOS/README_OPEN_ME_FIRST.txt" << EOF
+          ECG Waveform Annotation App - macOS
+
+          IMPORTANT:
+
+          Extract this ZIP file before opening the application.
+
+          To launch:
+
+          1. Double-click the ZIP file to extract it.
+          2. Open the extracted folder.
+          3. Double-click ECGWaveformAnnotationApp.app.
+
+          If macOS blocks the app because it is from an unidentified developer:
+
+          1. Right-click ECGWaveformAnnotationApp.app.
+          2. Choose Open.
+          3. Confirm Open.
+
+          This build is not currently signed or notarized.
+          EOF
+
+          cd release
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME-macOS" "$APP_NAME-macOS-${{ github.ref_name }}.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ECGWaveformAnnotationApp-macOS-${{ github.ref_name }}
+          path: release/*.zip
+          retention-days: 30
