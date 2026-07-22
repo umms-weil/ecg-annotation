@@ -1,0 +1,117 @@
+name: Build Windows Application
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-windows:
+    name: Build Windows App Folder
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      APP_NAME: ECGWaveformAnnotationApp
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Show environment info
+        run: |
+          python --version
+          Get-Location
+          Get-ChildItem
+          Get-ChildItem software
+          Get-ChildItem software\src
+
+      - name: Install application dependencies
+        run: |
+          cd software
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Clean previous build artifacts
+        run: |
+          if (Test-Path software\build) { Remove-Item software\build -Recurse -Force }
+          if (Test-Path software\dist) { Remove-Item software\dist -Recurse -Force }
+          if (Test-Path release) { Remove-Item release -Recurse -Force }
+
+      - name: Build Windows application folder
+        run: |
+          cd software
+
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --paths src `
+            --name $env:APP_NAME `
+            src\new_app.py
+
+      - name: Inspect Windows build output
+        run: |
+          Get-ChildItem "software\dist" -Recurse | Select-Object -First 100
+
+      - name: Package Windows application folder
+        run: |
+          New-Item -ItemType Directory -Force -Path release\$env:APP_NAME-Windows
+
+          Copy-Item "software\dist\$env:APP_NAME" "release\$env:APP_NAME-Windows\$env:APP_NAME" -Recurse -Force
+
+          "Application: $env:APP_NAME" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt"
+          "OS: Windows" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Build mode: PyInstaller onedir" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Entry point: software/src/new_app.py" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Commit: $env:GITHUB_SHA" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Branch: $env:GITHUB_REF_NAME" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+
+          @"
+          ECG Waveform Annotation App - Windows
+
+          IMPORTANT:
+
+          Extract this entire ZIP file before running the application.
+
+          Do not run the application directly from inside the ZIP file.
+
+          To launch:
+
+          1. Right-click the ZIP file.
+          2. Choose "Extract All..."
+          3. Open the extracted folder.
+          4. Open the ECGWaveformAnnotationApp folder.
+          5. Double-click ECGWaveformAnnotationApp.exe.
+
+          Keep all files and folders together. The _internal folder is required.
+          "@ | Out-File "release\$env:APP_NAME-Windows\README_OPEN_ME_FIRST.txt"
+
+          Compress-Archive `
+            -Path "release\$env:APP_NAME-Windows" `
+            -DestinationPath "release\$env:APP_NAME-Windows-${{ github.ref_name }}.zip" `
+            -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ECGWaveformAnnotationApp-Windows-${{ github.ref_name }}
+          path: release/*.zip
+          retention-days: 30
