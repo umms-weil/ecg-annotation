@@ -709,6 +709,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.set_folder_btn.clicked.connect(self.set_base_folder)
         self.browse_folder_btn.clicked.connect(self.browse_base_folder)
         self.toggle_event_labels_btn.clicked.connect(self.toggle_event_labels_visibility)
+        self.username_input.currentTextChanged.connect(self.handle_user_changed)
         self.load_subject_btn.clicked.connect(self.load_subject_data)
         self.load_annotation_btn.clicked.connect(self.handle_load_annotation)
         self.save_all_btn.clicked.connect(self.save_all_to_file)
