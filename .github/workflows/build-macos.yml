@@ -44,9 +44,20 @@ jobs:
 
       - name: Install application dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
+          python -m pip install "setuptools==70.3.0" wheel
           python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
+          python -m pip install "pyinstaller>=6.10" pyinstaller-hooks-contrib
+          python -m pip install "setuptools==70.3.0"
+
+          python -m pip show setuptools
+          python -m pip show wheel
+          python -m pip show pyinstaller
+          python -m pip show pyinstaller-hooks-contrib
+
+          python -c "import PyQt5; print('PyQt5 import OK')"
+          python -c "from PyQt5.QtWidgets import QApplication; print('PyQt5.QtWidgets import OK')"
+          python -c "import pyqtgraph; print('pyqtgraph import OK')"
 
       - name: Clean previous build artifacts
         run: |
@@ -64,11 +75,99 @@ jobs:
             --windowed \
             --paths src \
             --name "$APP_NAME" \
+            --hidden-import PyQt5 \
+            --hidden-import PyQt5.QtCore \
+            --hidden-import PyQt5.QtGui \
+            --hidden-import PyQt5.QtWidgets \
+            --collect-all PyQt5 \
+            --collect-all pyqtgraph \
             src/new_app.py
 
-      - name: Inspect macOS build output
+      - name: Inspect macOS build output before signing
         run: |
-          find software/dist -maxdepth 4 | head -100
+          find "software/dist" -maxdepth 5 | head -150
+
+      - name: Remove quarantine attributes if present
+        run: |
+          if [ -d "software/dist/$APP_NAME.app" ]; then
+            xattr -cr "software/dist/$APP_NAME.app" || true
+          fi
+
+      - name: Ad-hoc sign nested binaries
+        run: |
+          APP_PATH="software/dist/$APP_NAME.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Could not find app bundle at $APP_PATH"
+            exit 1
+          fi
+
+          echo "Signing nested Mach-O files..."
+
+          while IFS= read -r file; do
+            if file "$file" | grep -E "Mach-O|shared library|dynamically linked" > /dev/null; then
+              echo "Signing: $file"
+              codesign --force --sign - "$file" || true
+            fi
+          done < <(find "$APP_PATH" -type f)
+
+      - name: Ad-hoc sign app bundle
+        run: |
+          APP_PATH="software/dist/$APP_NAME.app"
+
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            "$APP_PATH"
+
+          codesign \
+            --verify \
+            --deep \
+            --strict \
+            --verbose=4 \
+            "$APP_PATH"
+
+      - name: Assess Gatekeeper status
+        continue-on-error: true
+        run: |
+          APP_PATH="software/dist/$APP_NAME.app"
+
+          echo "Gatekeeper assessment:"
+          spctl --assess --type execute --verbose=4 "$APP_PATH" || true
+
+          echo "Code signature details:"
+          codesign -dv --verbose=4 "$APP_PATH" || true
+
+      - name: Test app executable starts without immediate crash
+        continue-on-error: true
+        run: |
+          APP_EXEC="software/dist/$APP_NAME.app/Contents/MacOS/$APP_NAME"
+
+          if [ ! -f "$APP_EXEC" ]; then
+            echo "Could not find executable at $APP_EXEC"
+            exit 1
+          fi
+
+          echo "Executable file info:"
+          file "$APP_EXEC"
+
+          echo "Launching app for smoke test..."
+          set +e
+          timeout 30 "$APP_EXEC"
+          EXIT_CODE=$?
+          set -e
+
+          echo "Smoke test exit code: $EXIT_CODE"
+
+          if [ "$EXIT_CODE" -eq 124 ]; then
+            echo "App stayed running for 30 seconds. Likely startup success."
+          elif [ "$EXIT_CODE" -eq 0 ]; then
+            echo "App exited cleanly."
+          else
+            echo "App exited with an error before timeout. Check logs above."
+            exit "$EXIT_CODE"
+          fi
 
       - name: Package macOS application
         run: |
@@ -86,6 +185,7 @@ jobs:
           Application: $APP_NAME
           OS: macOS
           Build mode: PyInstaller windowed .app bundle
+          Signing: Ad-hoc codesign only. Not Apple Developer ID signed or notarized.
           Entry point: software/src/new_app.py
           Commit: $GITHUB_SHA
           Branch: $GITHUB_REF_NAME
@@ -100,19 +200,30 @@ jobs:
 
           Extract this ZIP file before opening the application.
 
+          This app is ad-hoc signed only. It is not Apple Developer ID signed or notarized.
+
           To launch:
 
           1. Double-click the ZIP file to extract it.
           2. Open the extracted folder.
-          3. Double-click ECGWaveformAnnotationApp.app.
+          3. Right-click ECGWaveformAnnotationApp.app.
+          4. Choose Open.
+          5. Confirm Open if prompted.
 
-          If macOS blocks the app because it is from an unidentified developer:
+          If macOS still blocks the app, open Terminal and run:
 
-          1. Right-click ECGWaveformAnnotationApp.app.
-          2. Choose Open.
-          3. Confirm Open.
+              xattr -dr com.apple.quarantine /path/to/ECGWaveformAnnotationApp.app
 
-          This build is not currently signed or notarized.
+          Example:
+
+              xattr -dr com.apple.quarantine ~/Downloads/ECGWaveformAnnotationApp-macOS/ECGWaveformAnnotationApp.app
+
+          Then try opening the app again.
+
+          If the app does not open, run it from Terminal to view the error:
+
+              /path/to/ECGWaveformAnnotationApp.app/Contents/MacOS/ECGWaveformAnnotationApp
+
           EOF
 
           cd release
