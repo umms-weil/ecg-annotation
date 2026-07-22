@@ -1197,9 +1197,6 @@ class AnnotationAppCallbacks:
             code_start_sec = None
             code_stop_sec = None
 
-        #code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/waveform_manifest.csv'
-        # code_csv_path = '/Users/pwalczyk/Documents/Projects/Uconn-CPR/AnnotationSoftware/ecg-annotation/software/data/data/FAKE_DATA/waveform_manifest.csv'
-
         loaded_waveforms = load_waveforms_for_subject(
             base_folder,
             record,

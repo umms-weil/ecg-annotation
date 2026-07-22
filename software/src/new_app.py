@@ -122,7 +122,7 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         # self.setMaximumSize(screen.width(), screen.height())
 
         # ---- State variables ----
-        self.username_list = ["", "pwalczyk", "sardara", "ghamid"]
+        self.username_list = ["", "pwalczyk", "sardara", "ghamid", "kwheels", "gangidi"]
         self.base_folder = ""
         self.data_store = {}
         self.annotations = []
