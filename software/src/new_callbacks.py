@@ -225,6 +225,138 @@ class AnnotationAppCallbacks:
             "color: #285680; font-size: 13px; font-weight: bold;"
         )
 
+    def get_global_valid_time_range(self):
+        """
+        Return x/time range where at least one loaded lead has finite data.
+
+        If no lead has finite data, fall back to the full finite time axis.
+        """
+        if not hasattr(self, "time_axis") or self.time_axis is None:
+            return None
+
+        if not hasattr(self, "leads_ds") or self.leads_ds is None:
+            return None
+
+        time_axis = np.asarray(self.time_axis, dtype=float)
+
+        if time_axis.size == 0:
+            return None
+
+        finite_time = np.isfinite(time_axis)
+
+        if not np.any(finite_time):
+            return None
+
+        any_valid_signal = np.zeros(time_axis.size, dtype=bool)
+
+        for sig in self.leads_ds:
+            if sig is None:
+                continue
+
+            sig = np.asarray(sig, dtype=float)
+
+            if sig.size == 0:
+                continue
+
+            n = min(time_axis.size, sig.size)
+
+            if n <= 0:
+                continue
+
+            any_valid_signal[:n] |= np.isfinite(sig[:n])
+
+        valid = finite_time & any_valid_signal
+
+        if np.any(valid):
+            return float(time_axis[valid][0]), float(time_axis[valid][-1])
+
+        # Fallback: full finite time range
+        finite_t = time_axis[finite_time]
+
+        if finite_t.size == 0:
+            return None
+
+        return float(finite_t[0]), float(finite_t[-1])
+
+
+    def get_safe_y_range(self, sig, percentile_low=0.5, percentile_high=99.5):
+        """
+        Robustly compute a valid y-range for a signal.
+
+        Returns
+        -------
+        tuple
+            y_min, y_max, has_data
+        """
+        if sig is None:
+            return -1.0, 1.0, False
+
+        sig = np.asarray(sig, dtype=float)
+
+        if sig.size == 0:
+            return -1.0, 1.0, False
+
+        finite_sig = sig[np.isfinite(sig)]
+
+        if finite_sig.size == 0:
+            return -1.0, 1.0, False
+
+        try:
+            y_lo, y_hi = np.nanpercentile(
+                finite_sig,
+                [percentile_low, percentile_high],
+            )
+        except Exception:
+            return -1.0, 1.0, False
+
+        if not np.isfinite(y_lo) or not np.isfinite(y_hi):
+            return -1.0, 1.0, False
+
+        # Current style: center range around zero.
+        half_span = max(abs(float(y_lo)), abs(float(y_hi)))
+
+        if not np.isfinite(half_span) or half_span <= 0:
+            center = float(np.nanmedian(finite_sig))
+
+            if not np.isfinite(center):
+                center = 0.0
+
+            y_min = center - 1.0
+            y_max = center + 1.0
+            return y_min, y_max, True
+
+        margin = 0.1 * half_span
+        y_min = -half_span - margin
+        y_max = half_span + margin
+
+        if not np.isfinite(y_min) or not np.isfinite(y_max) or y_min >= y_max:
+            return -1.0, 1.0, False
+
+        return float(y_min), float(y_max), True
+
+
+    def add_no_data_label(self, plot, text="No data"):
+        """
+        Add a no-data label to a pyqtgraph plot.
+        """
+        label = pg.TextItem(
+            text=text,
+            color=(140, 140, 140),
+            anchor=(0.5, 0.5),
+        )
+
+        label.is_no_data_label = True
+        plot.addItem(label)
+
+        try:
+            x_min, x_max = plot.viewRange()[0]
+            y_min, y_max = plot.viewRange()[1]
+            label.setPos((x_min + x_max) / 2.0, (y_min + y_max) / 2.0)
+        except Exception:
+            label.setPos(0, 0)
+
+        return label
+
 
     def autoscale_y(self, plot, signal):
         """
@@ -235,16 +367,12 @@ class AnnotationAppCallbacks:
         - plot: The pyqtgraph PlotWidget to set the Y range.
         - signal: The 1D numpy array of waveform values.
         """
-        if signal is None or len(signal) == 0:
-            return
-        p_lo, p_hi = np.percentile(signal, [0.5, 99.5])
-        # Find the "span from zero" to max(abs) percentile
-        half_span = max(abs(p_lo), abs(p_hi))
-        margin = 0.1 * half_span if half_span > 0 else 1.0
-        y_min = -half_span - margin
-        y_max = half_span + margin
-        plot.setYRange(y_min, y_max, padding=0)
+        y_min, y_max, has_data = self.get_safe_y_range(signal)
 
+        if has_data:
+            plot.setYRange(y_min, y_max, padding=0)
+        else:
+            plot.setYRange(-1.0, 1.0, padding=0)
 
     def adjust_y_scale(self, plot_idx, zoom="up"):
         """
@@ -833,6 +961,20 @@ class AnnotationAppCallbacks:
 
         self.update_sidebar_ui()
 
+    def get_plot_safe_view_y_range(self, plot):
+            try:
+                y_min, y_max = plot.viewRange()[1]
+                y_min = float(y_min)
+                y_max = float(y_max)
+
+                if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max <= y_min:
+                    return -1.0, 1.0
+
+                return y_min, y_max
+
+            except Exception:
+                return -1.0, 1.0
+
     def plot_event_markers(self):
         """
         Plots vertical dashed lines and labels for each event in self.manifest_events,
@@ -937,7 +1079,7 @@ class AnnotationAppCallbacks:
             event_color = (128, 128, 0)
             event_pen   = pg.mkPen(event_color, width=5, style=QtCore.Qt.DashLine)
             for plot in self.waveform_plots:
-                y_min, y_max = plot.viewRange()[1]
+                y_min, y_max = self.get_plot_safe_view_y_range(plot)
                 label_y = y_max - 0.05 * (y_max - y_min)
                 # Add vertical line marker
                 # Start Marker
@@ -962,61 +1104,163 @@ class AnnotationAppCallbacks:
             - self.manifest_events (pandas DataFrame of events, each with event_sec and FLO_MEAS_NAME)
             - self.code_start_sec, self.code_stop_sec (event filtering window, in epic seconds)
         """
-        # Clear all plots and set up axis
+        # ------------------------------------------------------------------
+        # Clear all plots
+        # ------------------------------------------------------------------
         for plot in self.waveform_plots:
             plot.clear()
 
         if self.time_axis is None or len(self.time_axis) == 0:
             for plot in self.waveform_plots:
                 plot.setTitle("No Data Loaded")
+                plot.setYRange(-1.0, 1.0, padding=0)
             return
 
-        t0 = self.time_axis[0]   # Epic time, start of window
+        self.time_axis = np.asarray(self.time_axis, dtype=float)
 
-        # Set axis: shows epic time ticks
+        if not np.any(np.isfinite(self.time_axis)):
+            for plot in self.waveform_plots:
+                plot.setTitle("No Valid Time Axis")
+                plot.setYRange(-1.0, 1.0, padding=0)
+            return
+
+        # ------------------------------------------------------------------
+        # Determine global x-range from any lead with data
+        # ------------------------------------------------------------------
+        global_range = self.get_global_valid_time_range()
+
+        if global_range is None:
+            global_x_min = float(self.time_axis[np.isfinite(self.time_axis)][0])
+            global_x_max = float(self.time_axis[np.isfinite(self.time_axis)][-1])
+        else:
+            global_x_min, global_x_max = global_range
+
+        if global_x_max <= global_x_min:
+            global_x_max = global_x_min + 1.0
+
+        t0 = global_x_min
+
+        # ------------------------------------------------------------------
+        # Set relative x-axis
+        # ------------------------------------------------------------------
         for plt in self.waveform_plots:
-            plt.setAxisItems({'bottom': RelativeAxis(t0, orientation='bottom')})
+            plt.setAxisItems({"bottom": RelativeAxis(t0, orientation="bottom")})
 
-        # Plot signals on epic time axis
-        for i, (plot, sig, name) in enumerate(zip(self.waveform_plots, self.leads_ds, self.lead_names)):
-            # Set y-axis label to real lead name with units
+        # ------------------------------------------------------------------
+        # Plot each signal row
+        # ------------------------------------------------------------------
+        n_plots = len(self.waveform_plots)
+
+        for i in range(n_plots):
+            plot = self.waveform_plots[i]
+
+            sig = None
+            if hasattr(self, "leads_ds") and self.leads_ds is not None and i < len(self.leads_ds):
+                sig = self.leads_ds[i]
+
+            name = f"Lead {i + 1}"
+            if hasattr(self, "lead_names") and self.lead_names is not None and i < len(self.lead_names):
+                name = self.lead_names[i]
+
+            unit = ""
+            if hasattr(self, "units") and self.units is not None and i < len(self.units):
+                unit = self.units[i] or ""
+
+            label_text = f"{name} ({unit})" if unit else str(name)
+
             plot.setLabel(
-                'left',
-                f"{name} (mV)",
+                "left",
+                label_text,
                 color=UM_BLUE,
-                size="10pt"
+                size="10pt",
             )
-            if sig is not None and len(sig) > 0:
-                plot.plot(self.time_axis, sig, pen='b', name=name)
-                plot.setTitle(name)
 
-                # Autoscale Y axis (center at zero)
-                p_lo, p_hi = np.percentile(sig, [0.5, 99.5])
-                half_span = max(abs(p_lo), abs(p_hi))
-                margin = 0.1 * half_span if half_span > 0 else 1.0
-                y_min = -half_span - margin
-                y_max = half_span + margin
+            # --------------------------------------------------------------
+            # Empty signal
+            # --------------------------------------------------------------
+            if sig is None or len(sig) == 0:
+                plot.setTitle(f"{name} (no data)")
+                plot.setXRange(global_x_min, global_x_max, padding=0)
+                plot.setYRange(-1.0, 1.0, padding=0)
+                self.add_no_data_label(plot, f"{name}: No data")
+                continue
+
+            sig = np.asarray(sig, dtype=float)
+
+            # Protect against time/signal length mismatch.
+            n = min(len(self.time_axis), len(sig))
+
+            if n <= 0:
+                plot.setTitle(f"{name} (no data)")
+                plot.setXRange(global_x_min, global_x_max, padding=0)
+                plot.setYRange(-1.0, 1.0, padding=0)
+                self.add_no_data_label(plot, f"{name}: No data")
+                continue
+
+            x = self.time_axis[:n]
+            y = sig[:n]
+
+            finite_xy = np.isfinite(x) & np.isfinite(y)
+
+            # --------------------------------------------------------------
+            # All-NaN signal
+            # --------------------------------------------------------------
+            if not np.any(finite_xy):
+                plot.setTitle(f"{name} (no finite data)")
+                plot.setXRange(global_x_min, global_x_max, padding=0)
+                plot.setYRange(-1.0, 1.0, padding=0)
+                self.add_no_data_label(plot, f"{name}: No finite data")
+                continue
+
+            # Plot full y with NaNs preserved. Pyqtgraph will show gaps.
+            plot.plot(
+                x,
+                y,
+                pen="b",
+                name=name,
+            )
+
+            plot.setTitle(str(name))
+
+            # --------------------------------------------------------------
+            # Safe y autoscale
+            # --------------------------------------------------------------
+            y_min, y_max, has_data = self.get_safe_y_range(y)
+
+            if has_data:
                 plot.setYRange(y_min, y_max, padding=0)
             else:
-                plot.setTitle(f"{name} (no data)")
+                plot.setYRange(-1.0, 1.0, padding=0)
+                self.add_no_data_label(plot, f"{name}: No data")
 
-        # Set initial X range (epic time)
-        winlen = float(self.win_size.value()) if hasattr(self, 'win_size') else 10
-        left = self.time_axis[0]
-        right = left + winlen
+        # ------------------------------------------------------------------
+        # Initial X range
+        # ------------------------------------------------------------------
+        winlen = float(self.win_size.value()) if hasattr(self, "win_size") else 10.0
+
+        left = global_x_min
+        right = min(global_x_max, left + winlen)
+
+        if right <= left:
+            right = left + 1.0
+
         self.waveform_plots[0].setXRange(left, right, padding=0)
+
         for plt in self.waveform_plots[1:]:
             plt.setXLink(self.waveform_plots[0])
-            
-        # ---- Restrict scroll/zoom to X only ----
+
+        # ------------------------------------------------------------------
+        # Restrict scroll/zoom to X only
+        # ------------------------------------------------------------------
         for plot in self.waveform_plots:
             plot.getViewBox().setMouseEnabled(x=True, y=False)
-            # Optionally: autoscale y range for each plot
-            # plot.enableAutoRange(axis='y', enable=True)
 
-         # Plot event markers AFTER plotting leads
-        if hasattr(self, 'manifest_events') and self.manifest_events is not None:
-            self.plot_event_markers()
+        # ------------------------------------------------------------------
+        # Plot event markers after y-ranges are valid
+        # ------------------------------------------------------------------
+        if hasattr(self, "manifest_events") and self.manifest_events is not None:
+            if not self.manifest_events.empty:
+                self.plot_event_markers()
 
 
     def delete_annotation_files_for_current_user(self):
@@ -1289,35 +1533,27 @@ class AnnotationAppCallbacks:
         self.current_file_tag = record.get("file_tag", "")
         self.current_output_path = record.get("output_path", "")
         self.current_h5_path = h5_path
+        # ------------------------------------------------------------------
+        # IMPORTANT:
+        # Always use timestamps from the waveform file itself.
+        #
+        # Do NOT use waveform_manifest.csv to crop/window the waveform.
+        # The manifest is metadata only.
+        # ------------------------------------------------------------------
         code_csv_path = os.path.join(base_folder, "waveform_manifest.csv")
 
-        if os.path.exists(code_csv_path):
-            try:
-                self.recording_start_sec, self.recording_end_sec, code_start_sec, code_stop_sec = get_code_time_bounds(
-                    subject_name,
-                    code_csv_path,
-                    manifest_path=code_csv_path,
-                )
-            except Exception as e:
-                print(f"WARNING: Could not read code time bounds: {e}")
-                self.recording_start_sec = None
-                self.recording_end_sec = None
-                code_start_sec = None
-                code_stop_sec = None
-        else:
-            print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
-            self.recording_start_sec = None
-            self.recording_end_sec = None
-            code_start_sec = None
-            code_stop_sec = None
+        self.recording_start_sec = None
+        self.recording_end_sec = None
+        code_start_sec = None
+        code_stop_sec = None
 
         loaded_waveforms = load_waveforms_for_subject(
             base_folder,
             record,
-            recording_start_sec=self.recording_start_sec,
-            code_start_sec=code_start_sec,
-            code_stop_sec=code_stop_sec,
-            desired_waveforms=WAVEFORM_PLOT_ORDER
+            recording_start_sec=None,
+            code_start_sec=None,
+            code_stop_sec=None,
+            desired_waveforms=WAVEFORM_PLOT_ORDER,
         )
         print(type(loaded_waveforms))
         print(loaded_waveforms)
@@ -1327,15 +1563,38 @@ class AnnotationAppCallbacks:
         units      = loaded_waveforms.get('units', None)
         Fs         = loaded_waveforms.get('Fs', None)
 
+        if times_ds is None:
+            times_ds = np.array([])
+
+        times_ds = np.asarray(times_ds, dtype=float)
+
+        if len(times_ds) > 0:
+            self.recording_start_sec = float(times_ds[0])
+            self.recording_end_sec = float(times_ds[-1])
+        else:
+            self.recording_start_sec = None
+            self.recording_end_sec = None
+
+        # These should not come from the manifest anymore.
+        self.code_start_sec = None
+        self.code_stop_sec = None
+
         print(times_ds, leads_ds, lead_names, units, Fs)
         # --- Filter manifest events for current subject and code window ---
+        # ------------------------------------------------------------------
+        # Load manifest events as optional metadata only.
+        # Do not use them to crop the waveform.
+        # Do not set code_start_sec/code_stop_sec from them.
+        # ------------------------------------------------------------------
+        self.manifest_events = pd.DataFrame()
+
         if os.path.exists(code_csv_path):
             try:
                 manifest_events_df = get_events_for_window(
                     code_csv_path,
                     subject_name,
-                    code_start_sec,
-                    code_stop_sec,
+                    window_start=0,
+                    window_end=float("inf"),
                 )
 
                 if "event_sec" not in manifest_events_df.columns and "RECORDED_TIME" in manifest_events_df.columns:
@@ -1348,13 +1607,27 @@ class AnnotationAppCallbacks:
                         subset=["FLO_MEAS_NAME", "FLOWSHEET_VALUE", "RECORDED_TIME"]
                     )
 
-                print(manifest_events_df)
+                # Optional: keep only events that fall inside the loaded waveform file.
+                if len(times_ds) > 0 and "event_sec" in manifest_events_df.columns:
+                    t_start = float(times_ds[0])
+                    t_stop = float(times_ds[-1])
+
+                    manifest_events_df = manifest_events_df[
+                        (manifest_events_df["event_sec"] >= t_start)
+                        &
+                        (manifest_events_df["event_sec"] <= t_stop)
+                    ].copy()
+
                 self.manifest_events = manifest_events_df
 
+                print("Loaded manifest metadata/events:")
+                print(self.manifest_events)
+
             except Exception as e:
-                print(f"WARNING: Could not load manifest events: {e}")
+                print(f"WARNING: Could not load manifest metadata/events: {e}")
                 self.manifest_events = pd.DataFrame()
         else:
+            print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
             self.manifest_events = pd.DataFrame()
 
         print("data x:", times_ds[:10], "...", times_ds[-10:])
@@ -1395,6 +1668,9 @@ class AnnotationAppCallbacks:
 
         # Set waveform complete flag to False for new subject load, which controls whether marking is allowed
         self.waveform_complete = False
+
+        if not hasattr(self, "event_labels_visible"):
+            self.event_labels_visible = True
         
         self.plot_all_leads()
 
