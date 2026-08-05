@@ -228,55 +228,47 @@ class AnnotationAppCallbacks:
     def get_global_valid_time_range(self):
         """
         Return x/time range where at least one loaded lead has finite data.
-
-        If no lead has finite data, fall back to the full finite time axis.
+        Uses per-lead time axes if available.
         """
-        if not hasattr(self, "time_axis") or self.time_axis is None:
-            return None
-
         if not hasattr(self, "leads_ds") or self.leads_ds is None:
             return None
 
-        time_axis = np.asarray(self.time_axis, dtype=float)
+        starts = []
+        stops = []
 
-        if time_axis.size == 0:
-            return None
-
-        finite_time = np.isfinite(time_axis)
-
-        if not np.any(finite_time):
-            return None
-
-        any_valid_signal = np.zeros(time_axis.size, dtype=bool)
-
-        for sig in self.leads_ds:
+        for i, sig in enumerate(self.leads_ds):
             if sig is None:
                 continue
 
-            sig = np.asarray(sig, dtype=float)
+            y = np.asarray(sig, dtype=float)
 
-            if sig.size == 0:
+            if y.size == 0:
                 continue
 
-            n = min(time_axis.size, sig.size)
+            if hasattr(self, "time_axes_by_lead") and self.time_axes_by_lead is not None and i < len(self.time_axes_by_lead):
+                x = np.asarray(self.time_axes_by_lead[i], dtype=float)
+            else:
+                x = np.asarray(self.time_axis, dtype=float)
+
+            n = min(len(x), len(y))
 
             if n <= 0:
                 continue
 
-            any_valid_signal[:n] |= np.isfinite(sig[:n])
+            x = x[:n]
+            y = y[:n]
 
-        valid = finite_time & any_valid_signal
+            valid = np.isfinite(x) & np.isfinite(y)
 
-        if np.any(valid):
-            return float(time_axis[valid][0]), float(time_axis[valid][-1])
+            if np.any(valid):
+                starts.append(float(x[valid][0]))
+                stops.append(float(x[valid][-1]))
 
-        # Fallback: full finite time range
-        finite_t = time_axis[finite_time]
+        if starts and stops:
+            return min(starts), max(stops)
 
-        if finite_t.size == 0:
-            return None
-
-        return float(finite_t[0]), float(finite_t[-1])
+        # fallback to loaded global range
+        return self.get_loaded_global_time_range()
 
 
     def get_safe_y_range(self, sig, percentile_low=0.5, percentile_high=99.5):
@@ -615,7 +607,14 @@ class AnnotationAppCallbacks:
         if sig is None:
             return False
 
-        time_axis = np.asarray(self.time_axis, dtype=float)
+        if (
+            hasattr(self, "time_axes_by_lead")
+            and self.time_axes_by_lead is not None
+            and plot_idx < len(self.time_axes_by_lead)
+        ):
+            time_axis = np.asarray(self.time_axes_by_lead[plot_idx], dtype=float)
+        else:
+            time_axis = np.asarray(self.time_axis, dtype=float)
         sig = np.asarray(sig, dtype=float)
 
         if time_axis.size == 0 or sig.size == 0:
@@ -715,16 +714,17 @@ class AnnotationAppCallbacks:
         
     def get_waveform_end_time(self):
         """
-        Return the final timestamp of the loaded waveform.
-
-        Returns
-        -------
-        float or None
-            Final waveform timestamp, or None if no waveform is loaded.
+        Return final timestamp across all loaded signal time axes.
         """
-        if not hasattr(self, "time_axis") or self.time_axis is None or len(self.time_axis) == 0:
-            return None
-        return float(self.time_axis[-1])
+        if hasattr(self, "loaded_waveform_end_sec") and self.loaded_waveform_end_sec is not None:
+            return float(self.loaded_waveform_end_sec)
+
+        global_start, global_end = self.get_loaded_global_time_range()
+
+        if global_end is not None:
+            return float(global_end)
+
+        return None
     
     def is_at_waveform_end(self, value, tolerance=1e-6):
         """
@@ -1105,10 +1105,16 @@ class AnnotationAppCallbacks:
             - self.code_start_sec, self.code_stop_sec (event filtering window, in epic seconds)
         """
         # ------------------------------------------------------------------
-        # Clear all plots
+        # Clear, unlink, and reset all plots
         # ------------------------------------------------------------------
         for plot in self.waveform_plots:
+            try:
+                plot.setXLink(None)
+            except Exception:
+                pass
+
             plot.clear()
+            plot.getViewBox().setMouseEnabled(x=True, y=False)
 
         if self.time_axis is None or len(self.time_axis) == 0:
             for plot in self.waveform_plots:
@@ -1116,56 +1122,78 @@ class AnnotationAppCallbacks:
                 plot.setYRange(-1.0, 1.0, padding=0)
             return
 
-        self.time_axis = np.asarray(self.time_axis, dtype=float)
+        # ------------------------------------------------------------------
+        # Ensure arrays exist
+        # ------------------------------------------------------------------
+        time_axis = np.asarray(self.time_axis, dtype=float)
 
-        if not np.any(np.isfinite(self.time_axis)):
-            for plot in self.waveform_plots:
-                plot.setTitle("No Valid Time Axis")
-                plot.setYRange(-1.0, 1.0, padding=0)
-            return
+        leads = getattr(self, "leads_ds", [])
+        lead_names = getattr(self, "lead_names", [])
+        units = getattr(self, "units", [])
+        time_axes_by_lead = getattr(self, "time_axes_by_lead", None)
+
+        if leads is None:
+            leads = []
+
+        if lead_names is None:
+            lead_names = []
+
+        if units is None:
+            units = []
 
         # ------------------------------------------------------------------
-        # Determine global x-range from any lead with data
+        # Determine global loaded x-range
         # ------------------------------------------------------------------
-        global_range = self.get_global_valid_time_range()
+        global_x_min = getattr(self, "loaded_waveform_start_sec", None)
+        global_x_max = getattr(self, "loaded_waveform_end_sec", None)
 
-        if global_range is None:
-            global_x_min = float(self.time_axis[np.isfinite(self.time_axis)][0])
-            global_x_max = float(self.time_axis[np.isfinite(self.time_axis)][-1])
-        else:
-            global_x_min, global_x_max = global_range
+        if global_x_min is None or global_x_max is None:
+            try:
+                global_x_min, global_x_max = self.get_loaded_global_time_range()
+            except Exception:
+                global_x_min, global_x_max = None, None
+
+        if global_x_min is None or global_x_max is None:
+            finite_t = time_axis[np.isfinite(time_axis)]
+
+            if finite_t.size == 0:
+                for plot in self.waveform_plots:
+                    plot.setTitle("No Valid Time Axis")
+                    plot.setYRange(-1.0, 1.0, padding=0)
+                return
+
+            global_x_min = float(finite_t[0])
+            global_x_max = float(finite_t[-1])
+
+        global_x_min = float(global_x_min)
+        global_x_max = float(global_x_max)
+
+        if not np.isfinite(global_x_min) or not np.isfinite(global_x_max):
+            global_x_min = 0.0
+            global_x_max = 1.0
 
         if global_x_max <= global_x_min:
             global_x_max = global_x_min + 1.0
 
+        # Axis labels show relative seconds from loaded segment start.
         t0 = global_x_min
 
-        # ------------------------------------------------------------------
-        # Set relative x-axis
-        # ------------------------------------------------------------------
-        for plt in self.waveform_plots:
-            plt.setAxisItems({"bottom": RelativeAxis(t0, orientation="bottom")})
+        for plot in self.waveform_plots:
+            plot.setAxisItems({"bottom": RelativeAxis(t0, orientation="bottom")})
 
         # ------------------------------------------------------------------
-        # Plot each signal row
+        # Plot each row
         # ------------------------------------------------------------------
-        n_plots = len(self.waveform_plots)
+        n_rows = min(len(self.waveform_plots), len(leads))
 
-        for i in range(n_plots):
+        for i in range(n_rows):
             plot = self.waveform_plots[i]
+            sig = leads[i]
 
-            sig = None
-            if hasattr(self, "leads_ds") and self.leads_ds is not None and i < len(self.leads_ds):
-                sig = self.leads_ds[i]
+            name = lead_names[i] if i < len(lead_names) else f"Signal {i + 1}"
+            unit = units[i] if i < len(units) else ""
 
-            name = f"Lead {i + 1}"
-            if hasattr(self, "lead_names") and self.lead_names is not None and i < len(self.lead_names):
-                name = self.lead_names[i]
-
-            unit = ""
-            if hasattr(self, "units") and self.units is not None and i < len(self.units):
-                unit = self.units[i] or ""
-
+            unit = "" if unit is None else str(unit)
             label_text = f"{name} ({unit})" if unit else str(name)
 
             plot.setLabel(
@@ -1176,62 +1204,151 @@ class AnnotationAppCallbacks:
             )
 
             # --------------------------------------------------------------
-            # Empty signal
+            # Get x-axis for this signal.
+            # Critical: x is always assigned before use.
+            # --------------------------------------------------------------
+            if (
+                time_axes_by_lead is not None
+                and i < len(time_axes_by_lead)
+                and time_axes_by_lead[i] is not None
+                and len(time_axes_by_lead[i]) > 0
+            ):
+                x = np.asarray(time_axes_by_lead[i], dtype=float)
+            else:
+                x = np.asarray(time_axis, dtype=float)
+
+            # --------------------------------------------------------------
+            # Handle empty signal
             # --------------------------------------------------------------
             if sig is None or len(sig) == 0:
                 plot.setTitle(f"{name} (no data)")
                 plot.setXRange(global_x_min, global_x_max, padding=0)
                 plot.setYRange(-1.0, 1.0, padding=0)
-                self.add_no_data_label(plot, f"{name}: No data")
+
+                if hasattr(self, "add_no_data_label"):
+                    self.add_no_data_label(plot, f"{name}: No data")
+
                 continue
 
-            sig = np.asarray(sig, dtype=float)
+            y = np.asarray(sig, dtype=float)
 
-            # Protect against time/signal length mismatch.
-            n = min(len(self.time_axis), len(sig))
+            # --------------------------------------------------------------
+            # Protect against length mismatch
+            # --------------------------------------------------------------
+            n = min(len(x), len(y))
 
             if n <= 0:
                 plot.setTitle(f"{name} (no data)")
                 plot.setXRange(global_x_min, global_x_max, padding=0)
                 plot.setYRange(-1.0, 1.0, padding=0)
-                self.add_no_data_label(plot, f"{name}: No data")
+
+                if hasattr(self, "add_no_data_label"):
+                    self.add_no_data_label(plot, f"{name}: No data")
+
                 continue
 
-            x = self.time_axis[:n]
-            y = sig[:n]
+            x = x[:n]
+            y = y[:n]
 
             finite_xy = np.isfinite(x) & np.isfinite(y)
 
             # --------------------------------------------------------------
-            # All-NaN signal
+            # All-NaN or no finite points
             # --------------------------------------------------------------
             if not np.any(finite_xy):
                 plot.setTitle(f"{name} (no finite data)")
                 plot.setXRange(global_x_min, global_x_max, padding=0)
                 plot.setYRange(-1.0, 1.0, padding=0)
-                self.add_no_data_label(plot, f"{name}: No finite data")
+
+                if hasattr(self, "add_no_data_label"):
+                    self.add_no_data_label(plot, f"{name}: No finite data")
+
                 continue
 
-            # Plot full y with NaNs preserved. Pyqtgraph will show gaps.
-            plot.plot(
-                x,
-                y,
-                pen="b",
-                name=name,
-            )
+            # --------------------------------------------------------------
+            # Plot only finite samples.
+            #
+            # This is important for lower-rate signals stored on a higher-rate
+            # shared time vector with NaN placeholders, e.g.:
+            #
+            #   [-22.8, nan, -23.8, nan, ...]
+            #
+            # We do NOT interpolate. We simply remove placeholder NaNs so the
+            # true lower-rate samples are connected at their real timestamps.
+            # --------------------------------------------------------------
+            x_plot = x[finite_xy]
+            y_plot = y[finite_xy]
+
+            try:
+                curve = plot.plot(
+                    x_plot,
+                    y_plot,
+                    pen="b",
+                    name=name,
+                    autoDownsample=True,
+                    clipToView=True,
+                )
+            except TypeError:
+                curve = plot.plot(
+                    x_plot,
+                    y_plot,
+                    pen="b",
+                    name=name,
+                )
+
+            try:
+                curve.setDownsampling(auto=True, method="peak")
+            except Exception:
+                pass
+
+            try:
+                curve.setClipToView(True)
+            except Exception:
+                pass
 
             plot.setTitle(str(name))
 
             # --------------------------------------------------------------
-            # Safe y autoscale
+            # Safe y-scale
             # --------------------------------------------------------------
-            y_min, y_max, has_data = self.get_safe_y_range(y)
+            if hasattr(self, "get_safe_y_range"):
+                y_min, y_max, has_data = self.get_safe_y_range(y)
+            else:
+                finite_y = y[np.isfinite(y)]
+
+                if finite_y.size == 0:
+                    y_min, y_max, has_data = -1.0, 1.0, False
+                else:
+                    y_lo, y_hi = np.nanpercentile(finite_y, [0.5, 99.5])
+                    half_span = max(abs(float(y_lo)), abs(float(y_hi)))
+                    margin = 0.1 * half_span if half_span > 0 else 1.0
+                    y_min = -half_span - margin
+                    y_max = half_span + margin
+                    has_data = (
+                        np.isfinite(y_min)
+                        and np.isfinite(y_max)
+                        and y_max > y_min
+                    )
 
             if has_data:
                 plot.setYRange(y_min, y_max, padding=0)
             else:
                 plot.setYRange(-1.0, 1.0, padding=0)
-                self.add_no_data_label(plot, f"{name}: No data")
+
+                if hasattr(self, "add_no_data_label"):
+                    self.add_no_data_label(plot, f"{name}: No data")
+
+        # ------------------------------------------------------------------
+        # If there are more plot widgets than signals, mark extra rows empty
+        # ------------------------------------------------------------------
+        for i in range(n_rows, len(self.waveform_plots)):
+            plot = self.waveform_plots[i]
+            plot.setTitle("No signal assigned")
+            plot.setXRange(global_x_min, global_x_max, padding=0)
+            plot.setYRange(-1.0, 1.0, padding=0)
+
+            if hasattr(self, "add_no_data_label"):
+                self.add_no_data_label(plot, "No signal assigned")
 
         # ------------------------------------------------------------------
         # Initial X range
@@ -1246,17 +1363,17 @@ class AnnotationAppCallbacks:
 
         self.waveform_plots[0].setXRange(left, right, padding=0)
 
-        for plt in self.waveform_plots[1:]:
-            plt.setXLink(self.waveform_plots[0])
+        for plot in self.waveform_plots[1:]:
+            plot.setXLink(self.waveform_plots[0])
 
         # ------------------------------------------------------------------
-        # Restrict scroll/zoom to X only
+        # Restrict interaction to X only
         # ------------------------------------------------------------------
         for plot in self.waveform_plots:
             plot.getViewBox().setMouseEnabled(x=True, y=False)
 
         # ------------------------------------------------------------------
-        # Plot event markers after y-ranges are valid
+        # Plot manifest/event markers after y-ranges are valid
         # ------------------------------------------------------------------
         if hasattr(self, "manifest_events") and self.manifest_events is not None:
             if not self.manifest_events.empty:
@@ -1498,6 +1615,37 @@ class AnnotationAppCallbacks:
         # Make sure final visual state is correct after message override
         self.update_finalize_button_state()
 
+    def get_loaded_global_time_range(self):
+        """
+        Return global min/max absolute epoch seconds across all loaded signal time axes.
+        """
+        starts = []
+        stops = []
+
+        if hasattr(self, "time_axes_by_lead") and self.time_axes_by_lead is not None:
+            for t in self.time_axes_by_lead:
+                if t is None:
+                    continue
+
+                arr = np.asarray(t, dtype=float)
+                finite = arr[np.isfinite(arr)]
+
+                if finite.size > 0:
+                    starts.append(float(finite[0]))
+                    stops.append(float(finite[-1]))
+
+        elif hasattr(self, "time_axis") and self.time_axis is not None:
+            arr = np.asarray(self.time_axis, dtype=float)
+            finite = arr[np.isfinite(arr)]
+
+            if finite.size > 0:
+                starts.append(float(finite[0]))
+                stops.append(float(finite[-1]))
+
+        if not starts or not stops:
+            return None, None
+
+        return min(starts), max(stops)
 
     def load_subject_data(self):
         subject_idx = self.subject_dropdown.currentIndex()
@@ -1555,25 +1703,60 @@ class AnnotationAppCallbacks:
             code_stop_sec=None,
             desired_waveforms=WAVEFORM_PLOT_ORDER,
         )
-        print(type(loaded_waveforms))
-        print(loaded_waveforms)
-        times_ds   = loaded_waveforms.get('times_ds', None)
-        leads_ds   = loaded_waveforms.get('leads_ds', None)
-        lead_names = loaded_waveforms.get('lead_names', None)
-        units      = loaded_waveforms.get('units', None)
-        Fs         = loaded_waveforms.get('Fs', None)
+        times_ds = loaded_waveforms.get("times_ds", None)
+        times_by_lead = loaded_waveforms.get("times_by_lead", None)
+        leads_ds = loaded_waveforms.get("leads_ds", None)
+        lead_names = loaded_waveforms.get("lead_names", None)
+        units = loaded_waveforms.get("units", None)
+        Fs = loaded_waveforms.get("Fs", None)
 
         if times_ds is None:
             times_ds = np.array([])
 
         times_ds = np.asarray(times_ds, dtype=float)
 
-        if len(times_ds) > 0:
-            self.recording_start_sec = float(times_ds[0])
-            self.recording_end_sec = float(times_ds[-1])
+        if leads_ds is None:
+            leads_ds = []
+
+        if lead_names is None:
+            lead_names = []
+
+        if units is None:
+            units = []
+
+        if times_by_lead is None:
+            times_by_lead = [
+                times_ds for _ in leads_ds
+            ]
         else:
-            self.recording_start_sec = None
-            self.recording_end_sec = None
+            times_by_lead = [
+                np.asarray(t, dtype=float) if t is not None else np.array([])
+                for t in times_by_lead
+            ]
+
+        self.time_axis = times_ds
+        self.time_axes_by_lead = times_by_lead
+        self.leads_ds = leads_ds
+        self.lead_names = lead_names
+        self.units = units
+        self.Fs = Fs
+        if times_ds is None:
+            times_ds = np.array([])
+
+        times_ds = np.asarray(times_ds, dtype=float)
+
+        global_start, global_end = self.get_loaded_global_time_range()
+
+        self.loaded_waveform_start_sec = global_start
+        self.loaded_waveform_end_sec = global_end
+
+        self.recording_start_sec = global_start
+        self.recording_end_sec = global_end
+
+        if global_start is not None:
+            self.last_mark = float(global_start)
+        else:
+            self.last_mark = 0.0
 
         # These should not come from the manifest anymore.
         self.code_start_sec = None
@@ -1609,8 +1792,8 @@ class AnnotationAppCallbacks:
 
                 # Optional: keep only events that fall inside the loaded waveform file.
                 if len(times_ds) > 0 and "event_sec" in manifest_events_df.columns:
-                    t_start = float(times_ds[0])
-                    t_stop = float(times_ds[-1])
+                    t_start = float(self.loaded_waveform_start_sec)
+                    t_stop = float(self.loaded_waveform_end_sec)
 
                     manifest_events_df = manifest_events_df[
                         (manifest_events_df["event_sec"] >= t_start)
