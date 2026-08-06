@@ -80,7 +80,7 @@ jobs:
             --hidden-import PyQt5.QtWidgets `
             --collect-all PyQt5 `
             --collect-all pyqtgraph `
-            src\new_app.py
+            src\app.py
 
       - name: Inspect Windows build output
         run: |
@@ -95,7 +95,7 @@ jobs:
           "Application: $env:APP_NAME" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt"
           "OS: Windows" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
           "Build mode: PyInstaller onedir" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
-          "Entry point: software/src/new_app.py" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
+          "Entry point: software/src/app.py" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
           "Commit: $env:GITHUB_SHA" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
           "Branch: $env:GITHUB_REF_NAME" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append
           "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" | Out-File "release\$env:APP_NAME-Windows\BUILD_INFO.txt" -Append

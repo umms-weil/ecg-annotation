@@ -40,7 +40,7 @@ jobs:
           echo "Finding requirements files:"
           find . -maxdepth 4 -type f -name "requirements.txt" -print
           echo "Finding source files:"
-          find . -maxdepth 4 -type f -name "new_app.py" -print
+          find . -maxdepth 4 -type f -name "app.py" -print
 
       - name: Install application dependencies
         run: |
@@ -81,7 +81,7 @@ jobs:
             --hidden-import PyQt5.QtWidgets \
             --collect-all PyQt5 \
             --collect-all pyqtgraph \
-            src/new_app.py
+            src/app.py
 
       - name: Inspect macOS build output before signing
         run: |
@@ -156,7 +156,7 @@ jobs:
           OS: macOS
           Build mode: PyInstaller windowed .app bundle
           Signing: Ad-hoc codesign only. Not Apple Developer ID signed or notarized.
-          Entry point: software/src/new_app.py
+          Entry point: software/src/app.py
           Commit: $GITHUB_SHA
           Branch: $GITHUB_REF_NAME
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
