@@ -33,6 +33,7 @@ SIGNAL_ALIASES = {
         "ECG I",
         "GE ECG I",
         "GE_ECG_I",
+        "GE - ECG I",
     ],
     "II": [
         "II",
@@ -40,6 +41,7 @@ SIGNAL_ALIASES = {
         "ECG II",
         "GE ECG II",
         "GE_ECG_II",
+        "GE - ECG II",
     ],
     "III": [
         "III",
@@ -47,6 +49,7 @@ SIGNAL_ALIASES = {
         "ECG III",
         "GE ECG III",
         "GE_ECG_III",
+        "GE - ECG III",
     ],
     "V": [
         "V",
@@ -54,6 +57,7 @@ SIGNAL_ALIASES = {
         "ECG V",
         "GE ECG V",
         "GE_ECG_V",
+        "GE - ECG V",
     ],
     "AVF": [
         "AVF",
@@ -62,6 +66,7 @@ SIGNAL_ALIASES = {
         "LEAD aVF",
         "GE ECG AVF",
         "GE_ECG_AVF",
+        "GE - ECG AVF",
     ],
     "AVL": [
         "AVL",
@@ -70,6 +75,7 @@ SIGNAL_ALIASES = {
         "LEAD aVL",
         "GE ECG AVL",
         "GE_ECG_AVL",
+        "GE - ECG AVL",
     ],
     "AVR": [
         "AVR",
@@ -78,9 +84,11 @@ SIGNAL_ALIASES = {
         "LEAD aVR",
         "GE ECG AVR",
         "GE_ECG_AVR",
+        "GE - ECG AVR",
     ],
     "CHEST_IMPEDANCE": [
         "GE_Chest_Impedance_RR_1",
+        "GE - Chest Impedance (RR) 1",
         "CHEST_IMPEDANCE",
         "Chest Impedance",
         "IMPEDANCE",
@@ -120,6 +128,71 @@ def normalize_signal_key(value: str) -> str:
     """
     return re.sub(r"[^A-Z0-9]", "", str(value).upper())
 
+def build_alias_lookup():
+    """
+    Build lookup:
+
+        normalized alias -> canonical signal name
+
+    Example:
+        "GEECGII" -> "II"
+        "GECHESTIMPEDANCERR1" -> "CHEST_IMPEDANCE"
+    """
+    lookup = {}
+
+    for canonical, aliases in SIGNAL_ALIASES.items():
+        lookup[normalize_signal_key(canonical)] = canonical
+
+        for alias in aliases:
+            lookup[normalize_signal_key(alias)] = canonical
+
+    return lookup
+
+SIGNAL_ALIAS_LOOKUP = build_alias_lookup()
+
+def resolve_canonical_signal_name(*names):
+    """
+    Resolve one or more names to canonical name using SIGNAL_ALIASES.
+
+    Returns:
+        canonical string like "II" or "CHEST_IMPEDANCE"
+        or None if no match
+    """
+    for name in names:
+        norm = normalize_signal_key(name)
+
+        if norm in SIGNAL_ALIAS_LOOKUP:
+            return SIGNAL_ALIAS_LOOKUP[norm]
+
+    # Additional permissive GE matching
+    joined = " ".join(str(x) for x in names)
+    norm = normalize_signal_key(joined)
+
+    if "CHESTIMPEDANCE" in norm or "IMPEDANCE" in norm or "RESPIRATION" in norm:
+        return "CHEST_IMPEDANCE"
+
+    if "ECGIII" in norm or norm.endswith("III"):
+        return "III"
+
+    if "ECGII" in norm or norm.endswith("II"):
+        return "II"
+
+    if "ECGI" in norm or norm.endswith("I"):
+        return "I"
+
+    if "ECGV" in norm or norm.endswith("V"):
+        return "V"
+
+    if "AVF" in norm:
+        return "AVF"
+
+    if "AVL" in norm:
+        return "AVL"
+
+    if "AVR" in norm:
+        return "AVR"
+
+    return None
 
 def normalize_epoch_seconds(time_values: np.ndarray) -> np.ndarray:
     """
@@ -366,53 +439,27 @@ def _extract_time_epoch_s(df: pd.DataFrame) -> Tuple[np.ndarray, str]:
 # Subject / waveform discovery
 # =============================================================================
 
-def list_subjects(base_folder: str, user_name: Optional[str] = None) -> List[Dict]:
+def list_subjects_grouped_h5(base_folder: str, user_name: Optional[str] = None) -> List[Dict]:
     """
-    Discover loadable waveform records in a base folder.
+    Discover H5 files and group files from different namespaces into one selectable record.
 
-    Supports recursive H5 layout such as:
+    Expected structure:
 
         base_folder/
-            mrnnumber/
-                csnnumber/
+            MRN/
+                CSN/
+                    GEWAVE/
+                        file_cpr_window.h5
                     GEVITAL/
-                        file1.h5
-                        file2.h5
-                    metadata_*.json
+                        file_cpr_window.h5
 
-    Each H5 file becomes one selectable dropdown item.
-
-    Also supports old MAT layout:
-
-        base_folder/
-            subject/
-                *_I.mat
-                *_II.mat
-
-    Returns
-    -------
-    list[dict]
-        Each dict represents one selectable waveform file/session.
-
-        Common keys:
-        - name
-        - subject
-        - encounter
-        - namespace
-        - file_tag
-        - kind
-        - h5_path
-        - subject_path
-        - encounter_path
-        - output_path
-        - n_annotations
-        - n_complete_annotations
-        - has_annotations
+    Returns one record per MRN/CSN/file_tag/window_tag.
     """
-    records: List[Dict] = []
+
+    records_by_key = {}
 
     if not os.path.isdir(base_folder):
-        return records
+        return []
 
     for subject_name in sorted(os.listdir(base_folder)):
         if subject_name.startswith("."):
@@ -423,14 +470,10 @@ def list_subjects(base_folder: str, user_name: Optional[str] = None) -> List[Dic
         if not os.path.isdir(subject_path):
             continue
 
-        # ------------------------------------------------------------------
-        # Recursive H5 discovery
-        # ------------------------------------------------------------------
         for root, dirs, files in os.walk(subject_path):
-            # Do not search annotation output folders or hidden/system folders.
             dirs[:] = [
                 d for d in dirs
-                if d not in {"output", "__pycache__"} and not d.startswith(".")
+                if d.lower() not in {"output", "__pycache__"} and not d.startswith(".")
             ]
 
             h5_files = sorted(
@@ -442,131 +485,330 @@ def list_subjects(base_folder: str, user_name: Optional[str] = None) -> List[Dic
                 h5_path = os.path.join(root, h5_file)
                 h5_stem = os.path.splitext(h5_file)[0]
 
-                # Relative path under subject.
-                # Example:
-                #   root = base/mrnnumber/csnnumber/GEVITAL
-                #   rel_dir = CSN/GEVITAL
                 rel_dir = os.path.relpath(root, subject_path)
                 rel_parts = rel_dir.split(os.sep)
 
-                # For your current structure:
-                #   rel_parts[0] -> CSN
-                #   rel_parts[-1] -> GEVITAL
                 encounter = rel_parts[0] if len(rel_parts) >= 1 and rel_parts[0] != "." else ""
                 namespace = rel_parts[-1] if len(rel_parts) >= 1 and rel_parts[-1] != "." else ""
 
-                # Default metadata if H5 attrs are unavailable.
                 patient_label = subject_name
                 encounter_label = encounter
-                window_tag = ""
+                namespace_attr = namespace
                 file_tag = h5_stem
+                window_tag = ""
 
-                # Read only lightweight H5 attrs. Do not load waveform arrays.
                 try:
-                    with h5py.File(h5_path, "r", locking=False) as f:
+                    with h5py.File(h5_path, "r") as f:
                         patient_label = h5_attr_to_str(
                             f.attrs,
                             "patient_label",
                             subject_name,
-                        )
+                        ) or subject_name
+
                         encounter_label = h5_attr_to_str(
                             f.attrs,
                             "encounter_label",
                             encounter,
-                        )
-                        namespace = h5_attr_to_str(
+                        ) or encounter
+
+                        namespace_attr = h5_attr_to_str(
                             f.attrs,
                             "namespace",
                             namespace,
-                        )
+                        ) or namespace
+
+                        file_tag = h5_attr_to_str(
+                            f.attrs,
+                            "file_tag",
+                            h5_stem,
+                        ) or h5_stem
+
                         window_tag = h5_attr_to_str(
                             f.attrs,
                             "window_tag",
                             "",
                         )
-                        file_tag = h5_attr_to_str(
-                            f.attrs,
-                            "file_tag",
-                            h5_stem,
-                        )
+
                 except Exception as e:
                     print(f"WARNING: Could not read attrs from {h5_path}: {e}")
 
-                # Use a per-H5 output folder so multiple H5 files for the same
-                # subject/encounter/namespace do not collide.
-                #
-                # Example:
-                #   .../CSN/GEVITAL/output/<h5_stem>/<user>/annotations...
-                output_path = os.path.join(root, "output", h5_stem)
+                group_key = (
+                    str(patient_label),
+                    str(encounter_label),
+                    str(file_tag),
+                    str(window_tag),
+                )
 
-                total_annotations, complete_annotations = _count_annotations_in_output(
-                        output_path,
-                        user_name=user_name,
+                if group_key not in records_by_key:
+                    # root = .../<MRN>/<CSN>/<namespace>
+                    encounter_path = os.path.dirname(root)
+
+                    output_path = os.path.join(
+                        encounter_path,
+                        "output",
+                        file_tag,
                     )
 
-                label_parts = [
-                    subject_name,
-                    encounter_label,
-                    namespace,
-                    file_tag,
-                ]
-
-                display_name = " | ".join(
-                    str(x) for x in label_parts if str(x).strip()
-                )
-
-                records.append(
-                    {
-                        "name": display_name,
-                        "subject": subject_name,
-                        "encounter": encounter_label,
-                        "namespace": namespace,
-                        "window_tag": window_tag,
-                        "file_tag": file_tag,
-                        "kind": "h5",
-                        "h5_path": h5_path,
+                    records_by_key[group_key] = {
+                        "name": "",
+                        "subject": str(patient_label),
+                        "encounter": str(encounter_label),
+                        "namespace": "",
+                        "namespaces": [],
+                        "window_tag": str(window_tag),
+                        "file_tag": str(file_tag),
+                        "kind": "h5_multi",
+                        "h5_paths": {},
                         "subject_path": subject_path,
-                        "encounter_path": root,
+                        "encounter_path": encounter_path,
                         "output_path": output_path,
-                        "n_annotations": total_annotations,
-                        "n_complete_annotations": complete_annotations,
-                        "has_annotations": total_annotations > 0,
+                        "n_annotations": 0,
+                        "n_complete_annotations": 0,
+                        "has_annotations": False,
                         "completion_user": user_name,
                     }
-                )
 
-        # ------------------------------------------------------------------
-        # Old MAT fallback
-        # ------------------------------------------------------------------
-        mat_files = sorted(glob.glob(os.path.join(subject_path, "*.mat")))
+                rec = records_by_key[group_key]
 
-        if mat_files:
-            subject_output_path = os.path.join(subject_path, "output")
-            total_annotations, complete_annotations = _count_annotations_in_output(
-                subject_output_path,
-                user_name=user_name,
-            )
-            records.append(
-                {
-                    "name": subject_name,
-                    "subject": subject_name,
-                    "encounter": "",
-                    "namespace": "",
-                    "window_tag": "",
-                    "file_tag": "",
-                    "kind": "mat",
-                    "subject_path": subject_path,
-                    "encounter_path": subject_path,
-                    "output_path": subject_output_path,
-                    "n_annotations": total_annotations,
-                    "n_complete_annotations": complete_annotations,
-                    "has_annotations": total_annotations > 0,
-                    "completion_user": user_name,
-                }
-            )
+                rec["h5_paths"][str(namespace_attr)] = h5_path
 
-    return records
+                if str(namespace_attr) not in rec["namespaces"]:
+                    rec["namespaces"].append(str(namespace_attr))
 
+    records = []
+
+    for rec in records_by_key.values():
+        rec["namespaces"] = sorted(rec["namespaces"])
+        rec["namespace"] = "+".join(rec["namespaces"])
+
+        rec["name"] = " | ".join(
+            str(x)
+            for x in [
+                rec["subject"],
+                rec["encounter"],
+                rec["namespace"],
+                rec["file_tag"],
+            ]
+            if str(x).strip()
+        )
+
+        total_annotations, complete_annotations = _count_annotations_in_output(
+            rec["output_path"],
+            user_name=user_name,
+        )
+
+        rec["n_annotations"] = total_annotations
+        rec["n_complete_annotations"] = complete_annotations
+        rec["has_annotations"] = total_annotations > 0
+
+        records.append(rec)
+
+    return sorted(records, key=lambda r: r["name"])
+
+# def list_subjects(base_folder: str, user_name: Optional[str] = None) -> List[Dict]:
+#     """
+#     Discover loadable waveform records in a base folder.
+
+#     Supports recursive H5 layout such as:
+
+#         base_folder/
+#             mrnnumber/
+#                 csnnumber/
+#                     GEVITAL/
+#                         file1.h5
+#                         file2.h5
+#                     metadata_*.json
+
+#     Each H5 file becomes one selectable dropdown item.
+
+#     Also supports old MAT layout:
+
+#         base_folder/
+#             subject/
+#                 *_I.mat
+#                 *_II.mat
+
+#     Returns
+#     -------
+#     list[dict]
+#         Each dict represents one selectable waveform file/session.
+
+#         Common keys:
+#         - name
+#         - subject
+#         - encounter
+#         - namespace
+#         - file_tag
+#         - kind
+#         - h5_path
+#         - subject_path
+#         - encounter_path
+#         - output_path
+#         - n_annotations
+#         - n_complete_annotations
+#         - has_annotations
+#     """
+#     records: List[Dict] = []
+
+#     if not os.path.isdir(base_folder):
+#         return records
+
+#     for subject_name in sorted(os.listdir(base_folder)):
+#         if subject_name.startswith("."):
+#             continue
+
+#         subject_path = os.path.join(base_folder, subject_name)
+
+#         if not os.path.isdir(subject_path):
+#             continue
+
+#         # ------------------------------------------------------------------
+#         # Recursive H5 discovery
+#         # ------------------------------------------------------------------
+#         for root, dirs, files in os.walk(subject_path):
+#             # Do not search annotation output folders or hidden/system folders.
+#             dirs[:] = [
+#                 d for d in dirs
+#                 if d not in {"output", "__pycache__"} and not d.startswith(".")
+#             ]
+
+#             h5_files = sorted(
+#                 f for f in files
+#                 if f.lower().endswith(".h5") and not f.startswith(".")
+#             )
+
+#             for h5_file in h5_files:
+#                 h5_path = os.path.join(root, h5_file)
+#                 h5_stem = os.path.splitext(h5_file)[0]
+
+#                 # Relative path under subject.
+#                 # Example:
+#                 #   root = base/mrnnumber/csnnumber/GEVITAL
+#                 #   rel_dir = CSN/GEVITAL
+#                 rel_dir = os.path.relpath(root, subject_path)
+#                 rel_parts = rel_dir.split(os.sep)
+
+#                 # For your current structure:
+#                 #   rel_parts[0] -> CSN
+#                 #   rel_parts[-1] -> GEVITAL
+#                 encounter = rel_parts[0] if len(rel_parts) >= 1 and rel_parts[0] != "." else ""
+#                 namespace = rel_parts[-1] if len(rel_parts) >= 1 and rel_parts[-1] != "." else ""
+
+#                 # Default metadata if H5 attrs are unavailable.
+#                 patient_label = subject_name
+#                 encounter_label = encounter
+#                 window_tag = ""
+#                 file_tag = h5_stem
+
+#                 # Read only lightweight H5 attrs. Do not load waveform arrays.
+#                 try:
+#                     with h5py.File(h5_path, "r", locking=False) as f:
+#                         patient_label = h5_attr_to_str(
+#                             f.attrs,
+#                             "patient_label",
+#                             subject_name,
+#                         )
+#                         encounter_label = h5_attr_to_str(
+#                             f.attrs,
+#                             "encounter_label",
+#                             encounter,
+#                         )
+#                         namespace = h5_attr_to_str(
+#                             f.attrs,
+#                             "namespace",
+#                             namespace,
+#                         )
+#                         window_tag = h5_attr_to_str(
+#                             f.attrs,
+#                             "window_tag",
+#                             "",
+#                         )
+#                         file_tag = h5_attr_to_str(
+#                             f.attrs,
+#                             "file_tag",
+#                             h5_stem,
+#                         )
+#                 except Exception as e:
+#                     print(f"WARNING: Could not read attrs from {h5_path}: {e}")
+
+#                 # Use a per-H5 output folder so multiple H5 files for the same
+#                 # subject/encounter/namespace do not collide.
+#                 #
+#                 # Example:
+#                 #   .../CSN/GEVITAL/output/<h5_stem>/<user>/annotations...
+#                 output_path = os.path.join(root, "output", h5_stem)
+
+#                 total_annotations, complete_annotations = _count_annotations_in_output(
+#                         output_path,
+#                         user_name=user_name,
+#                     )
+
+#                 label_parts = [
+#                     subject_name,
+#                     encounter_label,
+#                     namespace,
+#                     file_tag,
+#                 ]
+
+#                 display_name = " | ".join(
+#                     str(x) for x in label_parts if str(x).strip()
+#                 )
+
+#                 records.append(
+#                     {
+#                         "name": display_name,
+#                         "subject": subject_name,
+#                         "encounter": encounter_label,
+#                         "namespace": namespace,
+#                         "window_tag": window_tag,
+#                         "file_tag": file_tag,
+#                         "kind": "h5",
+#                         "h5_path": h5_path,
+#                         "subject_path": subject_path,
+#                         "encounter_path": root,
+#                         "output_path": output_path,
+#                         "n_annotations": total_annotations,
+#                         "n_complete_annotations": complete_annotations,
+#                         "has_annotations": total_annotations > 0,
+#                         "completion_user": user_name,
+#                     }
+#                 )
+
+#         # ------------------------------------------------------------------
+#         # Old MAT fallback
+#         # ------------------------------------------------------------------
+#         mat_files = sorted(glob.glob(os.path.join(subject_path, "*.mat")))
+
+#         if mat_files:
+#             subject_output_path = os.path.join(subject_path, "output")
+#             total_annotations, complete_annotations = _count_annotations_in_output(
+#                 subject_output_path,
+#                 user_name=user_name,
+#             )
+#             records.append(
+#                 {
+#                     "name": subject_name,
+#                     "subject": subject_name,
+#                     "encounter": "",
+#                     "namespace": "",
+#                     "window_tag": "",
+#                     "file_tag": "",
+#                     "kind": "mat",
+#                     "subject_path": subject_path,
+#                     "encounter_path": subject_path,
+#                     "output_path": subject_output_path,
+#                     "n_annotations": total_annotations,
+#                     "n_complete_annotations": complete_annotations,
+#                     "has_annotations": total_annotations > 0,
+#                     "completion_user": user_name,
+#                 }
+#             )
+
+#     return records
+
+
+def list_subjects(base_folder: str, user_name: Optional[str] = None) -> List[Dict]:
+    return list_subjects_grouped_h5(base_folder, user_name=user_name)
 
 def list_subject_names(
     base_folder: str,
@@ -914,6 +1156,292 @@ def load_mat_data(filename: str) -> dict:
 # =============================================================================
 # H5 bundle loading
 # =============================================================================
+
+def load_waveforms_from_h5_multi(
+    h5_paths: Dict[str, str],
+    desired_waveforms: Optional[List[str]] = None,
+    desired_fs: float = DESIRED_FS_DEFAULT,
+) -> Dict:
+    """
+    Load multiple H5 files from different namespaces.
+
+    Behavior:
+      - GEWAVE: keep normal waveform signals requested by desired_waveforms.
+      - GEVITAL: keep only chest impedance-like signal.
+      - Each signal keeps its own time axis.
+      - Signals are downsampled for plotting only.
+    """
+
+    def _open_h5_read(path):
+        try:
+            return h5py.File(path, "r", locking=False)
+        except TypeError:
+            return h5py.File(path, "r")
+
+    def _estimate_fs_local(t, default_fs=240.0):
+        t = np.asarray(t, dtype="float64")
+
+        if t.size < 2:
+            return default_fs
+
+        dt = np.nanmedian(np.diff(t))
+
+        if not np.isfinite(dt) or dt <= 0:
+            return default_fs
+
+        return float(1.0 / dt)
+
+    def _is_chest_impedance_signal(stored_signal_id, display_name):
+        """
+        Match chest impedance / respiratory impedance style signals.
+        """
+        text = "{} {}".format(stored_signal_id, display_name)
+        norm = normalize_signal_key(text)
+
+        return (
+            "CHESTIMPEDANCE" in norm
+            or "IMPEDANCE" in norm
+            or "RESPIRATION" in norm
+            or "RESP" in norm
+        )
+
+    def _keep_signal(namespace, stored_signal_id, display_name, desired_waveforms):
+        """
+        For now:
+        - keep only GEWAVE signals
+        - ignore GEVITAL entirely
+        - GEWAVE matching uses SIGNAL_ALIASES
+        """
+        namespace_norm = str(namespace).upper()
+
+        if namespace_norm != "GEWAVE":
+            return False
+
+        canonical = resolve_canonical_signal_name(
+            stored_signal_id,
+            display_name,
+        )
+
+        if desired_waveforms is None or len(desired_waveforms) == 0:
+            return canonical is not None
+
+        desired_canonicals = set()
+
+        for desired in desired_waveforms:
+            resolved = resolve_canonical_signal_name(desired)
+
+            if resolved is not None:
+                desired_canonicals.add(resolved)
+            else:
+                desired_canonicals.add(str(desired))
+
+        return canonical in desired_canonicals
+
+    all_signals = []
+
+    for namespace, h5_path in sorted(h5_paths.items()):
+        # Skipping GEVITAL for now -- irrelevant
+        if str(namespace).upper() != "GEWAVE":
+            print(f"Skipping namespace {namespace}")
+            continue
+        if not os.path.exists(h5_path):
+            print(f"WARNING: Missing H5 path for namespace {namespace}: {h5_path}")
+            continue
+
+        with _open_h5_read(h5_path) as f:
+            if H5_TIME_DATASET not in f:
+                print(f"WARNING: Missing /{H5_TIME_DATASET} in {h5_path}")
+                continue
+
+            if H5_SIGNALS_GROUP not in f:
+                print(f"WARNING: Missing /{H5_SIGNALS_GROUP} in {h5_path}")
+                continue
+
+            time_axis = normalize_epoch_seconds(f[H5_TIME_DATASET][:])
+
+            if time_axis.size == 0:
+                continue
+
+            for stored_signal_id in f[H5_SIGNALS_GROUP].keys():
+                g = f[H5_SIGNALS_GROUP][stored_signal_id]
+
+                if "values" not in g:
+                    continue
+
+                display_name = h5_attr_to_str(
+                    g.attrs,
+                    "display_name",
+                    stored_signal_id,
+                )
+                canonical = resolve_canonical_signal_name(stored_signal_id, display_name)
+                units = h5_attr_to_str(
+                    g.attrs,
+                    "units",
+                    "",
+                )
+
+                # ----------------------------------------------------
+                # Namespace-specific filtering happens here.
+                # ----------------------------------------------------
+                if not _keep_signal(
+                    namespace=namespace,
+                    stored_signal_id=stored_signal_id,
+                    display_name=display_name,
+                    desired_waveforms=desired_waveforms,
+                ):
+                    continue
+
+                values = np.asarray(g["values"][:], dtype=np.float32)
+
+                n = min(len(time_axis), len(values))
+
+                if n <= 0:
+                    continue
+
+                t = time_axis[:n]
+                values = values[:n]
+
+                # ----------------------------------------------------
+                # Drop all-NaN signals
+                # ----------------------------------------------------
+                if not np.any(np.isfinite(values)):
+                    print(
+                        f"Skipping all-NaN signal: namespace={namespace}, "
+                        f"signal={stored_signal_id}, display={display_name}"
+                    )
+                    continue
+
+                # ----------------------------------------------------
+                # Downsample independently for plotting.
+                # GEWAVE 240 Hz -> desired_fs, usually 120 Hz.
+                # GEVITAL lower/slower signals usually stay unchanged.
+                # ----------------------------------------------------
+                fs_est = _estimate_fs_local(t, default_fs=240.0)
+
+                if fs_est is None or not np.isfinite(fs_est) or fs_est <= 0:
+                    fs_est = 240.0
+
+                downsample_factor = max(1, int(np.round(fs_est / desired_fs)))
+
+                if downsample_factor > 1:
+                    t = t[::downsample_factor]
+                    values = values[::downsample_factor]
+
+                signal_label = f"{namespace}:{stored_signal_id}"
+
+                canonical = resolve_canonical_signal_name(stored_signal_id, display_name)
+
+                if canonical is not None:
+                    plot_name = canonical
+                elif display_name and display_name != stored_signal_id:
+                    plot_name = f"{namespace} {display_name}"
+                else:
+                    plot_name = f"{namespace}:{stored_signal_id}"
+
+                all_signals.append(
+                    {
+                        "namespace": namespace,
+                        "stored_signal_id": stored_signal_id,
+                        "signal_label": signal_label,
+                        "plot_name": plot_name,
+                        "display_name": display_name,
+                        "units": units,
+                        "time": t,
+                        "values": values,
+                        "fs_est": fs_est,
+                        "downsample_factor": downsample_factor,
+                    }
+                )
+
+    if not all_signals:
+        return _empty_waveform_result(desired_waveforms or [])
+
+    # Sort so GEWAVE comes first, GEVITAL extra comes after.
+    namespace_order = {
+        "GEWAVE": 0,
+        "GEVITAL": 1,
+    }
+
+    desired_order = desired_waveforms or []
+
+    desired_rank = {
+        normalize_signal_key(name): idx
+        for idx, name in enumerate(desired_order)
+    }
+
+    def _sort_key(s):
+        ns_rank = namespace_order.get(str(s["namespace"]).upper(), 99)
+
+        signal_norm = normalize_signal_key(s["stored_signal_id"])
+        display_norm = normalize_signal_key(s["display_name"])
+
+        rank = desired_rank.get(
+            signal_norm,
+            desired_rank.get(display_norm, 999),
+        )
+
+        return (
+            ns_rank,
+            rank,
+            str(s["plot_name"]),
+        )
+
+    all_signals = sorted(all_signals, key=_sort_key)
+
+    times_by_lead = [s["time"] for s in all_signals]
+    leads_ds = [s["values"] for s in all_signals]
+    lead_names = [s["plot_name"] for s in all_signals]
+    units = [s["units"] for s in all_signals]
+    namespaces = [s["namespace"] for s in all_signals]
+
+    starts = [
+        float(t[0])
+        for t in times_by_lead
+        if t is not None and len(t) > 0
+    ]
+
+    stops = [
+        float(t[-1])
+        for t in times_by_lead
+        if t is not None and len(t) > 0
+    ]
+
+    if not starts or not stops:
+        return _empty_waveform_result(desired_waveforms or [])
+
+    global_start = min(starts)
+    global_stop = max(stops)
+
+    # Use longest/densest time vector as canonical for app defaults.
+    longest_idx = int(np.argmax([len(t) for t in times_by_lead]))
+    canonical_time = times_by_lead[longest_idx]
+
+    print("\nLoaded multi-H5 signals:")
+    for s in all_signals:
+        print(
+            "  namespace={}, signal={}, display='{}', n={}, fs_est={:.3f}, downsample={}".format(
+                s["namespace"],
+                s["stored_signal_id"],
+                s["display_name"],
+                len(s["values"]),
+                s["fs_est"],
+                s["downsample_factor"],
+            )
+        )
+
+    return {
+        "times_ds": canonical_time,
+        "times_by_lead": times_by_lead,
+        "leads_ds": leads_ds,
+        "lead_names": lead_names,
+        "units": units,
+        "namespaces": namespaces,
+        "Fs": None,
+        "source_type": "h5_multi",
+        "source_paths": dict(h5_paths),
+        "global_start": global_start,
+        "global_stop": global_stop,
+    }
 
 def build_h5_signal_lookup(h5_file: h5py.File) -> Dict[str, str]:
     """
@@ -1426,11 +1954,18 @@ def load_waveforms_for_subject(
     if isinstance(subject, dict):
         kind = subject.get("kind")
 
+        if kind == "h5_multi":
+            return load_waveforms_from_h5_multi(
+                h5_paths=subject["h5_paths"],
+                desired_waveforms=desired_waveforms,
+                desired_fs=DESIRED_FS_DEFAULT,
+            )
+
         if kind == "h5":
             return load_waveforms_from_h5(
                 h5_path=subject["h5_path"],
-                code_start_sec=code_start_sec,
-                code_stop_sec=code_stop_sec,
+                code_start_sec=None,
+                code_stop_sec=None,
                 desired_waveforms=desired_waveforms,
                 desired_fs=DESIRED_FS_DEFAULT,
             )

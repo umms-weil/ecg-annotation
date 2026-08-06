@@ -26,13 +26,13 @@ The current source layout is::
    ├── docs/
    └── software/
        └── src/
-           ├── new_app.py
-           ├── new_callbacks.py
+           ├── app.py
+           ├── callbacks.py
            └── processing.py
 
 The PyInstaller entry point is::
 
-   software/src/new_app.py
+   software/src/app.py
 
 Because the app source is inside ``software/src``, PyInstaller should be run with ``src`` on the import path.
 
@@ -76,7 +76,7 @@ Run from the repository root:
      --hidden-import PyQt5.QtWidgets `
      --collect-all PyQt5 `
      --collect-all pyqtgraph `
-     src\new_app.py
+     src\app.py
 
 Expected Windows output::
 
@@ -131,7 +131,7 @@ Run from the repository root:
      --hidden-import PyQt5.QtWidgets \
      --collect-all PyQt5 \
      --collect-all pyqtgraph \
-     src/new_app.py
+     src/app.py
 
 Expected macOS output::
 

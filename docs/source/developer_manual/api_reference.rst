@@ -12,7 +12,7 @@ This page uses Sphinx autodoc to generate API documentation from source modules.
 Application UI Module
 ---------------------
 
-.. automodule:: new_app
+.. automodule:: app
    :members:
    :undoc-members:
    :show-inheritance:
@@ -20,7 +20,7 @@ Application UI Module
 Callbacks Module
 ----------------
 
-.. automodule:: new_callbacks
+.. automodule:: callbacks
    :members:
    :undoc-members:
    :show-inheritance:

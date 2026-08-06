@@ -78,8 +78,8 @@ Some helper methods may exist in both the UI class and callback class.
 Future refactor opportunity:
 
 - centralize duplicate methods,
-- keep UI-only helpers in ``new_app.py``,
-- keep behavior/state helpers in ``new_callbacks.py``.
+- keep UI-only helpers in ``app.py``,
+- keep behavior/state helpers in ``callbacks.py``.
 
 Documentation Synchronization
 -----------------------------
