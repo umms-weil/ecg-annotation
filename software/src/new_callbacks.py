@@ -584,44 +584,58 @@ class AnnotationAppCallbacks:
         
     def autoscale_visible_y_for_plot(self, plot_idx, force=False):
         """
-        Autoscale one plot's Y-axis using the current visible X-window plus buffer.
+        Autoscale one plot's Y-axis using the current visible X-window.
 
-        Parameters
-        ----------
-        plot_idx : int
-            Index of the plot/lead to autoscale.
-        force : bool
-            If True, perform autoscale even if this method was called directly.
-            The max-window limit is still respected.
+        Handles:
+        - per-lead time axes
+        - lower-rate signals stored with NaN placeholders
+        - empty/all-NaN visible segments
         """
-        if not hasattr(self, "time_axis") or self.time_axis is None:
-            return False
         if not hasattr(self, "leads_ds") or self.leads_ds is None:
             return False
+
+        if not hasattr(self, "waveform_plots") or not self.waveform_plots:
+            return False
+
         if plot_idx < 0 or plot_idx >= len(self.waveform_plots):
             return False
+
         if plot_idx >= len(self.leads_ds):
             return False
 
         sig = self.leads_ds[plot_idx]
+
         if sig is None:
             return False
 
+        sig = np.asarray(sig, dtype=float)
+
+        if sig.size == 0:
+            return False
+
+        # Use per-lead time axis if available.
         if (
             hasattr(self, "time_axes_by_lead")
             and self.time_axes_by_lead is not None
             and plot_idx < len(self.time_axes_by_lead)
+            and self.time_axes_by_lead[plot_idx] is not None
+            and len(self.time_axes_by_lead[plot_idx]) > 0
         ):
             time_axis = np.asarray(self.time_axes_by_lead[plot_idx], dtype=float)
         else:
+            if not hasattr(self, "time_axis") or self.time_axis is None:
+                return False
             time_axis = np.asarray(self.time_axis, dtype=float)
-        sig = np.asarray(sig, dtype=float)
 
-        if time_axis.size == 0 or sig.size == 0:
+        if time_axis.size == 0:
             return False
 
         # Protect against length mismatch.
         n = min(time_axis.size, sig.size)
+
+        if n <= 0:
+            return False
+
         time_axis = time_axis[:n]
         sig = sig[:n]
 
@@ -630,6 +644,9 @@ class AnnotationAppCallbacks:
             x_min = float(x_min)
             x_max = float(x_max)
         except Exception:
+            return False
+
+        if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
             return False
 
         visible_span = x_max - x_min
@@ -641,21 +658,21 @@ class AnnotationAppCallbacks:
 
         buffer_sec = getattr(self, "auto_y_buffer_sec", 10.0)
 
-        scale_start = max(float(time_axis[0]), x_min - buffer_sec)
-        scale_end = min(float(time_axis[-1]), x_max + buffer_sec)
+        scale_start = x_min - buffer_sec
+        scale_end = x_max + buffer_sec
 
-        if scale_end <= scale_start:
+        # For possibly nonuniform/per-lead time axis, use mask rather than only searchsorted.
+        valid = (
+            np.isfinite(time_axis)
+            & np.isfinite(sig)
+            & (time_axis >= scale_start)
+            & (time_axis <= scale_end)
+        )
+
+        if not np.any(valid):
             return False
 
-        # Fast slicing using sorted time axis.
-        i0 = np.searchsorted(time_axis, scale_start, side="left")
-        i1 = np.searchsorted(time_axis, scale_end, side="right")
-
-        if i1 <= i0:
-            return False
-
-        segment = sig[i0:i1]
-        segment = segment[np.isfinite(segment)]
+        segment = sig[valid]
 
         if segment.size < 2:
             return False
@@ -668,18 +685,21 @@ class AnnotationAppCallbacks:
         if not np.isfinite(y_lo) or not np.isfinite(y_hi):
             return False
 
-        span = y_hi - y_lo
+        span = float(y_hi - y_lo)
         min_span = getattr(self, "auto_y_min_span", 0.25)
         margin_fraction = getattr(self, "auto_y_margin_fraction", 0.05)
 
         if span <= 0:
-            center = (y_hi + y_lo) / 2.0
+            center = float((y_hi + y_lo) / 2.0)
             y_min = center - min_span / 2.0
             y_max = center + min_span / 2.0
         else:
             margin = max(span * margin_fraction, min_span * margin_fraction)
-            y_min = y_lo - margin
-            y_max = y_hi + margin
+            y_min = float(y_lo - margin)
+            y_max = float(y_hi + margin)
+
+        if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max <= y_min:
+            return False
 
         self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
         return True
@@ -1285,8 +1305,8 @@ class AnnotationAppCallbacks:
                     y_plot,
                     pen="b",
                     name=name,
-                    autoDownsample=True,
-                    clipToView=True,
+                    # autoDownsample=True,
+                    # clipToView=True,
                 )
             except TypeError:
                 curve = plot.plot(
