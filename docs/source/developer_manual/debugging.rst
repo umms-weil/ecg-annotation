@@ -202,8 +202,8 @@ Try:
 
 .. code-block:: bash
 
-   python -c "import new_app"
-   python -c "import new_callbacks"
+   python -c "import app"
+   python -c "import callbacks"
    python -c "import processing"
 
 If imports fail during docs build, adjust ``sys.path`` in ``conf.py`` or mock heavy GUI dependencies.

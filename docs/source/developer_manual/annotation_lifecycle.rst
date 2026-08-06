@@ -6,7 +6,7 @@ Annotation Lifecycle
 Overview
 --------
 
-The annotation lifecycle is managed primarily in ``new_callbacks.py``.
+The annotation lifecycle is managed primarily in ``callbacks.py``.
 
 Annotations are stored in memory as a list of dictionaries:
 

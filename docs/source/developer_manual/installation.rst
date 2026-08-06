@@ -30,8 +30,8 @@ The expected repository layout is::
    │       └── developer_manual/
    └── software/
        ├── src/
-       │   ├── new_app.py
-       │   ├── new_callbacks.py
+       │   ├── app.py
+       │   ├── callbacks.py
        │   └── processing.py
        ├── assets/
        └── tests/
@@ -83,14 +83,14 @@ From the repository root, run:
 
 .. code-block:: bash
 
-   python software/src/new_app.py
+   python software/src/app.py
 
 Alternatively, from inside the ``software`` directory, run:
 
 .. code-block:: bash
 
    cd software
-   python src/new_app.py
+   python src/app.py
 
 Documentation Setup
 -------------------

@@ -68,7 +68,7 @@ Adding a New Sidebar Question
 
 To add a new question:
 
-1. Add the widget in ``new_app.py``.
+1. Add the widget in ``app.py``.
 2. Add labels and layout placement.
 3. Connect relevant signals.
 4. Update ``update_sidebar_ui()`` validation.

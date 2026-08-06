@@ -10,10 +10,10 @@ The ECG Waveform Annotation App is a PyQt5 desktop application for loading physi
 
 The application is organized around three primary modules:
 
-``new_app.py``
+``app.py``
    Defines the main PyQt5 user interface, window layout, widgets, plot containers, and signal wiring.
 
-``new_callbacks.py``
+``callbacks.py``
    Defines application behavior, callback methods, annotation workflow logic, plotting updates, save/load behavior, finalization, autosave, and UI state transitions.
 
 ``processing.py``

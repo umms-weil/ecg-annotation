@@ -6,7 +6,7 @@ UI and Callback Reference
 Overview
 --------
 
-The UI is defined in ``new_app.py`` and the application behavior is defined in ``new_callbacks.py``.
+The UI is defined in ``app.py`` and the application behavior is defined in ``callbacks.py``.
 
 The UI creates widgets and connects their signals to callback methods.
 
@@ -177,7 +177,7 @@ Common UI Maintenance Notes
 
 When adding a new sidebar field:
 
-1. Create the widget in ``new_app.py``.
+1. Create the widget in ``app.py``.
 2. Add it to the appropriate layout.
 3. Connect relevant signals to ``update_sidebar_ui()`` or another callback.
 4. Update validation logic.
