@@ -3999,7 +3999,7 @@ class AnnotationAppCallbacks:
             interval_variation <= 0.20
             and out_of_range_intervals == 0
         ):
-            status = "Reliable"
+            status = "Timing Consistent"
             message = (
                 "Detected peak sequence is internally consistent. "
                 "Visually confirm the peak dots."
