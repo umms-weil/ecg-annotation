@@ -8,7 +8,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import pyqtgraph as pg
-from callbacks import AnnotationAppCallbacks
+from callbacks import (
+    AnnotationAppCallbacks,
+    CALIPER_PROJECTION_DEBOUNCE_MS,
+)
 import pyqtgraph as pg
 import numpy as np
 
@@ -709,6 +712,12 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.caliper_measurement_status = ""
         self.caliper_measurement_message = ""
 
+        # -- Caliper Projection Variables --
+        self.caliper_projection_enabled = False
+        self.caliper_projection_requested = False
+        self.caliper_projection_graphics = []
+        self.caliper_projection_message = ""
+
         # -- Folder status label --
         self.folder_status = QLabel("")
         self.folder_status.setStyleSheet(f"font-size:12px; color:{UM_BLUE}; margin-top:0px; margin-bottom:0px; font-weight:bold;")
@@ -875,9 +884,23 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.auto_y_timer.setSingleShot(True)
         self.auto_y_timer.timeout.connect(self.autoscale_visible_y_all)
 
+        # ---- Caliper projection debounce timer ----
+        self.caliper_projection_timer = QTimer(self)
+        self.caliper_projection_timer.setSingleShot(True)
+        self.caliper_projection_timer.setInterval(
+            CALIPER_PROJECTION_DEBOUNCE_MS
+        )
+        self.caliper_projection_timer.timeout.connect(
+            self.update_caliper_projection_graphics
+        )
+
         # Trigger Auto-Y only when the X view changes.
         self.waveform_plots[0].getViewBox().sigXRangeChanged.connect(
             self.schedule_visible_y_autoscale
+        )
+
+        self.waveform_plots[0].getViewBox().sigXRangeChanged.connect(
+            self.schedule_caliper_projection_update
         )
 
         # --- Annotation Table ---

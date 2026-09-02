@@ -134,6 +134,13 @@ CALIPER_ECG_INTEGRATION_WINDOW_SEC = 0.08
 CALIPER_ECG_REFINEMENT_WINDOW_SEC = 0.08
 CALIPER_PEAK_DOT_SIZE = 9
 
+# Caliper Projections
+CALIPER_PROJECTION_COLOR = (25, 85, 145, 210)
+CALIPER_PROJECTION_LINE_WIDTH = 2
+CALIPER_PROJECTION_MAX_VISIBLE_MARKERS = 200
+CALIPER_PROJECTION_VIEW_BUFFER_INTERVALS = 1
+CALIPER_PROJECTION_DEBOUNCE_MS = 40
+
 # ---------------------------------------------------------------------------
 
 class RelativeAxis(pg.AxisItem):
@@ -1897,33 +1904,26 @@ class AnnotationAppCallbacks:
             "caliper_start_lines",
             [],
         ):
-            self._safe_remove_caliper_item(plot, line)
+            self._safe_remove_caliper_item(
+                plot,
+                line,
+            )
 
         for plot, line in getattr(
             self,
             "caliper_end_lines",
             [],
         ):
-            self._safe_remove_caliper_item(plot, line)
-
-        for plot, item in getattr(
-            self,
-            "caliper_peak_graphics",
-            [],
-        ):
-            self._safe_remove_caliper_item(plot, item)
-
-        for plot, item in getattr(
-            self,
-            "caliper_projection_graphics",
-            [],
-        ):
-            self._safe_remove_caliper_item(plot, item)
+            self._safe_remove_caliper_item(
+                plot,
+                line,
+            )
 
         self.caliper_start_lines = []
         self.caliper_end_lines = []
-        self.caliper_peak_graphics = []
-        self.caliper_projection_graphics = []
+
+        self.clear_caliper_peak_graphics()
+        self.clear_caliper_projection_graphics()
 
 
     def clear_calipers(
@@ -1935,6 +1935,9 @@ class AnnotationAppCallbacks:
         Remove caliper graphics and optionally clear all measurement state.
         """
         self.caliper_adjust_enabled = False
+
+        self.caliper_projection_requested = False
+        self.caliper_projection_message = ""
 
         if hasattr(self, "caliper_adjust_btn"):
             self.caliper_adjust_btn.blockSignals(True)
@@ -2235,6 +2238,15 @@ class AnnotationAppCallbacks:
 
         self.clear_caliper_calculation()
 
+        projection_available = (
+            self.caliper_projection_is_available()
+        )
+
+        self.set_caliper_projection_available(
+            projection_available,
+            preserve_request=True,
+        )
+
         self._caliper_sync_in_progress = True
 
         try:
@@ -2245,6 +2257,20 @@ class AnnotationAppCallbacks:
                 line.setValue(position)
         finally:
             self._caliper_sync_in_progress = False
+
+        if (
+            projection_available
+            and getattr(
+                self,
+                "caliper_projection_requested",
+                False,
+            )
+        ):
+            self.caliper_projection_enabled = True
+            self.schedule_caliper_projection_update()
+        else:
+            self.caliper_projection_enabled = False
+            self.clear_caliper_projection_graphics()
 
         self.update_caliper_measurement_display()
 
@@ -2404,6 +2430,17 @@ class AnnotationAppCallbacks:
         if message:
             tooltip_lines.append(message)
 
+        projection_message = getattr(
+            self,
+            "caliper_projection_message",
+            "",
+        )
+
+        if projection_message:
+            tooltip_lines.append(
+                f"Projection: {projection_message}"
+            )
+
         tooltip_lines.append(
             "Detected peak dots are temporary and are not saved."
         )
@@ -2432,7 +2469,17 @@ class AnnotationAppCallbacks:
 
 
     def _update_caliper_measurement_impl(self):
+
         self.clear_caliper_calculation()
+
+        projection_available = (
+            self.caliper_projection_is_available()
+        )
+
+        self.set_caliper_projection_available(
+            projection_available,
+            preserve_request=True,
+        )
 
         if not self.calipers_enabled:
             self.update_caliper_measurement_display()
@@ -2559,6 +2606,18 @@ class AnnotationAppCallbacks:
             peak_values,
         )
 
+        if getattr(
+            self,
+            "caliper_projection_requested",
+            False,
+        ):
+            self.caliper_projection_enabled = (
+                self.caliper_projection_is_available()
+            )
+
+            if self.caliper_projection_enabled:
+                self.update_caliper_projection_graphics()
+
         self._perf_log(
             "detect_caliper_peaks",
             detection_elapsed,
@@ -2611,6 +2670,10 @@ class AnnotationAppCallbacks:
                 self.caliper_adjust_btn.setText("Adjust OFF")
                 self.caliper_adjust_btn.setEnabled(False)
                 self.caliper_adjust_btn.blockSignals(False)
+
+                self.caliper_projection_enabled = False
+                self.caliper_projection_requested = False
+                self.caliper_projection_message = ""
 
                 self.caliper_result_label.setText(
                     "Calipers: No eligible waveform"
@@ -2687,11 +2750,20 @@ class AnnotationAppCallbacks:
             )
             return
 
-        self.caliper_start_time = start_time
-        self.caliper_end_time = end_time
-        self.caliper_detected_peak_times = np.array([])
+        self.caliper_start_time = float(start_time)
+        self.caliper_end_time = float(end_time)
+
+        self.clear_caliper_calculation()
+
+        self.set_caliper_projection_available(
+            True,
+            preserve_request=True,
+        )
 
         self.draw_caliper_lines()
+
+        self.calipers_enabled = True
+
         self.update_caliper_measurement()
 
 
@@ -2758,18 +2830,31 @@ class AnnotationAppCallbacks:
 
 
     def _toggle_caliper_projection_impl(self, enabled):
-        self.caliper_projection_enabled = bool(enabled)
+        enabled = bool(enabled)
 
-        if self.caliper_projection_enabled:
+        if enabled and not self.caliper_projection_is_available():
+            enabled = False
+
+        self.caliper_projection_requested = enabled
+        self.caliper_projection_enabled = enabled
+
+        if hasattr(self, "caliper_projection_btn"):
+            self.caliper_projection_btn.blockSignals(True)
+            self.caliper_projection_btn.setChecked(enabled)
             self.caliper_projection_btn.setText(
                 "Projection ON"
+                if enabled
+                else "Projection OFF"
             )
-        else:
-            self.caliper_projection_btn.setText(
-                "Projection OFF"
-            )
+            self.caliper_projection_btn.blockSignals(False)
 
-        # Projection graphics are implemented in a later phase.
+        if enabled:
+            self.update_caliper_projection_graphics()
+        else:
+            self.clear_caliper_projection_graphics()
+            self.caliper_projection_message = ""
+
+        self.update_caliper_measurement_display()
 
     # ------------------------------------------------------------------
     # Caliper Calculation
@@ -2792,6 +2877,9 @@ class AnnotationAppCallbacks:
     def clear_caliper_calculation(self):
         """
         Clear temporary peak-detection and rate-calculation state.
+
+        Projection is based on the complete selected caliper duration, so clearing
+        peak detection must not disable projection.
         """
         self.clear_caliper_peak_graphics()
 
@@ -2827,6 +2915,7 @@ class AnnotationAppCallbacks:
             "minimum_rate": 4.0,
             "maximum_rate": 300.0,
         }
+
 
     def get_caliper_source_segment(self):
         """
@@ -3314,6 +3403,433 @@ class AnnotationAppCallbacks:
             positive_indices,
             dtype=int,
         )
+
+
+    # ------------------------------------------------------------------
+    # Caliper Projection
+    # ------------------------------------------------------------------
+
+    def clear_caliper_projection_graphics(self):
+        """
+        Remove temporary projected interval markers from all waveform plots.
+        """
+        for plot, item in getattr(
+            self,
+            "caliper_projection_graphics",
+            [],
+        ):
+            self._safe_remove_caliper_item(
+                plot,
+                item,
+            )
+
+        self.caliper_projection_graphics = []
+
+
+    def set_caliper_projection_available(
+        self,
+        available,
+        preserve_request=True,
+    ):
+        """
+        Enable or disable the projection control based on whether a valid
+        peak-to-peak interval is available.
+
+        Parameters
+        ----------
+        available : bool
+            True when projection spacing is valid.
+        preserve_request : bool
+            Preserve the user's previous Projection On preference during temporary
+            recalculation.
+        """
+        available = bool(available)
+
+        if not hasattr(self, "caliper_projection_btn"):
+            return
+
+        if not preserve_request:
+            self.caliper_projection_requested = False
+
+        if not available:
+            self.caliper_projection_enabled = False
+
+            self.caliper_projection_btn.blockSignals(True)
+            self.caliper_projection_btn.setChecked(False)
+            self.caliper_projection_btn.setText("Projection OFF")
+            self.caliper_projection_btn.setEnabled(False)
+            self.caliper_projection_btn.blockSignals(False)
+
+            self.clear_caliper_projection_graphics()
+            return
+
+        self.caliper_projection_btn.setEnabled(True)
+
+        requested = bool(
+            getattr(
+                self,
+                "caliper_projection_requested",
+                False,
+            )
+        )
+
+        self.caliper_projection_enabled = requested
+
+        self.caliper_projection_btn.blockSignals(True)
+        self.caliper_projection_btn.setChecked(requested)
+        self.caliper_projection_btn.setText(
+            "Projection ON"
+            if requested
+            else "Projection OFF"
+        )
+        self.caliper_projection_btn.blockSignals(False)
+
+
+    def caliper_projection_is_available(self):
+        """
+        Return True when the two caliper markers define a valid projection range.
+
+        Projection uses the complete manually selected caliper duration. It does
+        not depend on detected peaks or the calculated heart rate.
+        """
+        if not getattr(self, "calipers_enabled", False):
+            return False
+
+        duration = self.get_caliper_selected_duration()
+
+        return duration is not None
+
+
+    def schedule_caliper_projection_update(self, *args):
+        """
+        Debounce projected-marker updates after panning or zooming.
+
+        Peak detection is not rerun. Only visible projection graphics are updated.
+        """
+        if not getattr(self, "caliper_projection_enabled", False):
+            return
+
+        if not hasattr(self, "caliper_projection_timer"):
+            return
+
+        self.caliper_projection_timer.start()
+
+
+    def get_visible_caliper_projection_positions(self):
+        """
+        Return repeated caliper-range markers for the visible X-range.
+
+        The complete selected caliper duration is used as the projection spacing.
+
+        If the selected calipers span start_time to end_time, projected markers are
+        created at:
+
+            start_time - n * selected_duration
+
+        and:
+
+            end_time + n * selected_duration
+
+        where n begins at 1.
+
+        The original start and end caliper positions are not included because they
+        are already displayed as the primary caliper lines.
+
+        Returns
+        -------
+        tuple
+            ``(positions, too_many_markers)``.
+        """
+        if not self.caliper_projection_is_available():
+            return np.array([], dtype=float), False
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            x_min = float(x_min)
+            x_max = float(x_max)
+        except Exception:
+            return np.array([], dtype=float), False
+
+        if (
+            not np.isfinite(x_min)
+            or not np.isfinite(x_max)
+            or x_max <= x_min
+        ):
+            return np.array([], dtype=float), False
+
+        caliper_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        caliper_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+
+        selected_duration = caliper_end - caliper_start
+
+        if (
+            not np.isfinite(selected_duration)
+            or selected_duration < CALIPER_MINIMUM_SEPARATION_SEC
+        ):
+            return np.array([], dtype=float), False
+
+        buffer_time = (
+            CALIPER_PROJECTION_VIEW_BUFFER_INTERVALS
+            * selected_duration
+        )
+
+        buffered_min = x_min - buffer_time
+        buffered_max = x_max + buffer_time
+
+        # Number of complete selected-duration intervals visible before the start
+        # caliper and after the end caliper.
+        backward_count = max(
+            0,
+            int(
+                np.floor(
+                    (caliper_start - buffered_min)
+                    / selected_duration
+                )
+            ),
+        )
+
+        forward_count = max(
+            0,
+            int(
+                np.floor(
+                    (buffered_max - caliper_end)
+                    / selected_duration
+                )
+            ),
+        )
+
+        total_marker_count = backward_count + forward_count
+
+        if (
+            total_marker_count
+            > CALIPER_PROJECTION_MAX_VISIBLE_MARKERS
+        ):
+            return np.array([], dtype=float), True
+
+        if backward_count > 0:
+            backward_steps = np.arange(
+                1,
+                backward_count + 1,
+                dtype=float,
+            )
+
+            backward_positions = (
+                caliper_start
+                - backward_steps * selected_duration
+            )
+        else:
+            backward_positions = np.array(
+                [],
+                dtype=float,
+            )
+
+        if forward_count > 0:
+            forward_steps = np.arange(
+                1,
+                forward_count + 1,
+                dtype=float,
+            )
+
+            forward_positions = (
+                caliper_end
+                + forward_steps * selected_duration
+            )
+        else:
+            forward_positions = np.array(
+                [],
+                dtype=float,
+            )
+
+        positions = np.concatenate(
+            (
+                backward_positions,
+                forward_positions,
+            )
+        )
+
+        if positions.size == 0:
+            return positions, False
+
+        loaded_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        loaded_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        valid = (
+            np.isfinite(positions)
+            & (positions >= buffered_min)
+            & (positions <= buffered_max)
+        )
+
+        if loaded_start is not None:
+            valid &= positions >= float(loaded_start)
+
+        if loaded_end is not None:
+            valid &= positions <= float(loaded_end)
+
+        positions = np.sort(positions[valid])
+
+        return positions, False
+
+
+    def update_caliper_projection_graphics(self):
+        """
+        Timed wrapper around visible projection-marker rendering.
+        """
+        start_time = perf_counter()
+
+        marker_count = 0
+        too_many_markers = False
+
+        try:
+            (
+                marker_count,
+                too_many_markers,
+            ) = self._update_caliper_projection_graphics_impl()
+
+            return marker_count
+
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "update_caliper_projection_graphics",
+                elapsed,
+                markers_per_plot=marker_count,
+                plot_count=len(
+                    getattr(self, "waveform_plots", [])
+                ),
+                too_many=too_many_markers,
+            )
+
+
+    def _update_caliper_projection_graphics_impl(self):
+        self.clear_caliper_projection_graphics()
+
+        if not getattr(
+            self,
+            "caliper_projection_enabled",
+            False,
+        ):
+            return 0, False
+
+        if not self.caliper_projection_is_available():
+            return 0, False
+
+        (
+            projection_positions,
+            too_many_markers,
+        ) = self.get_visible_caliper_projection_positions()
+
+        if too_many_markers:
+            self.caliper_projection_message = (
+                "Zoom in to display projection markers."
+            )
+
+            if hasattr(self, "caliper_projection_btn"):
+                self.caliper_projection_btn.setText(
+                    "Projection: Zoom In"
+                )
+
+            self.update_caliper_measurement_display()
+            return 0, True
+
+        self.caliper_projection_message = ""
+
+        if hasattr(self, "caliper_projection_btn"):
+            self.caliper_projection_btn.setText(
+                "Projection ON"
+            )
+
+        if projection_positions.size == 0:
+            return 0, False
+
+        projection_pen = pg.mkPen(
+            CALIPER_PROJECTION_COLOR,
+            width=CALIPER_PROJECTION_LINE_WIDTH,
+            style=QtCore.Qt.DotLine,
+        )
+
+        for plot in self.waveform_plots:
+            for projection_time in projection_positions:
+                projection_line = pg.InfiniteLine(
+                    pos=float(projection_time),
+                    angle=90,
+                    movable=False,
+                    pen=projection_pen,
+                )
+
+                projection_line.is_caliper_item = True
+                projection_line.is_caliper_projection = True
+                projection_line.setZValue(1500)
+
+                plot.addItem(
+                    projection_line,
+                    ignoreBounds=True,
+                )
+
+                self.caliper_projection_graphics.append(
+                    (
+                        plot,
+                        projection_line,
+                    )
+                )
+
+        return int(projection_positions.size), False
+
+
+    def get_caliper_selected_duration(self):
+        """
+        Return the complete duration between the two caliper markers.
+
+        Returns
+        -------
+        float or None
+            Positive selected duration in seconds, or None when the markers do not
+            define a valid projection interval.
+        """
+        start_time = getattr(
+            self,
+            "caliper_start_time",
+            None,
+        )
+        end_time = getattr(
+            self,
+            "caliper_end_time",
+            None,
+        )
+
+        if start_time is None or end_time is None:
+            return None
+
+        try:
+            start_time = float(start_time)
+            end_time = float(end_time)
+        except (TypeError, ValueError):
+            return None
+
+        if not np.isfinite(start_time) or not np.isfinite(end_time):
+            return None
+
+        duration = abs(end_time - start_time)
+
+        if duration < CALIPER_MINIMUM_SEPARATION_SEC:
+            return None
+
+        return float(duration)
+
 
     # ------------------------------------------------------------------
     # Event Labels
