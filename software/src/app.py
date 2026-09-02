@@ -698,6 +698,17 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         main_layout.addLayout(caliperrow)
 
+        # -- Caliper Variables --
+        self.caliper_detected_peak_times = np.array([])
+        self.caliper_detected_peak_values = np.array([])
+
+        self.caliper_average_interval_sec = None
+        self.caliper_median_interval_sec = None
+        self.caliper_estimated_rate = None
+        self.caliper_rate_unit = ""
+        self.caliper_measurement_status = ""
+        self.caliper_measurement_message = ""
+
         # -- Folder status label --
         self.folder_status = QLabel("")
         self.folder_status.setStyleSheet(f"font-size:12px; color:{UM_BLUE}; margin-top:0px; margin-bottom:0px; font-weight:bold;")

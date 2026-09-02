@@ -17,6 +17,15 @@ from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 import pyqtgraph as pg
+try:
+    from scipy.signal import butter, detrend, find_peaks, sosfiltfilt
+    SCIPY_SIGNAL_AVAILABLE = True
+except ImportError:
+    butter = None
+    detrend = None
+    find_peaks = None
+    sosfiltfilt = None
+    SCIPY_SIGNAL_AVAILABLE = False
 
 # Testing performance import
 from time import perf_counter
@@ -63,6 +72,7 @@ PERF_DIAGNOSTICS_ENABLED = True
 # Caliper configuration
 # ---------------------------------------------------------------------------
 
+# Creation of Calipers
 CALIPER_CALCULATION_WAVEFORMS = [
     "I",
     "II",
@@ -77,6 +87,52 @@ CALIPER_END_COLOR = (204, 51, 51)
 
 CALIPER_INITIAL_WINDOW_FRACTION = 0.15
 CALIPER_MINIMUM_SEPARATION_SEC = 0.1
+
+CALIPER_DETECTOR_SETTINGS = {
+    "I": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "II": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "III": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "V": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "AVF": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "AVL": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+}
+
+CALIPER_MINIMUM_SELECTION_SEC = 0.25
+CALIPER_ECG_BANDPASS_LOW_HZ = 3.0
+CALIPER_ECG_BANDPASS_HIGH_HZ = 30.0
+CALIPER_ECG_INTEGRATION_WINDOW_SEC = 0.08
+CALIPER_ECG_REFINEMENT_WINDOW_SEC = 0.08
+CALIPER_PEAK_DOT_SIZE = 9
 
 # ---------------------------------------------------------------------------
 
@@ -1892,7 +1948,7 @@ class AnnotationAppCallbacks:
         if clear_measurement:
             self.caliper_start_time = None
             self.caliper_end_time = None
-            self.caliper_detected_peak_times = np.array([])
+            self.clear_caliper_calculation()
 
         self.calipers_enabled = False
         self.caliper_projection_enabled = False
@@ -2177,6 +2233,8 @@ class AnnotationAppCallbacks:
             self.caliper_end_time = position
             line_collection = self.caliper_end_lines
 
+        self.clear_caliper_calculation()
+
         self._caliper_sync_in_progress = True
 
         try:
@@ -2216,36 +2274,16 @@ class AnnotationAppCallbacks:
 
     def update_caliper_measurement_display(self):
         """
-        Update the compact result label using the current marker positions.
-
-        Peak detection and rate calculation will be added in the next phase.
+        Update the compact caliper result label.
         """
         if not hasattr(self, "caliper_result_label"):
             return
 
         if not self.calipers_enabled:
-            self.caliper_result_label.setText("Calipers: Off")
-            return
-
-        if (
-            self.caliper_start_time is None
-            or self.caliper_end_time is None
-        ):
             self.caliper_result_label.setText(
-                "Calipers: Adjust markers"
+                "Calipers: Off"
             )
             return
-
-        start_time = min(
-            self.caliper_start_time,
-            self.caliper_end_time,
-        )
-        end_time = max(
-            self.caliper_start_time,
-            self.caliper_end_time,
-        )
-
-        duration = end_time - start_time
 
         source_name = "Unknown"
 
@@ -2255,17 +2293,123 @@ class AnnotationAppCallbacks:
                 or "Unknown"
             )
 
-        self.caliper_result_label.setText(
-            f"Calipers: {source_name} | "
-            f"Selected {duration:.3f} s"
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            self.caliper_result_label.setText(
+                f"{source_name} | Adjust markers"
+            )
+            return
+
+        selection_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selection_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selected_duration = selection_end - selection_start
+
+        peak_count = len(
+            getattr(
+                self,
+                "caliper_detected_peak_times",
+                [],
+            )
+        )
+
+        estimated_rate = getattr(
+            self,
+            "caliper_estimated_rate",
+            None,
+        )
+
+        rate_unit = getattr(
+            self,
+            "caliper_rate_unit",
+            "",
+        )
+
+        status = getattr(
+            self,
+            "caliper_measurement_status",
+            "",
+        )
+
+        message = getattr(
+            self,
+            "caliper_measurement_message",
+            "",
+        )
+
+        average_interval = getattr(
+            self,
+            "caliper_average_interval_sec",
+            None,
+        )
+
+        median_interval = getattr(
+            self,
+            "caliper_median_interval_sec",
+            None,
+        )
+
+        if estimated_rate is None:
+            if self.caliper_adjust_enabled:
+                display_text = (
+                    f"{source_name} | {selected_duration:.2f} s | Adjusting"
+                )
+            else:
+                display_text = (
+                    f"{source_name} | {peak_count} peaks | {status or 'Unable'}"
+                )
+        else:
+            display_text = (
+                f"{source_name} | {peak_count} peaks | "
+                f"{estimated_rate:.1f} {rate_unit} | {status}"
+            )
+
+        self.caliper_result_label.setText(display_text)
+
+        tooltip_lines = [
+            f"Source waveform: {source_name}",
+            f"Selection start: {selection_start:.6f}",
+            f"Selection end: {selection_end:.6f}",
+            f"Selected duration: {selected_duration:.6f} seconds",
+            f"Detected peaks: {peak_count}",
+        ]
+
+        if average_interval is not None:
+            tooltip_lines.append(
+                f"Average interval: {average_interval:.6f} seconds"
+            )
+
+        if median_interval is not None:
+            tooltip_lines.append(
+                f"Median interval: {median_interval:.6f} seconds"
+            )
+
+        if estimated_rate is not None:
+            tooltip_lines.append(
+                f"Estimated rate: {estimated_rate:.3f} {rate_unit}"
+            )
+
+        if status:
+            tooltip_lines.append(
+                f"Status: {status}"
+            )
+
+        if message:
+            tooltip_lines.append(message)
+
+        tooltip_lines.append(
+            "Detected peak dots are temporary and are not saved."
         )
 
         self.caliper_result_label.setToolTip(
-            f"Source waveform: {source_name}\n"
-            f"Start: {start_time:.6f}\n"
-            f"End: {end_time:.6f}\n"
-            f"Selected duration: {duration:.6f} seconds\n"
-            "Peak detection and rate calculation are not enabled yet."
+            "\n".join(tooltip_lines)
         )
 
 
@@ -2288,7 +2432,142 @@ class AnnotationAppCallbacks:
 
 
     def _update_caliper_measurement_impl(self):
-        self.caliper_detected_peak_times = np.array([])
+        self.clear_caliper_calculation()
+
+        if not self.calipers_enabled:
+            self.update_caliper_measurement_display()
+            return
+
+        (
+            time_values,
+            signal_values,
+            source_name,
+            settings,
+        ) = self.get_caliper_source_segment()
+
+        if time_values.size < 2 or signal_values.size < 2:
+            self.caliper_measurement_status = "Unable"
+            self.caliper_measurement_message = (
+                "No valid samples are available inside the calipers."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        selected_duration = float(
+            time_values[-1] - time_values[0]
+        )
+
+        if selected_duration < CALIPER_MINIMUM_SELECTION_SEC:
+            self.caliper_measurement_status = "Unable"
+            self.caliper_measurement_message = (
+                "The selected interval is too short."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        sampling_frequency = (
+            self.estimate_caliper_sampling_frequency(
+                time_values
+            )
+        )
+
+        if sampling_frequency is None:
+            self.caliper_measurement_status = "Unable"
+            self.caliper_measurement_message = (
+                "Unable to estimate the waveform sampling frequency."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        if not SCIPY_SIGNAL_AVAILABLE:
+            self.caliper_measurement_status = "Unavailable"
+            self.caliper_measurement_message = (
+                "SciPy is required for automatic peak detection."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        detector_type = settings.get(
+            "detector",
+            "generic",
+        )
+
+        detection_start = perf_counter()
+
+        if detector_type == "ecg":
+            peak_indices = self.detect_caliper_ecg_peaks(
+                time_values,
+                signal_values,
+                sampling_frequency,
+                settings,
+            )
+        else:
+            peak_indices = self.detect_caliper_generic_peaks(
+                time_values,
+                signal_values,
+                sampling_frequency,
+                settings,
+            )
+
+        detection_elapsed = perf_counter() - detection_start
+
+        peak_indices = np.asarray(
+            peak_indices,
+            dtype=int,
+        )
+
+        peak_indices = peak_indices[
+            (peak_indices >= 0)
+            & (peak_indices < time_values.size)
+        ]
+
+        peak_times = time_values[peak_indices]
+        peak_values = signal_values[peak_indices]
+
+        self.caliper_detected_peak_times = peak_times
+        self.caliper_detected_peak_values = peak_values
+
+        result = self.calculate_caliper_rate(
+            peak_times,
+            settings,
+        )
+
+        self.caliper_average_interval_sec = result.get(
+            "average_interval_sec"
+        )
+        self.caliper_median_interval_sec = result.get(
+            "median_interval_sec"
+        )
+        self.caliper_estimated_rate = result.get(
+            "estimated_rate"
+        )
+        self.caliper_rate_unit = result.get(
+            "rate_unit",
+            "",
+        )
+        self.caliper_measurement_status = result.get(
+            "status",
+            "Unable",
+        )
+        self.caliper_measurement_message = result.get(
+            "message",
+            "",
+        )
+
+        self.draw_caliper_peak_dots(
+            peak_times,
+            peak_values,
+        )
+
+        self._perf_log(
+            "detect_caliper_peaks",
+            detection_elapsed,
+            source=source_name,
+            detector=detector_type,
+            samples=time_values.size,
+            sampling_frequency=f"{sampling_frequency:.3f}",
+            peaks=peak_times.size,
+        )
 
         self.update_caliper_measurement_display()
 
@@ -2376,6 +2655,7 @@ class AnnotationAppCallbacks:
 
             if self.caliper_source_dropdown.count() > 0:
                 self.caliper_source_dropdown.setEnabled(True)
+
 
     def reset_calipers(self):
         """
@@ -2492,6 +2772,550 @@ class AnnotationAppCallbacks:
         # Projection graphics are implemented in a later phase.
 
     # ------------------------------------------------------------------
+    # Caliper Calculation
+    # ------------------------------------------------------------------
+
+    def clear_caliper_peak_graphics(self):
+        """
+        Remove temporary detected-peak dots without removing the caliper lines.
+        """
+        for plot, item in getattr(
+            self,
+            "caliper_peak_graphics",
+            [],
+        ):
+            self._safe_remove_caliper_item(plot, item)
+
+        self.caliper_peak_graphics = []
+
+
+    def clear_caliper_calculation(self):
+        """
+        Clear temporary peak-detection and rate-calculation state.
+        """
+        self.clear_caliper_peak_graphics()
+
+        self.caliper_detected_peak_times = np.array([])
+        self.caliper_detected_peak_values = np.array([])
+
+        self.caliper_average_interval_sec = None
+        self.caliper_median_interval_sec = None
+        self.caliper_estimated_rate = None
+        self.caliper_rate_unit = ""
+        self.caliper_measurement_status = ""
+        self.caliper_measurement_message = ""
+
+
+    def get_caliper_detector_settings(self, waveform_name):
+        """
+        Return detector settings for the selected waveform.
+        """
+        normalized_name = self.normalize_caliper_waveform_name(
+            waveform_name
+        )
+
+        for configured_name, settings in CALIPER_DETECTOR_SETTINGS.items():
+            if (
+                self.normalize_caliper_waveform_name(configured_name)
+                == normalized_name
+            ):
+                return dict(settings)
+
+        return {
+            "detector": "generic",
+            "rate_unit": "cycles/min",
+            "minimum_rate": 4.0,
+            "maximum_rate": 300.0,
+        }
+
+    def get_caliper_source_segment(self):
+        """
+        Extract the selected waveform samples between the two caliper markers.
+
+        Returns
+        -------
+        tuple
+            ``(time_values, signal_values, source_name, settings)``.
+
+            Empty arrays are returned if no valid segment is available.
+        """
+        empty_result = (
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+            "",
+            {},
+        )
+
+        plot_idx = getattr(
+            self,
+            "caliper_source_plot_idx",
+            None,
+        )
+
+        if plot_idx is None:
+            return empty_result
+
+        leads = getattr(self, "leads_ds", None) or []
+        lead_names = getattr(self, "lead_names", None) or []
+
+        if plot_idx < 0 or plot_idx >= len(leads):
+            return empty_result
+
+        signal = leads[plot_idx]
+
+        if signal is None:
+            return empty_result
+
+        signal_values = np.asarray(signal, dtype=float)
+
+        if (
+            hasattr(self, "time_axes_by_lead")
+            and self.time_axes_by_lead is not None
+            and plot_idx < len(self.time_axes_by_lead)
+            and self.time_axes_by_lead[plot_idx] is not None
+            and len(self.time_axes_by_lead[plot_idx]) > 0
+        ):
+            time_values = np.asarray(
+                self.time_axes_by_lead[plot_idx],
+                dtype=float,
+            )
+        else:
+            time_values = np.asarray(
+                getattr(self, "time_axis", []),
+                dtype=float,
+            )
+
+        sample_count = min(
+            time_values.size,
+            signal_values.size,
+        )
+
+        if sample_count < 2:
+            return empty_result
+
+        time_values = time_values[:sample_count]
+        signal_values = signal_values[:sample_count]
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            return empty_result
+
+        selection_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selection_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+
+        valid = (
+            np.isfinite(time_values)
+            & np.isfinite(signal_values)
+            & (time_values >= selection_start)
+            & (time_values <= selection_end)
+        )
+
+        if np.count_nonzero(valid) < 2:
+            return empty_result
+
+        segment_time = time_values[valid]
+        segment_signal = signal_values[valid]
+
+        sort_order = np.argsort(segment_time)
+        segment_time = segment_time[sort_order]
+        segment_signal = segment_signal[sort_order]
+
+        # Remove duplicate timestamps because they interfere with sampling-rate
+        # estimation and peak spacing.
+        unique_mask = np.ones(
+            segment_time.size,
+            dtype=bool,
+        )
+
+        if segment_time.size > 1:
+            unique_mask[1:] = np.diff(segment_time) > 0
+
+        segment_time = segment_time[unique_mask]
+        segment_signal = segment_signal[unique_mask]
+
+        source_name = (
+            str(lead_names[plot_idx])
+            if plot_idx < len(lead_names)
+            else f"Signal {plot_idx + 1}"
+        )
+
+        settings = self.get_caliper_detector_settings(
+            source_name
+        )
+
+        return (
+            segment_time,
+            segment_signal,
+            source_name,
+            settings,
+        )
+
+
+    def estimate_caliper_sampling_frequency(self, time_values):
+        """
+        Estimate sampling frequency from a selected time vector.
+        """
+        time_values = np.asarray(
+            time_values,
+            dtype=float,
+        )
+
+        if time_values.size < 2:
+            return None
+
+        time_differences = np.diff(time_values)
+
+        time_differences = time_differences[
+            np.isfinite(time_differences)
+            & (time_differences > 0)
+        ]
+
+        if time_differences.size == 0:
+            return None
+
+        median_difference = float(
+            np.median(time_differences)
+        )
+
+        if (
+            not np.isfinite(median_difference)
+            or median_difference <= 0
+        ):
+            return None
+
+        sampling_frequency = 1.0 / median_difference
+
+        if (
+            not np.isfinite(sampling_frequency)
+            or sampling_frequency <= 0
+        ):
+            return None
+
+        return float(sampling_frequency)
+
+
+    def detect_caliper_ecg_peaks(
+        self,
+        time_values,
+        signal_values,
+        sampling_frequency,
+        settings,
+    ):
+        """
+        Detect QRS-like events using a lightweight, polarity-independent energy
+        detector.
+
+        This is a measurement aid for visually reviewed calipers, not a diagnostic
+        rhythm-classification algorithm.
+        """
+        if not SCIPY_SIGNAL_AVAILABLE:
+            return np.array([], dtype=int)
+
+        time_values = np.asarray(
+            time_values,
+            dtype=float,
+        )
+        signal_values = np.asarray(
+            signal_values,
+            dtype=float,
+        )
+
+        if signal_values.size < 5:
+            return np.array([], dtype=int)
+
+        working_signal = detrend(
+            signal_values,
+            type="linear",
+        )
+
+        nyquist_frequency = sampling_frequency / 2.0
+
+        low_hz = CALIPER_ECG_BANDPASS_LOW_HZ
+        high_hz = min(
+            CALIPER_ECG_BANDPASS_HIGH_HZ,
+            nyquist_frequency * 0.90,
+        )
+
+        if high_hz <= low_hz:
+            filtered_signal = working_signal
+        else:
+            try:
+                filter_sos = butter(
+                    2,
+                    [low_hz, high_hz],
+                    btype="bandpass",
+                    fs=sampling_frequency,
+                    output="sos",
+                )
+
+                filtered_signal = sosfiltfilt(
+                    filter_sos,
+                    working_signal,
+                )
+            except Exception:
+                filtered_signal = working_signal
+
+        derivative_signal = np.diff(
+            filtered_signal,
+            prepend=filtered_signal[0],
+        )
+
+        energy_signal = derivative_signal ** 2
+
+        integration_samples = max(
+            1,
+            int(
+                round(
+                    CALIPER_ECG_INTEGRATION_WINDOW_SEC
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        integration_kernel = (
+            np.ones(integration_samples, dtype=float)
+            / integration_samples
+        )
+
+        integrated_energy = np.convolve(
+            energy_signal,
+            integration_kernel,
+            mode="same",
+        )
+
+        finite_energy = integrated_energy[
+            np.isfinite(integrated_energy)
+        ]
+
+        if finite_energy.size == 0:
+            return np.array([], dtype=int)
+
+        energy_median = float(
+            np.median(finite_energy)
+        )
+        energy_std = float(
+            np.std(finite_energy)
+        )
+
+        if not np.isfinite(energy_std) or energy_std <= 0:
+            return np.array([], dtype=int)
+
+        maximum_rate = float(
+            settings.get("maximum_rate", 300.0)
+        )
+
+        minimum_peak_distance_sec = 60.0 / maximum_rate
+
+        minimum_peak_distance_samples = max(
+            1,
+            int(
+                round(
+                    minimum_peak_distance_sec
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        peak_height = energy_median + 0.35 * energy_std
+        peak_prominence = max(
+            0.15 * energy_std,
+            np.finfo(float).eps,
+        )
+
+        candidate_indices, _properties = find_peaks(
+            integrated_energy,
+            height=peak_height,
+            prominence=peak_prominence,
+            distance=minimum_peak_distance_samples,
+        )
+
+        if candidate_indices.size == 0:
+            return np.array([], dtype=int)
+
+        refinement_radius = max(
+            1,
+            int(
+                round(
+                    CALIPER_ECG_REFINEMENT_WINDOW_SEC
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        refined_indices = []
+
+        for candidate_index in candidate_indices:
+            search_start = max(
+                0,
+                candidate_index - refinement_radius,
+            )
+            search_stop = min(
+                filtered_signal.size,
+                candidate_index + refinement_radius + 1,
+            )
+
+            local_signal = np.abs(
+                filtered_signal[search_start:search_stop]
+            )
+
+            if local_signal.size == 0:
+                continue
+
+            local_index = int(
+                np.argmax(local_signal)
+            )
+
+            refined_index = search_start + local_index
+            refined_indices.append(refined_index)
+
+        if not refined_indices:
+            return np.array([], dtype=int)
+
+        refined_indices = np.asarray(
+            sorted(set(refined_indices)),
+            dtype=int,
+        )
+
+        # Reapply minimum spacing after local refinement.
+        accepted_indices = []
+
+        for index in refined_indices:
+            if not accepted_indices:
+                accepted_indices.append(int(index))
+                continue
+
+            if (
+                index - accepted_indices[-1]
+                >= minimum_peak_distance_samples
+            ):
+                accepted_indices.append(int(index))
+                continue
+
+            previous_index = accepted_indices[-1]
+
+            if (
+                abs(filtered_signal[index])
+                > abs(filtered_signal[previous_index])
+            ):
+                accepted_indices[-1] = int(index)
+
+        return np.asarray(
+            accepted_indices,
+            dtype=int,
+        )
+
+
+    def detect_caliper_generic_peaks(
+        self,
+        time_values,
+        signal_values,
+        sampling_frequency,
+        settings,
+    ):
+        """
+        Detect repeating positive or negative peaks in a non-ECG waveform.
+
+        Both polarities are evaluated, and the stronger plausible sequence is used.
+        """
+        if not SCIPY_SIGNAL_AVAILABLE:
+            return np.array([], dtype=int)
+
+        signal_values = np.asarray(
+            signal_values,
+            dtype=float,
+        )
+
+        if signal_values.size < 5:
+            return np.array([], dtype=int)
+
+        working_signal = detrend(
+            signal_values,
+            type="linear",
+        )
+
+        maximum_rate = float(
+            settings.get("maximum_rate", 300.0)
+        )
+
+        minimum_peak_distance_sec = 60.0 / maximum_rate
+
+        minimum_peak_distance_samples = max(
+            1,
+            int(
+                round(
+                    minimum_peak_distance_sec
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        signal_std = float(
+            np.std(working_signal)
+        )
+
+        if not np.isfinite(signal_std) or signal_std <= 0:
+            return np.array([], dtype=int)
+
+        prominence = max(
+            signal_std * 0.25,
+            np.finfo(float).eps,
+        )
+
+        positive_indices, positive_properties = find_peaks(
+            working_signal,
+            prominence=prominence,
+            distance=minimum_peak_distance_samples,
+        )
+
+        negative_indices, negative_properties = find_peaks(
+            -working_signal,
+            prominence=prominence,
+            distance=minimum_peak_distance_samples,
+        )
+
+        positive_prominences = positive_properties.get(
+            "prominences",
+            np.array([]),
+        )
+        negative_prominences = negative_properties.get(
+            "prominences",
+            np.array([]),
+        )
+
+        positive_score = (
+            float(np.median(positive_prominences))
+            * max(1, positive_indices.size)
+            if positive_prominences.size > 0
+            else 0.0
+        )
+
+        negative_score = (
+            float(np.median(negative_prominences))
+            * max(1, negative_indices.size)
+            if negative_prominences.size > 0
+            else 0.0
+        )
+
+        if negative_score > positive_score:
+            return np.asarray(
+                negative_indices,
+                dtype=int,
+            )
+
+        return np.asarray(
+            positive_indices,
+            dtype=int,
+        )
+
+    # ------------------------------------------------------------------
     # Event Labels
     # ------------------------------------------------------------------
 
@@ -2522,6 +3346,260 @@ class AnnotationAppCallbacks:
             for item in list(plot.items()):
                 if isinstance(item, pg.TextItem) and getattr(item, "is_event_marker", False):
                     item.setVisible(visible)
+
+
+    def calculate_caliper_rate(
+        self,
+        peak_times,
+        settings,
+    ):
+        """
+        Validate detected peaks and calculate an average rate.
+
+        Returns
+        -------
+        dict
+            Measurement details and review status.
+        """
+        peak_times = np.asarray(
+            peak_times,
+            dtype=float,
+        )
+
+        result = {
+            "valid": False,
+            "status": "Unable",
+            "message": "Unable to calculate a reliable rate.",
+            "peak_count": int(peak_times.size),
+            "interval_count": 0,
+            "average_interval_sec": None,
+            "median_interval_sec": None,
+            "estimated_rate": None,
+            "rate_unit": settings.get(
+                "rate_unit",
+                "cycles/min",
+            ),
+        }
+
+        if peak_times.size < 2:
+            result["message"] = (
+                "Fewer than two waveform peaks were detected."
+            )
+            return result
+
+        intervals = np.diff(peak_times)
+
+        intervals = intervals[
+            np.isfinite(intervals)
+            & (intervals > 0)
+        ]
+
+        if intervals.size == 0:
+            result["message"] = (
+                "No valid peak-to-peak intervals were detected."
+            )
+            return result
+
+        average_interval = float(
+            np.mean(intervals)
+        )
+        median_interval = float(
+            np.median(intervals)
+        )
+
+        full_peak_duration = float(
+            peak_times[-1] - peak_times[0]
+        )
+
+        interval_count = int(
+            peak_times.size - 1
+        )
+
+        if full_peak_duration <= 0:
+            result["message"] = (
+                "Detected peak times do not define a valid duration."
+            )
+            return result
+
+        average_rate = (
+            60.0
+            * interval_count
+            / full_peak_duration
+        )
+
+        minimum_rate = float(
+            settings.get("minimum_rate", 4.0)
+        )
+        maximum_rate = float(
+            settings.get("maximum_rate", 300.0)
+        )
+
+        result.update(
+            {
+                "peak_count": int(peak_times.size),
+                "interval_count": interval_count,
+                "average_interval_sec": average_interval,
+                "median_interval_sec": median_interval,
+                "estimated_rate": float(average_rate),
+            }
+        )
+
+        if (
+            not np.isfinite(average_rate)
+            or average_rate < minimum_rate
+            or average_rate > maximum_rate
+        ):
+            result["status"] = "Review"
+            result["message"] = (
+                "Detected rate is outside the configured expected range."
+            )
+            return result
+
+        interval_mean = float(
+            np.mean(intervals)
+        )
+
+        if interval_mean > 0:
+            interval_variation = float(
+                np.std(intervals) / interval_mean
+            )
+        else:
+            interval_variation = float("inf")
+
+        individual_rates = 60.0 / intervals
+
+        out_of_range_intervals = np.count_nonzero(
+            (individual_rates < minimum_rate)
+            | (individual_rates > maximum_rate)
+        )
+
+        if peak_times.size == 2:
+            status = "Review"
+            message = (
+                "Rate calculated from one detected interval; "
+                "visually confirm the peak dots."
+            )
+        elif (
+            interval_variation <= 0.20
+            and out_of_range_intervals == 0
+        ):
+            status = "Reliable"
+            message = (
+                "Detected peak sequence is internally consistent. "
+                "Visually confirm the peak dots."
+            )
+        else:
+            status = "Review"
+            message = (
+                "Detected intervals are irregular or include possible "
+                "missed/double detections. Review the peak dots."
+            )
+
+        result["valid"] = True
+        result["status"] = status
+        result["message"] = message
+        result["interval_variation"] = interval_variation
+
+        return result
+
+
+    def draw_caliper_peak_dots(
+        self,
+        peak_times,
+        peak_values,
+    ):
+        """
+        Draw temporary detected-peak dots on the selected source waveform only.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._draw_caliper_peak_dots_impl(
+                peak_times,
+                peak_values,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "draw_caliper_peak_dots",
+                elapsed,
+                peaks=len(peak_times),
+                source_plot=self.caliper_source_plot_idx,
+            )
+
+
+    def _draw_caliper_peak_dots_impl(
+        self,
+        peak_times,
+        peak_values,
+    ):
+        self.clear_caliper_peak_graphics()
+
+        if not self.calipers_enabled:
+            return
+
+        plot_idx = self.caliper_source_plot_idx
+
+        if plot_idx is None:
+            return
+
+        if plot_idx < 0 or plot_idx >= len(self.waveform_plots):
+            return
+
+        peak_times = np.asarray(
+            peak_times,
+            dtype=float,
+        )
+        peak_values = np.asarray(
+            peak_values,
+            dtype=float,
+        )
+
+        point_count = min(
+            peak_times.size,
+            peak_values.size,
+        )
+
+        if point_count == 0:
+            return
+
+        peak_times = peak_times[:point_count]
+        peak_values = peak_values[:point_count]
+
+        plot = self.waveform_plots[plot_idx]
+
+        peak_item = pg.ScatterPlotItem(
+            x=peak_times,
+            y=peak_values,
+            symbol="o",
+            size=CALIPER_PEAK_DOT_SIZE,
+            pen=pg.mkPen(
+                255,
+                255,
+                255,
+                width=1,
+            ),
+            brush=pg.mkBrush(
+                180,
+                0,
+                180,
+                230,
+            ),
+        )
+
+        peak_item.is_caliper_item = True
+        peak_item.is_caliper_peak_item = True
+        peak_item.setZValue(11000)
+
+        plot.addItem(
+            peak_item,
+            ignoreBounds=True,
+        )
+
+        self.caliper_peak_graphics.append(
+            (plot, peak_item)
+        )
 
     # ------------------------------------------------------------------
     # Waveform Finalization
