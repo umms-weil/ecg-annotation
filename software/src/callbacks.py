@@ -321,104 +321,247 @@ class AnnotationAppCallbacks:
     def set_base_folder(self):
         folder_path = self.folder_input.text().strip().strip('"').strip("'")
         folder_path = os.path.normpath(folder_path)
+
         print("SET FOLDER CLICKED", folder_path)
+
         if not folder_path or not os.path.isdir(folder_path):
             self.base_folder = ""
             self.folder_status.setText("❌ Invalid folder.")
             return
+
+        previous_base_folder = getattr(self, "base_folder", "")
         self.base_folder = folder_path
-        self.folder_status.setText(f"📂 Base folder set: {folder_path}")
-        self.update_subject_dropdown()
+
+        self.folder_status.setText(
+            f"📂 Base folder set: {folder_path}"
+        )
+
+        # Invalidate cached discovery records only when the selected base folder
+        # changes. Clicking Set Folder again forces a fresh discovery scan.
+        if (
+            previous_base_folder != folder_path
+            or getattr(self, "_waveform_cache_base_folder", None) != folder_path
+        ):
+            self._waveform_record_cache = []
+            self._waveform_cache_base_folder = None
+
+        self.update_subject_dropdown(force_full_scan=True)
 
     # ------------------------------------------------------------------
     # Subject Search and Dropdown Population
     # ------------------------------------------------------------------
 
-    def update_subject_dropdown(self):
-            """
-            Timed wrapper around subject discovery and dropdown reconstruction.
-            """
-            start_time = perf_counter()
-    
-            try:
-                return self._update_subject_dropdown_impl()
-            finally:
-                elapsed = perf_counter() - start_time
-    
-                base_folder = getattr(self, "base_folder", "")
-                user_name = self.get_user_name()
-    
-                try:
-                    record_count = self.subject_dropdown.count()
-                except Exception:
-                    record_count = "unknown"
-    
-                self._perf_log(
-                    "update_subject_dropdown",
-                    elapsed,
-                    records=record_count,
-                    user=user_name,
-                    base_folder=base_folder,
-                )
-
-
-    def _update_subject_dropdown_impl(self):
+    def update_subject_dropdown(self, force_full_scan=False):
         """
-        Parses base folder for subjects to load in. 
+        Timed wrapper around cached subject discovery, annotation-status checks,
+        and dropdown reconstruction.
+
+        Parameters
+        ----------
+        force_full_scan : bool
+            If True, rediscover waveform records from the base folder.
+            If False, reuse the in-memory waveform-record cache when available.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._update_subject_dropdown_impl(
+                force_full_scan=force_full_scan,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            base_folder = getattr(self, "base_folder", "")
+            user_name = self.get_user_name()
+
+            try:
+                record_count = self.subject_dropdown.count()
+            except Exception:
+                record_count = "unknown"
+
+            cache_available = bool(
+                getattr(self, "_waveform_record_cache", [])
+            )
+
+            self._perf_log(
+                "update_subject_dropdown",
+                elapsed,
+                records=record_count,
+                user=user_name,
+                force_full_scan=force_full_scan,
+                cache_available=cache_available,
+                base_folder=base_folder,
+            )
+
+
+    def _update_subject_dropdown_impl(self, force_full_scan=False):
+        """
+        Populate the subject dropdown using cached waveform discovery records.
+
+        Static waveform discovery is performed only when:
+
+        - a base folder is first selected,
+        - a different base folder is selected,
+        - force_full_scan is True.
+
+        Annotation status is checked separately for the active user.
         """
         base_folder = getattr(self, "base_folder", None)
         combo = self.subject_dropdown
 
-        combo.clear()
-        combo.setDisabled(True)
-
         if not base_folder or not os.path.isdir(base_folder):
+            combo.clear()
+            combo.setDisabled(True)
             return
 
-        # IMPORTANT: get the active user directly from the widget.
         user_name = self.get_user_name()
 
         if user_name is not None:
             user_name = str(user_name).strip()
+        else:
+            user_name = ""
 
-        # Keep self.user_name synchronized for any other code that uses it.
         self.user_name = user_name
 
-        subjects = list_subjects(base_folder, user_name=user_name)
+        normalized_base_folder = os.path.normcase(
+            os.path.abspath(base_folder)
+        )
 
-        print(f"FOUND {len(subjects)} waveform records")
-        print(f"COMPLETION USER: {user_name}")
+        cached_base_folder = getattr(
+            self,
+            "_waveform_cache_base_folder",
+            None,
+        )
 
-        for s in subjects[:5]:
-            print("SUBJECT RECORD:", s)
+        cache_valid = (
+            bool(getattr(self, "_waveform_record_cache", []))
+            and cached_base_folder == normalized_base_folder
+        )
 
+        # Preserve the selected waveform record while rebuilding labels.
+        old_record = self.get_selected_subject_record()
+        old_key = self.get_record_refresh_key(old_record)
 
-        for subj in subjects:
-            total_annotations = subj.get("n_annotations", 0)
-            complete_annotations = subj.get("n_complete_annotations", 0)
+        # --------------------------------------------------------------
+        # Full waveform discovery
+        # --------------------------------------------------------------
+        if force_full_scan or not cache_valid:
+            discovery_start = perf_counter()
 
-            if total_annotations == 0:
-                icon = "⭕"
-            elif complete_annotations == total_annotations:
-                icon = "✅"
-            else:
-                icon = "🟡"
-
-            label = (
-                f"{icon} {subj['name']} "
-                f"({complete_annotations}/{total_annotations} complete)"
+            discovered_records = list_subjects(
+                base_folder,
+                user_name=user_name,
             )
 
-            combo.addItem(label, userData=subj)
+            discovery_elapsed = perf_counter() - discovery_start
 
-            idx = combo.count() - 1
+            # Store independent dictionaries in the session cache.
+            self._waveform_record_cache = [
+                dict(record)
+                for record in discovered_records
+                if isinstance(record, dict)
+            ]
 
-            if subj.get("kind") == "h5":
-                combo.setItemData(idx, subj.get("h5_path", ""), Qt.ToolTipRole)
-            elif subj.get("kind") == "csv":
-                combo.setItemData(idx, subj.get("csv_path", ""), Qt.ToolTipRole)
+            self._waveform_cache_base_folder = normalized_base_folder
 
-        combo.setDisabled(False)
+            self._perf_log(
+                "discover_waveform_records",
+                discovery_elapsed,
+                records=len(self._waveform_record_cache),
+                base_folder=base_folder,
+            )
+        else:
+            self._perf_log(
+                "discover_waveform_records CACHE_HIT",
+                0.0,
+                records=len(self._waveform_record_cache),
+                base_folder=base_folder,
+            )
+
+        # --------------------------------------------------------------
+        # Refresh only user-specific annotation status.
+        # This does not rediscover or reopen waveform files.
+        # --------------------------------------------------------------
+        annotation_status_start = perf_counter()
+
+        if user_name:
+            for record in self._waveform_record_cache:
+                self.refresh_record_annotation_status(
+                    record,
+                    user_name=user_name,
+                )
+        else:
+            for record in self._waveform_record_cache:
+                record["n_annotations"] = 0
+                record["n_complete_annotations"] = 0
+                record["has_annotations"] = False
+
+        annotation_status_elapsed = (
+            perf_counter() - annotation_status_start
+        )
+
+        self._perf_log(
+            "refresh_annotation_status_all_records",
+            annotation_status_elapsed,
+            records=len(self._waveform_record_cache),
+            user=user_name,
+        )
+
+        # --------------------------------------------------------------
+        # Populate dropdown from cached records.
+        # --------------------------------------------------------------
+        populate_start = perf_counter()
+
+        combo.blockSignals(True)
+        combo.clear()
+        combo.setDisabled(True)
+
+        selected_index = -1
+
+        for record in self._waveform_record_cache:
+            label = self.get_subject_dropdown_label(record)
+
+            combo.addItem(
+                label,
+                userData=record,
+            )
+
+            index = combo.count() - 1
+            record_key = self.get_record_refresh_key(record)
+
+            if old_key and record_key == old_key:
+                selected_index = index
+
+            tooltip = self.get_record_tooltip(record)
+
+            if tooltip:
+                combo.setItemData(
+                    index,
+                    tooltip,
+                    Qt.ToolTipRole,
+                )
+
+        if selected_index >= 0:
+            combo.setCurrentIndex(selected_index)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(0)
+
+        combo.setDisabled(combo.count() == 0)
+        combo.blockSignals(False)
+
+        populate_elapsed = perf_counter() - populate_start
+
+        self._perf_log(
+            "populate_subject_dropdown_from_cache",
+            populate_elapsed,
+            records=combo.count(),
+        )
+
+        print(f"FOUND {combo.count()} waveform records")
+        print(f"COMPLETION USER: {user_name}")
+
+        for record in self._waveform_record_cache[:5]:
+            print("SUBJECT RECORD:", record)
 
 
     def get_record_refresh_key(self, record):
@@ -437,9 +580,291 @@ class AnnotationAppCallbacks:
         )
 
 
+    def get_annotation_filenames_for_record(self, record, user_name):
+        """
+        Return partial and complete annotation filenames for a specific cached
+        waveform record and user.
+
+        This avoids depending on the currently selected dropdown item.
+        """
+        if not isinstance(record, dict):
+            return None, None
+
+        subject = str(record.get("subject", "") or "").strip()
+        file_tag = str(record.get("file_tag", "") or "").strip()
+        user_name = str(user_name or "").strip()
+
+        if not subject or not user_name:
+            return None, None
+
+        if file_tag:
+            base = f"annotations_{subject}_{file_tag}_{user_name}"
+        else:
+            base = f"annotations_{subject}_{user_name}"
+
+        return (
+            f"{base}.csv",
+            f"{base}_COMPLETE.csv",
+        )
+
+
+    def get_annotation_output_folder_for_record(self, record, user_name):
+        """
+        Return the user-specific annotation folder for a cached waveform record.
+        """
+        if not isinstance(record, dict):
+            return None
+
+        user_name = str(user_name or "").strip()
+
+        if not user_name:
+            return None
+
+        output_path = record.get("output_path", "")
+
+        if output_path:
+            return os.path.join(
+                output_path,
+                user_name,
+            )
+
+        base_folder = getattr(self, "base_folder", None)
+        subject = record.get("subject", "")
+
+        if base_folder and subject:
+            return os.path.join(
+                base_folder,
+                subject,
+                "output",
+                user_name,
+            )
+
+        return None
+
+
+    def refresh_record_annotation_status(self, record, user_name=None):
+        """
+        Refresh annotation counts for one cached waveform record.
+
+        This inspects only the known user output folder. It does not rescan the
+        waveform hierarchy or reopen waveform files.
+
+        Returns
+        -------
+        dict
+            The updated record dictionary.
+        """
+        if not isinstance(record, dict):
+            return record
+
+        if user_name is None:
+            user_name = self.get_user_name()
+
+        user_name = str(user_name or "").strip()
+
+        if not user_name:
+            record["n_annotations"] = 0
+            record["n_complete_annotations"] = 0
+            record["has_annotations"] = False
+            return record
+
+        output_folder = self.get_annotation_output_folder_for_record(
+            record,
+            user_name,
+        )
+
+        partial_filename, complete_filename = (
+            self.get_annotation_filenames_for_record(
+                record,
+                user_name,
+            )
+        )
+
+        if (
+            not output_folder
+            or not partial_filename
+            or not complete_filename
+        ):
+            record["n_annotations"] = 0
+            record["n_complete_annotations"] = 0
+            record["has_annotations"] = False
+            return record
+
+        partial_exists = False
+        complete_exists = False
+
+        try:
+            with os.scandir(output_folder) as entries:
+                filenames = {
+                    entry.name
+                    for entry in entries
+                    if entry.is_file()
+                }
+
+            partial_exists = partial_filename in filenames
+            complete_exists = complete_filename in filenames
+
+        except FileNotFoundError:
+            pass
+
+        except NotADirectoryError:
+            pass
+
+        except PermissionError as exc:
+            print(
+                "WARNING: Could not inspect annotation folder "
+                f"{output_folder}: {exc}"
+            )
+
+        except OSError as exc:
+            print(
+                "WARNING: Could not inspect annotation folder "
+                f"{output_folder}: {exc}"
+            )
+
+        total_annotations = int(partial_exists) + int(complete_exists)
+        complete_annotations = int(complete_exists)
+
+        record["completion_user"] = user_name
+        record["n_annotations"] = total_annotations
+        record["n_complete_annotations"] = complete_annotations
+        record["has_annotations"] = total_annotations > 0
+
+        return record
+
+
+    def get_subject_dropdown_label(self, record):
+        """
+        Build the visible dropdown label for one waveform record.
+        """
+        total_annotations = int(
+            record.get("n_annotations", 0) or 0
+        )
+        complete_annotations = int(
+            record.get("n_complete_annotations", 0) or 0
+        )
+
+        if total_annotations == 0:
+            icon = "⭕"
+        elif complete_annotations == total_annotations:
+            icon = "✅"
+        else:
+            icon = "🟡"
+
+        return (
+            f"{icon} {record.get('name', '')} "
+            f"({complete_annotations}/{total_annotations} complete)"
+        )
+
+
+    def get_record_tooltip(self, record):
+        """
+        Return a source-path tooltip for one waveform record.
+        """
+        if not isinstance(record, dict):
+            return ""
+
+        kind = record.get("kind", "")
+
+        if kind == "h5":
+            return str(record.get("h5_path", "") or "")
+
+        if kind == "csv":
+            return str(record.get("csv_path", "") or "")
+
+        if kind == "h5_multi":
+            h5_paths = record.get("h5_paths", {})
+
+            if isinstance(h5_paths, dict):
+                return "\n".join(
+                    f"{namespace}: {path}"
+                    for namespace, path in sorted(h5_paths.items())
+                )
+
+        return str(
+            record.get("source_path", "")
+            or record.get("encounter_path", "")
+            or ""
+        )
+
+
+    def refresh_selected_record_annotation_status(self):
+        """
+        Refresh annotation status for only the currently selected waveform record.
+
+        This avoids rebuilding the full dropdown and avoids rescanning all records.
+        """
+        start_time = perf_counter()
+
+        record = self.get_selected_subject_record()
+        user_name = self.get_user_name()
+
+        if not isinstance(record, dict) or not user_name:
+            return
+
+        record_key = self.get_record_refresh_key(record)
+
+        updated_record = None
+
+        for cached_record in getattr(
+            self,
+            "_waveform_record_cache",
+            [],
+        ):
+            if self.get_record_refresh_key(cached_record) == record_key:
+                self.refresh_record_annotation_status(
+                    cached_record,
+                    user_name=user_name,
+                )
+                updated_record = cached_record
+                break
+
+        if updated_record is None:
+            self.refresh_record_annotation_status(
+                record,
+                user_name=user_name,
+            )
+            updated_record = record
+
+        index = self.subject_dropdown.currentIndex()
+
+        if index >= 0:
+            self.subject_dropdown.setItemText(
+                index,
+                self.get_subject_dropdown_label(updated_record),
+            )
+
+            self.subject_dropdown.setItemData(
+                index,
+                updated_record,
+                Qt.UserRole,
+            )
+
+            tooltip = self.get_record_tooltip(updated_record)
+
+            if tooltip:
+                self.subject_dropdown.setItemData(
+                    index,
+                    tooltip,
+                    Qt.ToolTipRole,
+                )
+
+        self.current_subject_record = updated_record
+
+        elapsed = perf_counter() - start_time
+
+        self._perf_log(
+            "refresh_selected_record_annotation_status",
+            elapsed,
+            user=user_name,
+            record=updated_record.get("name", ""),
+        )
+
+
     def refresh_subject_dropdown_preserve_selection(self):
         """
-        Timed wrapper around completion-count refresh and selection restoration.
+        Timed wrapper around cached completion-count refresh and selection
+        restoration.
         """
         start_time = perf_counter()
 
@@ -456,62 +881,96 @@ class AnnotationAppCallbacks:
 
     def _refresh_subject_dropdown_preserve_selection_impl(self):
         """
-        Refresh the subject dropdown counts/icons while keeping the same selected
-        waveform record if possible.
+        Refresh all user-specific annotation counts while reusing cached waveform
+        discovery records.
+
+        This does not rerun recursive waveform discovery unless no valid cache exists.
         """
         old_record = self.get_selected_subject_record()
         old_key = self.get_record_refresh_key(old_record)
 
-        self.update_subject_dropdown()
+        self.update_subject_dropdown(
+            force_full_scan=False,
+        )
 
         if not old_key:
             return
 
-        for idx in range(self.subject_dropdown.count()):
-            record = self.subject_dropdown.itemData(idx)
+        for index in range(self.subject_dropdown.count()):
+            record = self.subject_dropdown.itemData(index)
             new_key = self.get_record_refresh_key(record)
 
-            if new_key == old_key:
-                self.subject_dropdown.setCurrentIndex(idx)
+            if new_key != old_key:
+                continue
 
-                if isinstance(record, dict):
-                    self.current_subject_record = record
-                    self.current_subject = record.get("subject", "")
-                    self.current_encounter = record.get("encounter", "")
-                    self.current_namespace = record.get("namespace", "")
-                    self.current_file_tag = record.get("file_tag", "")
-                    self.current_output_path = record.get("output_path", "")
-                    self.current_h5_path = record.get("h5_path", "")
+            self.subject_dropdown.setCurrentIndex(index)
 
-                break
+            if isinstance(record, dict):
+                self.current_subject_record = record
+                self.current_subject = record.get("subject", "")
+                self.current_encounter = record.get("encounter", "")
+                self.current_namespace = record.get("namespace", "")
+                self.current_file_tag = record.get("file_tag", "")
+                self.current_output_path = record.get("output_path", "")
+                self.current_h5_path = record.get("h5_path", "")
 
-    def handle_user_changed(self, *args):
+            break
+
+
+    def handle_user_changed(self):
+            """
+            Timed wrapper around changing of user
+            """
+            start_time = perf_counter()
+    
+            try:
+                return self._handle_user_changed_impl()
+            finally:
+                elapsed = perf_counter() - start_time
+    
+                self._perf_log(
+                    "handle_user_changed",
+                    elapsed,
+                )
+
+
+    def _handle_user_changed_impl(self, *args):
         """
-        Called when selected user changes.
+        Called when the selected user changes.
 
-        Refresh subject completion counts for the newly selected user and clear
-        currently displayed annotations from the previous user.
+        Reuse cached waveform records and refresh only the user-specific annotation
+        status for those records.
         """
         user_name = self.get_user_name()
 
         if user_name is not None:
             user_name = str(user_name).strip()
+        else:
+            user_name = ""
 
         self.user_name = user_name
 
         print(f"USER CHANGED TO: {self.user_name}")
 
-        # Refresh the dropdown counts/icons for this user.
-        self.update_subject_dropdown()
+        # Reuse cached waveform discovery records.
+        # This checks annotation status for the new user without reopening waveform
+        # files or recursively rediscovering the waveform hierarchy.
+        self.update_subject_dropdown(
+            force_full_scan=False,
+        )
 
-        # Clear annotations currently shown from the old user.
+        # Clear annotations displayed for the previous user.
         self.annotations = []
         self.waveform_complete = False
         self.terminal_event_status = ""
         self.terminal_event_comment = ""
         self.current_marker = None
 
-        if hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
+        if (
+            hasattr(self, "time_axis")
+            and self.time_axis is not None
+            and len(self.time_axis) > 0
+        ):
             self.last_mark = float(self.time_axis[0])
         else:
             self.last_mark = None
@@ -522,7 +981,8 @@ class AnnotationAppCallbacks:
         self.update_finalize_button_state()
 
         self.mark_warning.setText(
-            f"User changed to '{self.user_name}'. Load annotations for this user if needed."
+            f"User changed to '{self.user_name}'. "
+            "Load annotations for this user if needed."
         )
         self.mark_warning.setWordWrap(True)
         self.mark_warning.setStyleSheet(
@@ -1919,7 +2379,7 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete annotation file {path}: {e}")
 
-        self.refresh_subject_dropdown_preserve_selection()
+        self.refresh_selected_record_annotation_status()
 
 
     def handle_remove_last_mark(self):
@@ -3214,7 +3674,7 @@ class AnnotationAppCallbacks:
         self.save_message.setText(f"Saved to {fullpath}")
 
         # Maintain refresh on manual save
-        self.refresh_subject_dropdown_preserve_selection()
+        self.refresh_selected_record_annotation_status()
 
 
     def autosave_annotations(self):
