@@ -728,8 +728,9 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         # --- Autosave Annotation timer (every 2 minutes) ---
         self.autosave_timer = QTimer(self)
+        self.autosave_timer.setInterval(2 * 60 * 1000)
         self.autosave_timer.timeout.connect(self.autosave_annotations)
-        self.autosave_timer.start(2*60*1000)
+        self.autosave_timer.start()
 
         # ---- UI update ----
         self.update_sidebar_ui()

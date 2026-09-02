@@ -18,6 +18,9 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 import pyqtgraph as pg
 
+# Testing performance import
+from time import perf_counter
+
 UM_MAIZE = "#FFCB05"
 UM_BLUE = "#00274C"
 UM_ACCENT = "#285680"
@@ -25,22 +28,17 @@ UM_WHITE = "#FFFFFF"
 UM_RED = "#D50032"
 COMPLETION_GREEN = "#199E40"
 
-# WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
+
+# ---------------------------------------------------------------------------
+# Waveforms Present
+# ---------------------------------------------------------------------------
+
 WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
 
-# LABEL_COLORS = {
-#     "Normal Heart Rhythm": "LightGreen",
-#     "Sinus tachycardia": "LightBlue",
-#     "Bradycardia": "Khaki",
-#     "Supraventricular tachycardia": "Tomato",
-#     "Atrial Flutter": "Lavender",
-#     "Atrial Fibrillation": "SlateGray",
-#     "Ventricular Tachycardia": "Orange",
-#     "Ventricular Fibrillation": "Red",
-#     "Atrial Pacing Rhythm": "Gold",
-#     "Ventricular Pacing Rhythm": "Teal",
-#     "Idioventricular Rhythm": "Purple"
-# }
+# ---------------------------------------------------------------------------
+# Color Assignment
+# ---------------------------------------------------------------------------
+
 LABEL_COLORS = {
     "Normal Heart Rhythm": (0, 158, 96, 60),
     "Sinus tachycardia": (255, 128, 0, 60),
@@ -55,6 +53,14 @@ LABEL_COLORS = {
 }
 DEFAULT_COLOR = "LightGray"
 
+# ---------------------------------------------------------------------------
+# Performance diagnostics Configurable
+# ---------------------------------------------------------------------------
+
+PERF_DIAGNOSTICS_ENABLED = True
+
+# ---------------------------------------------------------------------------
+
 class RelativeAxis(pg.AxisItem):
     def __init__(self, t0, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -65,6 +71,253 @@ class RelativeAxis(pg.AxisItem):
         return [f"{v - self.t0:.1f}" for v in values]
 
 class AnnotationAppCallbacks:
+
+    # ---------------------------------------------------------------------------
+    # Performance diagnostics Functionality (Private)
+    # ---------------------------------------------------------------------------
+
+    def _perf_log(self, operation, elapsed_seconds, **details):
+        """
+        Print a standardized performance diagnostic line.
+        """
+        if not PERF_DIAGNOSTICS_ENABLED:
+            return
+
+        detail_text = " ".join(
+            f"{key}={value}"
+            for key, value in details.items()
+        )
+
+        if detail_text:
+            detail_text = f" | {detail_text}"
+
+        print(
+            f"[PERF] {operation}: "
+            f"{elapsed_seconds:.4f} sec"
+            f"{detail_text}"
+        )
+
+
+    def _format_bytes(self, byte_count):
+        """
+        Convert a byte count into a readable string.
+        """
+        try:
+            value = float(byte_count)
+        except (TypeError, ValueError):
+            return "unknown"
+
+        units = ["B", "KB", "MB", "GB", "TB"]
+
+        for unit in units:
+            if value < 1024.0 or unit == units[-1]:
+                return f"{value:.2f} {unit}"
+
+            value /= 1024.0
+
+        return f"{value:.2f} TB"
+
+
+    def _get_array_nbytes(self, value):
+        """
+        Return NumPy storage size for an array-like value.
+        """
+        if value is None:
+            return 0
+
+        try:
+            return int(np.asarray(value).nbytes)
+        except Exception:
+            return 0
+
+
+    def _print_waveform_memory_summary(self):
+        """
+        Print point counts and approximate NumPy memory usage for loaded waveforms.
+        """
+        if not PERF_DIAGNOSTICS_ENABLED:
+            return
+
+        time_axis = getattr(self, "time_axis", None)
+        leads = getattr(self, "leads_ds", None) or []
+        lead_names = getattr(self, "lead_names", None) or []
+        time_axes_by_lead = getattr(self, "time_axes_by_lead", None) or []
+
+        time_points = 0
+        time_bytes = 0
+
+        if time_axis is not None:
+            try:
+                time_points = len(time_axis)
+            except Exception:
+                time_points = 0
+
+            time_bytes = self._get_array_nbytes(time_axis)
+
+        total_lead_points = 0
+        total_lead_bytes = 0
+
+        print("[PERF] ----- Loaded waveform summary -----")
+        print(
+            f"[PERF] Global time axis: "
+            f"points={time_points} "
+            f"memory={self._format_bytes(time_bytes)}"
+        )
+
+        for index, lead in enumerate(leads):
+            name = (
+                lead_names[index]
+                if index < len(lead_names)
+                else f"Signal {index + 1}"
+            )
+
+            if lead is None:
+                lead_points = 0
+                lead_bytes = 0
+            else:
+                try:
+                    lead_points = len(lead)
+                except Exception:
+                    lead_points = 0
+
+                lead_bytes = self._get_array_nbytes(lead)
+
+            total_lead_points += lead_points
+            total_lead_bytes += lead_bytes
+
+            if index < len(time_axes_by_lead):
+                lead_time_axis = time_axes_by_lead[index]
+
+                try:
+                    lead_time_points = len(lead_time_axis)
+                except Exception:
+                    lead_time_points = 0
+            else:
+                lead_time_points = time_points
+
+            print(
+                f"[PERF] Lead {index}: "
+                f"name={name} "
+                f"signal_points={lead_points} "
+                f"time_points={lead_time_points} "
+                f"memory={self._format_bytes(lead_bytes)}"
+            )
+
+        numpy_total = time_bytes + total_lead_bytes
+
+        print(
+            f"[PERF] Waveform totals: "
+            f"lead_points={total_lead_points} "
+            f"lead_memory={self._format_bytes(total_lead_bytes)} "
+            f"time_plus_leads={self._format_bytes(numpy_total)}"
+        )
+
+        data_store = getattr(self, "data_store", {})
+
+        if isinstance(data_store, dict):
+            stored_time = data_store.get("time")
+            stored_leads = data_store.get("leads")
+
+            print(
+                f"[PERF] data_store waveform copy: "
+                f"time_type={type(stored_time).__name__} "
+                f"leads_type={type(stored_leads).__name__}"
+            )
+
+            if isinstance(stored_time, list):
+                print(
+                    f"[PERF] WARNING: data_store['time'] is a Python list "
+                    f"containing {len(stored_time)} values."
+                )
+
+            if isinstance(stored_leads, list):
+                stored_lead_values = 0
+
+                for lead in stored_leads:
+                    if isinstance(lead, list):
+                        stored_lead_values += len(lead)
+
+                print(
+                    f"[PERF] WARNING: data_store['leads'] contains "
+                    f"{stored_lead_values} Python-list values."
+                )
+
+        print("[PERF] -----------------------------------")
+
+
+    def _get_plot_item_counts(self):
+        """
+        Return counts of graphics items currently attached to waveform plots.
+        """
+        counts = {
+            "total": 0,
+            "data_items": 0,
+            "regions": 0,
+            "text_items": 0,
+            "infinite_lines": 0,
+        }
+
+        for plot in getattr(self, "waveform_plots", []):
+            try:
+                items = list(plot.items())
+            except Exception:
+                continue
+
+            counts["total"] += len(items)
+
+            for item in items:
+                if isinstance(item, pg.PlotDataItem):
+                    counts["data_items"] += 1
+                elif isinstance(item, pg.LinearRegionItem):
+                    counts["regions"] += 1
+                elif isinstance(item, pg.TextItem):
+                    counts["text_items"] += 1
+                elif isinstance(item, pg.InfiniteLine):
+                    counts["infinite_lines"] += 1
+
+        return counts
+
+
+    def _print_plot_performance_summary(self):
+        """
+        Print graphics counts and PyQtGraph optimization state.
+        """
+        if not PERF_DIAGNOSTICS_ENABLED:
+            return
+
+        counts = self._get_plot_item_counts()
+
+        print(
+            "[PERF] Plot graphics: "
+            f"total={counts['total']} "
+            f"curves={counts['data_items']} "
+            f"regions={counts['regions']} "
+            f"text={counts['text_items']} "
+            f"lines={counts['infinite_lines']}"
+        )
+
+        for plot_index, plot in enumerate(
+            getattr(self, "waveform_plots", [])
+        ):
+            try:
+                data_items = plot.listDataItems()
+            except Exception:
+                data_items = []
+
+            for curve_index, curve in enumerate(data_items):
+                opts = getattr(curve, "opts", {})
+
+                print(
+                    f"[PERF] Plot {plot_index} curve {curve_index}: "
+                    f"clipToView={opts.get('clipToView', 'unknown')} "
+                    f"autoDownsample={opts.get('autoDownsample', 'unknown')} "
+                    f"downsample={opts.get('downsample', 'unknown')} "
+                    f"downsampleMethod={opts.get('downsampleMethod', 'unknown')}"
+                )
+
+    # ---------------------------------------------------------------------------
+
+
     def set_base_folder(self):
         folder_path = self.folder_input.text().strip().strip('"').strip("'")
         folder_path = os.path.normpath(folder_path)
@@ -77,8 +330,42 @@ class AnnotationAppCallbacks:
         self.folder_status.setText(f"📂 Base folder set: {folder_path}")
         self.update_subject_dropdown()
 
+    # ------------------------------------------------------------------
+    # Subject Search and Dropdown Population
+    # ------------------------------------------------------------------
 
     def update_subject_dropdown(self):
+            """
+            Timed wrapper around subject discovery and dropdown reconstruction.
+            """
+            start_time = perf_counter()
+    
+            try:
+                return self._update_subject_dropdown_impl()
+            finally:
+                elapsed = perf_counter() - start_time
+    
+                base_folder = getattr(self, "base_folder", "")
+                user_name = self.get_user_name()
+    
+                try:
+                    record_count = self.subject_dropdown.count()
+                except Exception:
+                    record_count = "unknown"
+    
+                self._perf_log(
+                    "update_subject_dropdown",
+                    elapsed,
+                    records=record_count,
+                    user=user_name,
+                    base_folder=base_folder,
+                )
+
+
+    def _update_subject_dropdown_impl(self):
+        """
+        Parses base folder for subjects to load in. 
+        """
         base_folder = getattr(self, "base_folder", None)
         combo = self.subject_dropdown
 
@@ -152,6 +439,23 @@ class AnnotationAppCallbacks:
 
     def refresh_subject_dropdown_preserve_selection(self):
         """
+        Timed wrapper around completion-count refresh and selection restoration.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._refresh_subject_dropdown_preserve_selection_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "refresh_subject_dropdown_preserve_selection",
+                elapsed,
+            )
+
+
+    def _refresh_subject_dropdown_preserve_selection_impl(self):
+        """
         Refresh the subject dropdown counts/icons while keeping the same selected
         waveform record if possible.
         """
@@ -224,6 +528,10 @@ class AnnotationAppCallbacks:
         self.mark_warning.setStyleSheet(
             "color: #285680; font-size: 13px; font-weight: bold;"
         )
+
+    # ------------------------------------------------------------------
+    # Establish Plotting Parameter
+    # ------------------------------------------------------------------
 
     def get_global_valid_time_range(self):
         """
@@ -349,6 +657,9 @@ class AnnotationAppCallbacks:
 
         return label
 
+    # ------------------------------------------------------------------
+    # Waveform Y-Axis Scaling
+    # ------------------------------------------------------------------
 
     def autoscale_y(self, plot, signal):
         """
@@ -366,7 +677,30 @@ class AnnotationAppCallbacks:
         else:
             plot.setYRange(-1.0, 1.0, padding=0)
 
+
     def adjust_y_scale(self, plot_idx, zoom="up"):
+        """
+        Timed wrapper around manual Y-axis zoom.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._adjust_y_scale_impl(
+                plot_idx,
+                zoom=zoom,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "adjust_y_scale",
+                elapsed,
+                plot_idx=plot_idx,
+                zoom=zoom,
+            )
+
+
+    def _adjust_y_scale_impl(self, plot_idx, zoom="up"):
         """
         Adjusts the Y-axis scaling of the selected PlotWidget by zooming in or out.
         Zooms in by shrinking Y range (zoom="up"), or zooms out by expanding (zoom="down").
@@ -392,6 +726,28 @@ class AnnotationAppCallbacks:
 
 
     def shift_y_scale(self, plot_idx, shift="up"):
+        """
+        Timed wrapper around manual Y-axis shifting.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._shift_y_scale_impl(
+                plot_idx,
+                shift=shift,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "shift_y_scale",
+                elapsed,
+                plot_idx=plot_idx,
+                shift=shift,
+            )
+
+
+    def _shift_y_scale_impl(self, plot_idx, shift="up"):
         """
         Shifts the Y-axis center of the selected PlotWidget by moving it up or down.
         Shifts by moving Y range (shift="up"), or zooms out by expanding (shift="down").
@@ -515,6 +871,7 @@ class AnnotationAppCallbacks:
             self.autoscale_visible_y_for_plot(plot_idx, force=False)
             self.update_all_auto_y_button_states()
 
+
     def disable_auto_y_for_plot(self, plot_idx):
         """
         Disable Auto-Y for a plot after manual Y-axis intervention.
@@ -543,6 +900,41 @@ class AnnotationAppCallbacks:
 
 
     def autoscale_visible_y_all(self):
+        """
+        Timed wrapper around visible-window Auto-Y calculations.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._autoscale_visible_y_all_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            enabled_count = sum(
+                1
+                for enabled in getattr(
+                    self,
+                    "auto_y_enabled_by_user",
+                    [],
+                )
+                if enabled
+            )
+
+            try:
+                x_min, x_max = self.waveform_plots[0].viewRange()[0]
+                visible_seconds = float(x_max) - float(x_min)
+            except Exception:
+                visible_seconds = "unknown"
+
+            self._perf_log(
+                "autoscale_visible_y_all",
+                elapsed,
+                enabled_plots=enabled_count,
+                visible_seconds=visible_seconds,
+            )
+
+
+    def _autoscale_visible_y_all_impl(self):
         """
         Autoscale Y-axis for all plots whose Auto-Y is enabled by the user,
         using the current visible X-window plus a small time buffer.
@@ -703,7 +1095,11 @@ class AnnotationAppCallbacks:
 
         self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
         return True
-    
+
+    # ------------------------------------------------------------------
+    # Event Labels
+    # ------------------------------------------------------------------
+
     def toggle_event_labels_visibility(self):
         """
         Show/hide all event marker text labels without replotting waveforms or lines.
@@ -731,7 +1127,11 @@ class AnnotationAppCallbacks:
             for item in list(plot.items()):
                 if isinstance(item, pg.TextItem) and getattr(item, "is_event_marker", False):
                     item.setVisible(visible)
-        
+
+    # ------------------------------------------------------------------
+    # Waveform Finalization
+    # ------------------------------------------------------------------
+       
     def get_waveform_end_time(self):
         """
         Return final timestamp across all loaded signal time axes.
@@ -745,6 +1145,7 @@ class AnnotationAppCallbacks:
             return float(global_end)
 
         return None
+
     
     def is_at_waveform_end(self, value, tolerance=1e-6):
         """
@@ -770,6 +1171,7 @@ class AnnotationAppCallbacks:
             return abs(float(value) - waveform_end) <= tolerance
         except Exception:
             return False
+
     
     def last_annotation_reaches_waveform_end(self):
         """
@@ -786,6 +1188,7 @@ class AnnotationAppCallbacks:
 
         return self.is_at_waveform_end(annotations[-1].get("end", None))
 
+
     def clear_terminal_completion_fields(self):
         """
         Clear waveform completion state and terminal event metadata.
@@ -798,6 +1201,7 @@ class AnnotationAppCallbacks:
             ann["waveform_complete"] = False
             ann["terminal_event_status"] = ""
             ann["terminal_event_comment"] = ""
+
 
     def apply_terminal_completion_to_annotations(self, status, comment):
         """
@@ -825,6 +1229,7 @@ class AnnotationAppCallbacks:
             annotations[-1]["terminal_event_status"] = status
             annotations[-1]["terminal_event_comment"] = comment
 
+
     def update_finalize_button_state(self):
         """
         Enable the Finalize Waveform button only when the latest annotation
@@ -840,6 +1245,7 @@ class AnnotationAppCallbacks:
         )
 
         self.finalize_waveform_btn.setDisabled(not can_finalize)
+
 
     def show_final_completion_dialog(self):
         """
@@ -916,7 +1322,33 @@ class AnnotationAppCallbacks:
 
         return status, comment
 
+
     def handle_finalize_waveform_clicked(self):
+        """
+        Timed wrapper around finalization, redraw, saving, and UI updates.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._handle_finalize_waveform_clicked_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_finalize_waveform_clicked TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+                waveform_complete=getattr(
+                    self,
+                    "waveform_complete",
+                    False,
+                ),
+            )
+            
+
+    def _handle_finalize_waveform_clicked_impl(self):
         """
         Finalize waveform annotation after the final annotation reaches the
         waveform end.
@@ -981,6 +1413,10 @@ class AnnotationAppCallbacks:
 
         self.update_sidebar_ui()
 
+    # ------------------------------------------------------------------
+    # Plotting and Marking on Waveform
+    # ------------------------------------------------------------------
+
     def get_plot_safe_view_y_range(self, plot):
             try:
                 y_min, y_max = plot.viewRange()[1]
@@ -995,7 +1431,36 @@ class AnnotationAppCallbacks:
             except Exception:
                 return -1.0, 1.0
 
+
     def plot_event_markers(self):
+        """
+        Timed wrapper around event-line and event-label construction.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._plot_event_markers_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            manifest_events = getattr(self, "manifest_events", None)
+
+            try:
+                event_count = len(manifest_events)
+            except Exception:
+                event_count = 0
+
+            self._perf_log(
+                "plot_event_markers",
+                elapsed,
+                event_rows=event_count,
+                waveform_plots=len(
+                    getattr(self, "waveform_plots", [])
+                ),
+            )
+
+
+    def _plot_event_markers_impl(self):
         """
         Plots vertical dashed lines and labels for each event in self.manifest_events,
         using the front end's relative second axis.
@@ -1113,6 +1578,36 @@ class AnnotationAppCallbacks:
 
 
     def plot_all_leads(self):
+        """
+        Timed wrapper around waveform curve and event-marker construction.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._plot_all_leads_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            total_points = 0
+
+            for lead in getattr(self, "leads_ds", []) or []:
+                if lead is not None:
+                    try:
+                        total_points += len(lead)
+                    except Exception:
+                        pass
+
+            self._perf_log(
+                "plot_all_leads",
+                elapsed,
+                total_lead_points=total_points,
+                lead_count=len(getattr(self, "leads_ds", []) or []),
+            )
+
+            self._print_plot_performance_summary()
+
+
+    def _plot_all_leads_impl(self):
         """
         Plots each lead waveform, applies robust autoscale (centered at zero), installs axis labels,
         and overlays event markers (vertical dashed lines + labels) for all valid events.
@@ -1399,6 +1894,9 @@ class AnnotationAppCallbacks:
             if not self.manifest_events.empty:
                 self.plot_event_markers()
 
+    # ------------------------------------------------------------------
+    # Annotation Functionality
+    # ------------------------------------------------------------------
 
     def delete_annotation_files_for_current_user(self):
         """
@@ -1423,7 +1921,35 @@ class AnnotationAppCallbacks:
 
         self.refresh_subject_dropdown_preserve_selection()
 
+
     def handle_remove_last_mark(self):
+        """
+        Timed wrapper around undo, graphics rebuilding, saving, and refresh.
+        """
+        annotation_count_before = len(
+            getattr(self, "annotations", [])
+        )
+
+        start_time = perf_counter()
+
+        try:
+            return self._handle_remove_last_mark_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            annotation_count_after = len(
+                getattr(self, "annotations", [])
+            )
+
+            self._perf_log(
+                "handle_remove_last_mark TOTAL",
+                elapsed,
+                annotations_before=annotation_count_before,
+                annotations_after=annotation_count_after,
+            )
+
+
+    def _handle_remove_last_mark_impl(self):
         """
         Removes the most recent annotation ('last mark') from table and plots.
         Resets sidebar and markers to previous state or initial if no marks remain.
@@ -1457,7 +1983,33 @@ class AnnotationAppCallbacks:
         else:
             self.delete_annotation_files_for_current_user()
 
+
     def handle_load_annotation(self):
+        """
+        Timed wrapper around annotation file loading and graphics reconstruction.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._handle_load_annotation_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_load_annotation TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+                waveform_complete=getattr(
+                    self,
+                    "waveform_complete",
+                    False,
+                ),
+            )
+
+
+    def _handle_load_annotation_impl(self):
         print("LOAD ANNOTATIONS BUTTON CLICKED")
         user_name = self.get_user_name()
         subject = self.get_selected_subject_name()
@@ -1573,7 +2125,7 @@ class AnnotationAppCallbacks:
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
         self.update_finalize_button_state()
-        self.refresh_subject_dropdown_preserve_selection()
+        # self.refresh_subject_dropdown_preserve_selection()
 
         # --- Center plot(s) on last annotation's end if loaded ---
         if self.annotations and hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
@@ -1635,6 +2187,7 @@ class AnnotationAppCallbacks:
         # Make sure final visual state is correct after message override
         self.update_finalize_button_state()
 
+
     def get_loaded_global_time_range(self):
         """
         Return global min/max absolute epoch seconds across all loaded signal time axes.
@@ -1667,7 +2220,37 @@ class AnnotationAppCallbacks:
 
         return min(starts), max(stops)
 
+    # ------------------------------------------------------------------
+    # Loading Waveform Data
+    # ------------------------------------------------------------------
+
     def load_subject_data(self):
+        """
+        Timed wrapper around the full subject-loading workflow.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._load_subject_data_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            record = self.get_selected_subject_record() or {}
+
+            self._perf_log(
+                "load_subject_data TOTAL",
+                elapsed,
+                subject=record.get("subject", ""),
+                encounter=record.get("encounter", ""),
+                file_tag=record.get("file_tag", ""),
+                kind=record.get("kind", ""),
+            )
+
+            self._print_waveform_memory_summary()
+            self._print_plot_performance_summary()
+
+            
+    def _load_subject_data_impl(self):
         subject_idx = self.subject_dropdown.currentIndex()
         if subject_idx < 0:
             print("No subject selected.")
@@ -1715,6 +2298,8 @@ class AnnotationAppCallbacks:
         code_start_sec = None
         code_stop_sec = None
 
+        waveform_load_start = perf_counter()
+
         loaded_waveforms = load_waveforms_for_subject(
             base_folder,
             record,
@@ -1723,12 +2308,37 @@ class AnnotationAppCallbacks:
             code_stop_sec=None,
             desired_waveforms=WAVEFORM_PLOT_ORDER,
         )
+
+        waveform_load_elapsed = perf_counter() - waveform_load_start
+
+        # Timing Waveform Loading
+        self._perf_log(
+            "load_waveforms_for_subject",
+            waveform_load_elapsed,
+            kind=record.get("kind", ""),
+            source_path=record.get(
+                "h5_path",
+                record.get("csv_path", ""),
+            ),
+        )
+        # Start timer
+        normalization_start = perf_counter()
+
         times_ds = loaded_waveforms.get("times_ds", None)
         times_by_lead = loaded_waveforms.get("times_by_lead", None)
         leads_ds = loaded_waveforms.get("leads_ds", None)
         lead_names = loaded_waveforms.get("lead_names", None)
         units = loaded_waveforms.get("units", None)
         Fs = loaded_waveforms.get("Fs", None)
+
+        # Calculate Time
+        normalization_elapsed = perf_counter() - normalization_start
+        self._perf_log(
+            "normalize_and_assign_loaded_waveforms",
+            normalization_elapsed,
+            global_time_points=len(times_ds),
+            lead_count=len(leads_ds),
+        )
 
         if times_ds is None:
             times_ds = np.array([])
@@ -1783,12 +2393,17 @@ class AnnotationAppCallbacks:
         self.code_stop_sec = None
 
         print(times_ds, leads_ds, lead_names, units, Fs)
+
         # --- Filter manifest events for current subject and code window ---
         # ------------------------------------------------------------------
         # Load manifest events as optional metadata only.
         # Do not use them to crop the waveform.
         # Do not set code_start_sec/code_stop_sec from them.
         # ------------------------------------------------------------------
+
+        # Timer for Manifest Loader
+        manifest_load_start = perf_counter()
+
         self.manifest_events = pd.DataFrame()
 
         if os.path.exists(code_csv_path):
@@ -1833,6 +2448,16 @@ class AnnotationAppCallbacks:
             print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
             self.manifest_events = pd.DataFrame()
 
+        # Manifest Timer stop
+        manifest_load_elapsed = perf_counter() - manifest_load_start
+
+        self._perf_log(
+            "load_manifest_events",
+            manifest_load_elapsed,
+            event_count=len(self.manifest_events),
+            manifest_path=code_csv_path,
+        )
+
         print("data x:", times_ds[:10], "...", times_ds[-10:])
         print("annot", [ (a['start'], a['end']) for a in self.annotations ])
         print("viewRange before region:", self.waveform_plots[0].viewRange())
@@ -1853,15 +2478,38 @@ class AnnotationAppCallbacks:
             self.last_mark = 0.0
         self.current_marker = None
     
+        data_store_start = perf_counter()
+
         self.data_store = {
             "time": times_ds.tolist() if hasattr(times_ds, "tolist") else list(times_ds),
-            "leads": [l.tolist() if l is not None else None for l in leads_ds],
+            "leads": [
+                lead.tolist() if lead is not None else None
+                for lead in leads_ds
+            ],
             "lead_names": lead_names,
             "subject": subject_name,
             "encounter": encounter_name,
             "file_tag": record.get("file_tag", ""),
-            "source_path": record.get("h5_path", record.get("csv_path", "")),
+            "source_path": record.get(
+                "h5_path",
+                record.get("csv_path", ""),
+            ),
         }
+
+        data_store_elapsed = perf_counter() - data_store_start
+
+        stored_lead_value_count = sum(
+            len(lead)
+            for lead in self.data_store["leads"]
+            if isinstance(lead, list)
+        )
+
+        self._perf_log(
+            "build_data_store_python_lists",
+            data_store_elapsed,
+            time_values=len(self.data_store["time"]),
+            lead_values=stored_lead_value_count,
+        )
         self.annotations = []
         print("Loaded data for:", subject_name)
         # After assigning self.time_axis, self.leads_ds, self.lead_names:
@@ -2127,9 +2775,36 @@ class AnnotationAppCallbacks:
         x_max = x_min + window_width
         for plt in self.waveform_plots:
             plt.setXRange(x_min, x_max, padding=0)
-    
+
 
     def handle_mark_clicked(self):
+        """
+        Timed wrapper around the complete Mark-button workflow.
+        """
+        annotation_count_before = len(
+            getattr(self, "annotations", [])
+        )
+
+        start_time = perf_counter()
+
+        try:
+            return self._handle_mark_clicked_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            annotation_count_after = len(
+                getattr(self, "annotations", [])
+            )
+
+            self._perf_log(
+                "handle_mark_clicked TOTAL",
+                elapsed,
+                annotations_before=annotation_count_before,
+                annotations_after=annotation_count_after,
+            )
+            
+
+    def _handle_mark_clicked_impl(self):
         print("handle_mark_clicked CALLED")
 
         if getattr(self, "waveform_complete", False):
@@ -2158,9 +2833,20 @@ class AnnotationAppCallbacks:
                 "encounter": record.get("encounter", "") if record else "",
                 "namespace": record.get("namespace", "") if record else "",
                 "file_tag": record.get("file_tag", "") if record else "",
-                "source_path": record.get("h5_path", record.get("csv_path", "")) if record else "",
+                "source_path": (
+                    record.get(
+                        "h5_path",
+                        record.get("csv_path", ""),
+                    )
+                    if record
+                    else ""
+                ),
                 "cpr": self.get_cpr_val(),
-                "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
+                "rhythm_label": (
+                    self.rhythm_dropdown.currentText()
+                    if self.rhythm_dropdown.isEnabled()
+                    else ""
+                ),
                 "rhythm_expl": self.rhythm_explanation.toPlainText(),
                 "start": self.last_mark,
                 "end": self.current_marker,
@@ -2174,7 +2860,7 @@ class AnnotationAppCallbacks:
             print(f"APPENDING ANNOTATION: {ann}")
             self.annotations.append(ann)
 
-            # Prepare for next marking
+            # Prepare for the next annotation.
             self.last_mark = self.current_marker
             self.current_marker = None
             self.pending_clear_sidebar = True
@@ -2187,20 +2873,28 @@ class AnnotationAppCallbacks:
         self.update_table_data()
         self.update_finalize_button_state()
 
-        if final_segment_reached and not getattr(self, "waveform_complete", False):
+        if final_segment_reached and not getattr(
+            self,
+            "waveform_complete",
+            False,
+        ):
             self.mark_warning.setText(
-                "End of waveform reached. Please click 'Finalize Waveform' when ready."
+                "End of waveform reached. Please click "
+                "'Finalize Waveform' when ready."
             )
             self.mark_warning.setStyleSheet(
                 "font-size:13px; font-weight:bold; color:#285680;"
             )
             self.mark_warning.setWordWrap(True)
-
             self.update_finalize_button_state()
 
-        self.autosave_annotations()
+        # Do not autosave after every mark.
+        # The QTimer performs autosave every two minutes.
 
-        print("Current ANNOTATIONS LIST after marking:", self.annotations)
+        print(
+            "Current ANNOTATIONS LIST after marking:",
+            self.annotations,
+        )
 
 
     def get_user_name(self):
@@ -2317,6 +3011,33 @@ class AnnotationAppCallbacks:
         self.remove_last_btn.setDisabled(len(self.annotations) == 0)
 
     def update_waveform_and_mark(self):
+        """
+        Timed wrapper around annotation and pending-marker graphics rebuilding.
+        """
+        before_counts = self._get_plot_item_counts()
+        start_time = perf_counter()
+
+        try:
+            return self._update_waveform_and_mark_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+            after_counts = self._get_plot_item_counts()
+
+            self._perf_log(
+                "update_waveform_and_mark",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+                items_before=before_counts["total"],
+                items_after=after_counts["total"],
+                regions_after=after_counts["regions"],
+                text_after=after_counts["text_items"],
+                lines_after=after_counts["infinite_lines"],
+            )
+
+
+    def _update_waveform_and_mark_impl(self):
         marker = getattr(self, "current_marker", None)
         last_mark = getattr(self, "last_mark", None)
         annotations = getattr(self, "annotations", [])
@@ -2410,6 +3131,26 @@ class AnnotationAppCallbacks:
 
 
     def save_all_to_file(self):
+        """
+        Timed wrapper around manual annotation saving and dropdown refresh.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._save_all_to_file_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "save_all_to_file TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+            )
+
+
+    def _save_all_to_file_impl(self):
         annotations = getattr(self, "annotations", [])
         subject = self.get_selected_subject_name()
         user_name = self.get_user_name()
@@ -2454,13 +3195,49 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete complete annotation file: {e}")
 
-        pd.DataFrame(annotations).to_csv(fullpath, index=False)
+        # Save Timer Start
+        csv_write_start = perf_counter()
+
+        pd.DataFrame(annotations).to_csv(
+            fullpath,
+            index=False,
+        )
+
+        # Save Timer Calculation
+        csv_write_elapsed = perf_counter() - csv_write_start
+        self._perf_log(
+            "manual_save_csv_write",
+            csv_write_elapsed,
+            rows=len(annotations),
+            path=fullpath,
+        )
         self.save_message.setText(f"Saved to {fullpath}")
 
+        # Maintain refresh on manual save
         self.refresh_subject_dropdown_preserve_selection()
 
 
     def autosave_annotations(self):
+        """
+        Timed wrapper around autosave and completion-count refresh.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._autosave_annotations_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "autosave_annotations TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+            )
+            
+
+    def _autosave_annotations_impl(self):
         annotations = getattr(self, "annotations", [])
         subject = self.get_selected_subject_name()
         user_name = self.get_user_name()
@@ -2470,6 +3247,7 @@ class AnnotationAppCallbacks:
             return
 
         output_folder = self.get_annotation_output_folder()
+
         if not output_folder:
             return
 
@@ -2477,8 +3255,14 @@ class AnnotationAppCallbacks:
 
         partial_filename, complete_filename = self.get_annotation_filenames()
 
-        partial_path = os.path.join(output_folder, partial_filename)
-        complete_path = os.path.join(output_folder, complete_filename)
+        partial_path = os.path.join(
+            output_folder,
+            partial_filename,
+        )
+        complete_path = os.path.join(
+            output_folder,
+            complete_filename,
+        )
 
         if getattr(self, "waveform_complete", False):
             fullpath = complete_path
@@ -2486,23 +3270,51 @@ class AnnotationAppCallbacks:
             if os.path.exists(partial_path):
                 try:
                     os.remove(partial_path)
-                    print(f"Deleted partial annotation file: {partial_path}")
-                except Exception as e:
-                    print(f"Warning: Could not delete partial annotation file: {e}")
+                    print(
+                        "Deleted partial annotation file: "
+                        f"{partial_path}"
+                    )
+                except Exception as exc:
+                    print(
+                        "Warning: Could not delete partial annotation "
+                        f"file: {exc}"
+                    )
         else:
             fullpath = partial_path
 
             if os.path.exists(complete_path):
                 try:
                     os.remove(complete_path)
-                    print(f"Deleted complete annotation file after reverting to partial: {complete_path}")
-                except Exception as e:
-                    print(f"Warning: Could not delete complete annotation file: {e}")
+                    print(
+                        "Deleted complete annotation file after "
+                        f"reverting to partial: {complete_path}"
+                    )
+                except Exception as exc:
+                    print(
+                        "Warning: Could not delete complete annotation "
+                        f"file: {exc}"
+                    )
 
-        pd.DataFrame(annotations).to_csv(fullpath, index=False)
+        # Save Timer Start
+        csv_write_start = perf_counter()
+
+        pd.DataFrame(annotations).to_csv(
+            fullpath,
+            index=False,
+        )
+
+        # Save Timer Calculation
+        csv_write_elapsed = perf_counter() - csv_write_start
+        self._perf_log(
+            "autosave_csv_write",
+            csv_write_elapsed,
+            rows=len(annotations),
+            path=fullpath,
+        )
         self.save_message.setText(f"Auto-saved to {fullpath}")
 
-        self.refresh_subject_dropdown_preserve_selection()
+        # Possible slow-down
+        #self.refresh_subject_dropdown_preserve_selection()
 
     # --- Utility slots for GUI logic that you will implement: ---
     def get_cpr_val(self):
