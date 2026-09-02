@@ -60,6 +60,25 @@ DEFAULT_COLOR = "LightGray"
 PERF_DIAGNOSTICS_ENABLED = True
 
 # ---------------------------------------------------------------------------
+# Caliper configuration
+# ---------------------------------------------------------------------------
+
+CALIPER_CALCULATION_WAVEFORMS = [
+    "I",
+    "II",
+    "III",
+    "V",
+    "AVF",
+    "AVL",
+]
+
+CALIPER_START_COLOR = (0, 102, 204)
+CALIPER_END_COLOR = (204, 51, 51)
+
+CALIPER_INITIAL_WINDOW_FRACTION = 0.15
+CALIPER_MINIMUM_SEPARATION_SEC = 0.1
+
+# ---------------------------------------------------------------------------
 
 class RelativeAxis(pg.AxisItem):
     def __init__(self, t0, *args, **kwargs):
@@ -1556,6 +1575,922 @@ class AnnotationAppCallbacks:
         self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
         return True
 
+
+    # ------------------------------------------------------------------
+    # Caliper Functionality
+    # ------------------------------------------------------------------
+
+    def normalize_caliper_waveform_name(self, value):
+        """
+        Normalize a waveform name for matching against the configured caliper list.
+        """
+        return "".join(
+            character
+            for character in str(value).upper()
+            if character.isalnum()
+        )
+
+
+    def is_caliper_waveform_allowed(self, waveform_name):
+        """
+        Return True when a waveform is configured for caliper calculation.
+        """
+        normalized_name = self.normalize_caliper_waveform_name(
+            waveform_name
+        )
+
+        configured_names = {
+            self.normalize_caliper_waveform_name(name)
+            for name in CALIPER_CALCULATION_WAVEFORMS
+        }
+
+        return normalized_name in configured_names
+
+
+    def caliper_signal_has_data(self, plot_idx):
+        """
+        Return True when the selected waveform has at least two finite samples.
+        """
+        leads = getattr(self, "leads_ds", None)
+
+        if leads is None:
+            return False
+
+        if plot_idx < 0 or plot_idx >= len(leads):
+            return False
+
+        signal = leads[plot_idx]
+
+        if signal is None:
+            return False
+
+        try:
+            signal_array = np.asarray(signal, dtype=float)
+        except Exception:
+            return False
+
+        if signal_array.size < 2:
+            return False
+
+        return np.count_nonzero(np.isfinite(signal_array)) >= 2
+
+
+    def populate_caliper_source_dropdown(self):
+        """
+        Populate the caliper source dropdown using configured, loaded waveforms
+        that contain finite data.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._populate_caliper_source_dropdown_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            source_count = 0
+
+            if hasattr(self, "caliper_source_dropdown"):
+                source_count = self.caliper_source_dropdown.count()
+
+            self._perf_log(
+                "populate_caliper_source_dropdown",
+                elapsed,
+                sources=source_count,
+            )
+
+
+    def _populate_caliper_source_dropdown_impl(self):
+        if not hasattr(self, "caliper_source_dropdown"):
+            return
+
+        dropdown = self.caliper_source_dropdown
+
+        previous_plot_idx = dropdown.currentData()
+
+        dropdown.blockSignals(True)
+        dropdown.clear()
+
+        lead_names = getattr(self, "lead_names", None) or []
+
+        preferred_dropdown_index = -1
+        restored_dropdown_index = -1
+
+        for plot_idx, lead_name in enumerate(lead_names):
+            if plot_idx >= len(getattr(self, "waveform_plots", [])):
+                continue
+
+            if not self.is_caliper_waveform_allowed(lead_name):
+                continue
+
+            if not self.caliper_signal_has_data(plot_idx):
+                continue
+
+            dropdown.addItem(
+                str(lead_name),
+                userData=plot_idx,
+            )
+
+            dropdown_index = dropdown.count() - 1
+
+            if previous_plot_idx == plot_idx:
+                restored_dropdown_index = dropdown_index
+
+            if (
+                self.normalize_caliper_waveform_name(lead_name)
+                == self.normalize_caliper_waveform_name("II")
+            ):
+                preferred_dropdown_index = dropdown_index
+
+        if restored_dropdown_index >= 0:
+            dropdown.setCurrentIndex(restored_dropdown_index)
+        elif preferred_dropdown_index >= 0:
+            dropdown.setCurrentIndex(preferred_dropdown_index)
+        elif dropdown.count() > 0:
+            dropdown.setCurrentIndex(0)
+
+        dropdown.setDisabled(dropdown.count() == 0)
+        dropdown.blockSignals(False)
+
+        if dropdown.count() > 0:
+            self.caliper_source_plot_idx = dropdown.currentData()
+        else:
+            self.caliper_source_plot_idx = None
+            self.clear_calipers(
+                clear_measurement=True,
+                update_toggle=True,
+            )
+
+
+    def toggle_caliper_adjust_mode(self, enabled):
+        """
+        Timed wrapper around caliper adjustment mode.
+
+        While adjustment mode is enabled, plot clicks do not create annotation
+        endpoints. The source-plot caliper lines remain draggable.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_caliper_adjust_mode_impl(enabled)
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_caliper_adjust_mode",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_caliper_adjust_mode_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if not getattr(self, "calipers_enabled", False):
+            enabled = False
+
+        self.caliper_adjust_enabled = enabled
+
+        if hasattr(self, "caliper_adjust_btn"):
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(enabled)
+            self.caliper_adjust_btn.setText(
+                "Adjust ON" if enabled else "Adjust OFF"
+            )
+            self.caliper_adjust_btn.setEnabled(
+                getattr(self, "calipers_enabled", False)
+            )
+            self.caliper_adjust_btn.blockSignals(False)
+
+        # Allow either caliper to be dragged from any waveform plot.
+        for _plot, line in getattr(
+            self,
+            "caliper_start_lines",
+            [],
+        ):
+            line.setMovable(enabled)
+            line.setZValue(10000)
+
+        for _plot, line in getattr(
+            self,
+            "caliper_end_lines",
+            [],
+        ):
+            line.setMovable(enabled)
+            line.setZValue(10000)
+
+        if enabled:
+            self.caliper_result_label.setStyleSheet(
+                """
+                QLabel {
+                    color: #00274C;
+                    background-color: #FFF4CC;
+                    border: 2px solid #B8860B;
+                    border-radius: 3px;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                """
+            )
+        else:
+            self.caliper_result_label.setStyleSheet(
+                """
+                QLabel {
+                    color: #00274C;
+                    background-color: #F4F7FA;
+                    border: 1px solid #285680;
+                    border-radius: 3px;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                """
+            )
+
+        print(
+            "[CALIPERS] Adjust mode:",
+            enabled,
+            "| start lines:",
+            len(getattr(self, "caliper_start_lines", [])),
+            "| end lines:",
+            len(getattr(self, "caliper_end_lines", [])),
+        )
+
+        self.update_caliper_measurement_display()
+
+
+    def _safe_remove_caliper_item(self, plot, item):
+        """
+        Remove one caliper item without failing if the plot was already cleared.
+        """
+        if plot is None or item is None:
+            return
+
+        try:
+            plot.removeItem(item)
+        except Exception:
+            pass
+
+
+    def clear_caliper_graphics(self):
+        """
+        Remove all temporary caliper graphics from all waveform plots.
+        """
+        for plot, line in getattr(
+            self,
+            "caliper_start_lines",
+            [],
+        ):
+            self._safe_remove_caliper_item(plot, line)
+
+        for plot, line in getattr(
+            self,
+            "caliper_end_lines",
+            [],
+        ):
+            self._safe_remove_caliper_item(plot, line)
+
+        for plot, item in getattr(
+            self,
+            "caliper_peak_graphics",
+            [],
+        ):
+            self._safe_remove_caliper_item(plot, item)
+
+        for plot, item in getattr(
+            self,
+            "caliper_projection_graphics",
+            [],
+        ):
+            self._safe_remove_caliper_item(plot, item)
+
+        self.caliper_start_lines = []
+        self.caliper_end_lines = []
+        self.caliper_peak_graphics = []
+        self.caliper_projection_graphics = []
+
+
+    def clear_calipers(
+        self,
+        clear_measurement=True,
+        update_toggle=False,
+    ):
+        """
+        Remove caliper graphics and optionally clear all measurement state.
+        """
+        self.caliper_adjust_enabled = False
+
+        if hasattr(self, "caliper_adjust_btn"):
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(False)
+            self.caliper_adjust_btn.setText("Adjust OFF")
+            self.caliper_adjust_btn.setDisabled(True)
+            self.caliper_adjust_btn.blockSignals(False)
+
+        self.clear_caliper_graphics()
+
+        if clear_measurement:
+            self.caliper_start_time = None
+            self.caliper_end_time = None
+            self.caliper_detected_peak_times = np.array([])
+
+        self.calipers_enabled = False
+        self.caliper_projection_enabled = False
+
+        if hasattr(self, "caliper_projection_btn"):
+            self.caliper_projection_btn.blockSignals(True)
+            self.caliper_projection_btn.setChecked(False)
+            self.caliper_projection_btn.setText("Projection OFF")
+            self.caliper_projection_btn.setDisabled(True)
+            self.caliper_projection_btn.blockSignals(False)
+
+        if hasattr(self, "caliper_reset_btn"):
+            self.caliper_reset_btn.setDisabled(True)
+
+        if hasattr(self, "caliper_result_label"):
+            self.caliper_result_label.setText("Calipers: Off")
+
+        if update_toggle and hasattr(self, "caliper_toggle_btn"):
+            self.caliper_toggle_btn.blockSignals(True)
+            self.caliper_toggle_btn.setChecked(False)
+            self.caliper_toggle_btn.setText("OFF")
+            self.caliper_toggle_btn.blockSignals(False)
+
+
+    def get_centered_caliper_times(self):
+        """
+        Return initial caliper positions centered in the current visible X-range.
+        """
+        if not getattr(self, "waveform_plots", []):
+            return None, None
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            x_min = float(x_min)
+            x_max = float(x_max)
+        except Exception:
+            return None, None
+
+        if (
+            not np.isfinite(x_min)
+            or not np.isfinite(x_max)
+            or x_max <= x_min
+        ):
+            return None, None
+
+        visible_span = x_max - x_min
+        center = (x_min + x_max) / 2.0
+
+        separation = max(
+            visible_span * CALIPER_INITIAL_WINDOW_FRACTION,
+            CALIPER_MINIMUM_SEPARATION_SEC,
+        )
+
+        start_time = center - separation / 2.0
+        end_time = center + separation / 2.0
+
+        loaded_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        loaded_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        if loaded_start is not None:
+            start_time = max(
+                start_time,
+                float(loaded_start),
+            )
+
+        if loaded_end is not None:
+            end_time = min(
+                end_time,
+                float(loaded_end),
+            )
+
+        if end_time <= start_time:
+            return None, None
+
+        return start_time, end_time
+
+
+    def draw_caliper_lines(self):
+        """
+        Draw draggable caliper lines on the selected source plot and mirrored,
+        non-draggable lines on all other waveform plots.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._draw_caliper_lines_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "draw_caliper_lines",
+                elapsed,
+                source_plot=self.caliper_source_plot_idx,
+                plot_count=len(
+                    getattr(self, "waveform_plots", [])
+                ),
+            )
+
+
+    def _draw_caliper_lines_impl(self):
+        self.clear_caliper_graphics()
+
+        if not getattr(self, "calipers_enabled", False):
+            return
+
+        if self.caliper_source_plot_idx is None:
+            return
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            return
+
+        adjust_enabled = getattr(
+            self,
+            "caliper_adjust_enabled",
+            False,
+        )
+
+        start_pen = pg.mkPen(
+            CALIPER_START_COLOR,
+            width=3,
+        )
+        end_pen = pg.mkPen(
+            CALIPER_END_COLOR,
+            width=3,
+        )
+
+        for plot_idx, plot in enumerate(self.waveform_plots):
+            is_source_plot = (
+                plot_idx == self.caliper_source_plot_idx
+            )
+
+            # Make the source waveform visually distinct, but allow dragging
+            # from any waveform while Adjust mode is enabled.
+            if is_source_plot:
+                current_start_pen = start_pen
+                current_end_pen = end_pen
+            else:
+                current_start_pen = pg.mkPen(
+                    CALIPER_START_COLOR,
+                    width=2,
+                    style=QtCore.Qt.DashLine,
+                )
+                current_end_pen = pg.mkPen(
+                    CALIPER_END_COLOR,
+                    width=2,
+                    style=QtCore.Qt.DashLine,
+                )
+
+            start_line = pg.InfiniteLine(
+                pos=self.caliper_start_time,
+                angle=90,
+                movable=adjust_enabled,
+                pen=current_start_pen,
+                hoverPen=pg.mkPen(
+                    CALIPER_START_COLOR,
+                    width=6,
+                ),
+            )
+            start_line.is_caliper_item = True
+            start_line.caliper_role = "start"
+            start_line.caliper_plot_idx = plot_idx
+            start_line.setZValue(10000)
+
+            end_line = pg.InfiniteLine(
+                pos=self.caliper_end_time,
+                angle=90,
+                movable=adjust_enabled,
+                pen=current_end_pen,
+                hoverPen=pg.mkPen(
+                    CALIPER_END_COLOR,
+                    width=6,
+                ),
+            )
+            end_line.is_caliper_item = True
+            end_line.caliper_role = "end"
+            end_line.caliper_plot_idx = plot_idx
+            end_line.setZValue(10000)
+
+            plot.addItem(
+                start_line,
+                ignoreBounds=True,
+            )
+            plot.addItem(
+                end_line,
+                ignoreBounds=True,
+            )
+
+            self.caliper_start_lines.append(
+                (plot, start_line)
+            )
+            self.caliper_end_lines.append(
+                (plot, end_line)
+            )
+
+            # Every visible caliper line can be dragged while Adjust mode is on.
+            start_line.sigPositionChanged.connect(
+                lambda line, role="start":
+                    self.handle_caliper_line_moved(
+                        role,
+                        line,
+                    )
+            )
+
+            end_line.sigPositionChanged.connect(
+                lambda line, role="end":
+                    self.handle_caliper_line_moved(
+                        role,
+                        line,
+                    )
+            )
+
+            start_line.sigPositionChangeFinished.connect(
+                lambda line, role="start":
+                    self.handle_caliper_drag_finished(
+                        role,
+                        line,
+                    )
+            )
+
+            end_line.sigPositionChangeFinished.connect(
+                lambda line, role="end":
+                    self.handle_caliper_drag_finished(
+                        role,
+                        line,
+                    )
+            )
+
+
+    def handle_caliper_line_moved(self, role, moved_line):
+        """
+        Synchronize mirrored caliper lines while one source marker is dragged.
+        """
+        if self._caliper_sync_in_progress:
+            return
+
+        try:
+            position = float(moved_line.value())
+        except Exception:
+            return
+
+        if not np.isfinite(position):
+            return
+
+        loaded_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        loaded_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        if loaded_start is not None:
+            position = max(
+                position,
+                float(loaded_start),
+            )
+
+        if loaded_end is not None:
+            position = min(
+                position,
+                float(loaded_end),
+            )
+
+        if role == "start":
+            self.caliper_start_time = position
+            line_collection = self.caliper_start_lines
+        else:
+            self.caliper_end_time = position
+            line_collection = self.caliper_end_lines
+
+        self._caliper_sync_in_progress = True
+
+        try:
+            for _plot, line in line_collection:
+                if line is moved_line:
+                    continue
+
+                line.setValue(position)
+        finally:
+            self._caliper_sync_in_progress = False
+
+        self.update_caliper_measurement_display()
+
+
+    def handle_caliper_drag_finished(self, role, moved_line):
+        """
+        Finalize the current caliper positions after a drag operation.
+        """
+        start_time = perf_counter()
+
+        try:
+            self.handle_caliper_line_moved(
+                role,
+                moved_line,
+            )
+
+            self.update_caliper_measurement()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_caliper_drag_finished",
+                elapsed,
+                role=role,
+            )
+
+
+    def update_caliper_measurement_display(self):
+        """
+        Update the compact result label using the current marker positions.
+
+        Peak detection and rate calculation will be added in the next phase.
+        """
+        if not hasattr(self, "caliper_result_label"):
+            return
+
+        if not self.calipers_enabled:
+            self.caliper_result_label.setText("Calipers: Off")
+            return
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            self.caliper_result_label.setText(
+                "Calipers: Adjust markers"
+            )
+            return
+
+        start_time = min(
+            self.caliper_start_time,
+            self.caliper_end_time,
+        )
+        end_time = max(
+            self.caliper_start_time,
+            self.caliper_end_time,
+        )
+
+        duration = end_time - start_time
+
+        source_name = "Unknown"
+
+        if hasattr(self, "caliper_source_dropdown"):
+            source_name = (
+                self.caliper_source_dropdown.currentText()
+                or "Unknown"
+            )
+
+        self.caliper_result_label.setText(
+            f"Calipers: {source_name} | "
+            f"Selected {duration:.3f} s"
+        )
+
+        self.caliper_result_label.setToolTip(
+            f"Source waveform: {source_name}\n"
+            f"Start: {start_time:.6f}\n"
+            f"End: {end_time:.6f}\n"
+            f"Selected duration: {duration:.6f} seconds\n"
+            "Peak detection and rate calculation are not enabled yet."
+        )
+
+
+    def update_caliper_measurement(self):
+        """
+        Timed wrapper around caliper measurement updates.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._update_caliper_measurement_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "update_caliper_measurement",
+                elapsed,
+                source_plot=self.caliper_source_plot_idx,
+            )
+
+
+    def _update_caliper_measurement_impl(self):
+        self.caliper_detected_peak_times = np.array([])
+
+        self.update_caliper_measurement_display()
+
+
+    def toggle_calipers(self, enabled):
+        """
+        Timed wrapper around enabling or disabling calipers.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_calipers_impl(enabled)
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_calipers",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_calipers_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if enabled:
+            if (
+                not hasattr(self, "caliper_source_dropdown")
+                or self.caliper_source_dropdown.count() == 0
+            ):
+                self.calipers_enabled = False
+                self.caliper_adjust_enabled = False
+
+                self.caliper_toggle_btn.blockSignals(True)
+                self.caliper_toggle_btn.setChecked(False)
+                self.caliper_toggle_btn.setText("OFF")
+                self.caliper_toggle_btn.blockSignals(False)
+
+                self.caliper_adjust_btn.blockSignals(True)
+                self.caliper_adjust_btn.setChecked(False)
+                self.caliper_adjust_btn.setText("Adjust OFF")
+                self.caliper_adjust_btn.setEnabled(False)
+                self.caliper_adjust_btn.blockSignals(False)
+
+                self.caliper_result_label.setText(
+                    "Calipers: No eligible waveform"
+                )
+                return
+
+            self.calipers_enabled = True
+            self.caliper_adjust_enabled = False
+
+            self.caliper_toggle_btn.setText("ON")
+            self.caliper_source_dropdown.setEnabled(True)
+            self.caliper_reset_btn.setEnabled(True)
+
+            self.caliper_source_plot_idx = (
+                self.caliper_source_dropdown.currentData()
+            )
+
+            # Reset and draw the calipers first.
+            self.reset_calipers()
+
+            # Enable Adjust after reset, because cleanup/reset methods may
+            # temporarily disable it.
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(False)
+            self.caliper_adjust_btn.setText("Adjust OFF")
+            self.caliper_adjust_btn.setEnabled(True)
+            self.caliper_adjust_btn.blockSignals(False)
+
+        else:
+            self.clear_calipers(
+                clear_measurement=True,
+                update_toggle=False,
+            )
+
+            self.caliper_toggle_btn.setText("OFF")
+
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(False)
+            self.caliper_adjust_btn.setText("Adjust OFF")
+            self.caliper_adjust_btn.setEnabled(False)
+            self.caliper_adjust_btn.blockSignals(False)
+
+            if self.caliper_source_dropdown.count() > 0:
+                self.caliper_source_dropdown.setEnabled(True)
+
+    def reset_calipers(self):
+        """
+        Timed wrapper around recentering the caliper markers.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._reset_calipers_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "reset_calipers",
+                elapsed,
+                enabled=self.calipers_enabled,
+            )
+
+
+    def _reset_calipers_impl(self):
+        if not self.calipers_enabled:
+            return
+
+        start_time, end_time = self.get_centered_caliper_times()
+
+        if start_time is None or end_time is None:
+            self.caliper_result_label.setText(
+                "Calipers: No valid waveform range"
+            )
+            return
+
+        self.caliper_start_time = start_time
+        self.caliper_end_time = end_time
+        self.caliper_detected_peak_times = np.array([])
+
+        self.draw_caliper_lines()
+        self.update_caliper_measurement()
+
+
+    def handle_caliper_source_changed(self, dropdown_index):
+        """
+        Timed wrapper around changing the caliper source waveform.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._handle_caliper_source_changed_impl(
+                dropdown_index
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_caliper_source_changed",
+                elapsed,
+                dropdown_index=dropdown_index,
+                source_plot=self.caliper_source_plot_idx,
+            )
+
+
+    def _handle_caliper_source_changed_impl(
+        self,
+        dropdown_index,
+    ):
+        if dropdown_index < 0:
+            self.caliper_source_plot_idx = None
+            return
+
+        plot_idx = self.caliper_source_dropdown.itemData(
+            dropdown_index
+        )
+
+        if plot_idx is None:
+            self.caliper_source_plot_idx = None
+            return
+
+        self.caliper_source_plot_idx = int(plot_idx)
+
+        if self.calipers_enabled:
+            self.draw_caliper_lines()
+            self.update_caliper_measurement()
+
+
+    def toggle_caliper_projection(self, enabled):
+        """
+        Timed wrapper around the projection visibility setting.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_caliper_projection_impl(enabled)
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_caliper_projection",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_caliper_projection_impl(self, enabled):
+        self.caliper_projection_enabled = bool(enabled)
+
+        if self.caliper_projection_enabled:
+            self.caliper_projection_btn.setText(
+                "Projection ON"
+            )
+        else:
+            self.caliper_projection_btn.setText(
+                "Projection OFF"
+            )
+
+        # Projection graphics are implemented in a later phase.
+
     # ------------------------------------------------------------------
     # Event Labels
     # ------------------------------------------------------------------
@@ -2724,6 +3659,18 @@ class AnnotationAppCallbacks:
             self.data_store = {}
             return
 
+        # Clear temporary caliper state before replacing waveform plots.
+        self.clear_calipers(
+            clear_measurement=True,
+            update_toggle=True,
+        )
+
+        if hasattr(self, "caliper_source_dropdown"):
+            self.caliper_source_dropdown.blockSignals(True)
+            self.caliper_source_dropdown.clear()
+            self.caliper_source_dropdown.setDisabled(True)
+            self.caliper_source_dropdown.blockSignals(False)
+
         subject_name = record.get("subject", "")
         encounter_name = record.get("encounter", "")
         h5_path = record.get("h5_path", "")
@@ -2985,6 +3932,8 @@ class AnnotationAppCallbacks:
         
         self.plot_all_leads()
 
+        self.populate_caliper_source_dropdown()
+
         self.schedule_visible_y_autoscale()
 
         self.update_waveform_and_mark()
@@ -3189,9 +4138,18 @@ class AnnotationAppCallbacks:
             if mouse_event.button() != Qt.LeftButton:
                 return
 
+            # While the user is adjusting the calipers, ordinary plot clicks must not
+            # create or move annotation endpoints.
+            if (
+                getattr(self, "calipers_enabled", False)
+                and getattr(self, "caliper_adjust_enabled", False)
+            ):
+                return
+
             if getattr(self, "waveform_complete", False):
                 self.mark_warning.setText(
-                    "Waveform annotation is complete. Remove the last mark if you need to revise it."
+                    "Waveform annotation is complete. Remove the last mark "
+                    "if you need to revise it."
                 )
                 self.mark_warning.setStyleSheet(
                     "font-size:13px; font-weight:bold; color:#199E40;"
@@ -3368,6 +4326,7 @@ class AnnotationAppCallbacks:
         elif hasattr(self.username_input, "text"):
             return self.username_input.text().strip()
         return ""
+
     
     def get_selected_subject_record(self):
         """
@@ -3515,8 +4474,30 @@ class AnnotationAppCallbacks:
                         items_to_remove.append(item)
 
                 elif isinstance(item, pg.InfiniteLine):
-                    if getattr(item, "is_marker", False) and not getattr(item, "is_event_marker", False):
+                    # Adding check for Calipers
+                    is_annotation_marker = getattr(
+                        item,
+                        "is_marker",
+                        False,
+                    )
+                    is_event_marker = getattr(
+                        item,
+                        "is_event_marker",
+                        False,
+                    )
+                    is_caliper_item = getattr(
+                        item,
+                        "is_caliper_item",
+                        False,
+                    )
+
+                    if (
+                        is_annotation_marker
+                        and not is_event_marker
+                        and not is_caliper_item
+                    ):
                         items_to_remove.append(item)
+
             for itm in items_to_remove:
                 plot.removeItem(itm)
 

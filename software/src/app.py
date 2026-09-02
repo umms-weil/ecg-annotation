@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import pyqtgraph as pg
 from callbacks import AnnotationAppCallbacks
 import pyqtgraph as pg
+import numpy as np
 
 UM_MAIZE = "#FFCB05"
 UM_BLUE = "#00274C"
@@ -134,6 +135,24 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.waveform_complete = False
         self.terminal_event_status = ""
         self.terminal_event_comment = ""
+
+        # ---- Caliper state ----
+        self.calipers_enabled = False
+        self.caliper_adjust_enabled = False
+        self.caliper_projection_enabled = False
+
+        self.caliper_source_plot_idx = None
+        self.caliper_start_time = None
+        self.caliper_end_time = None
+
+        self.caliper_start_lines = []
+        self.caliper_end_lines = []
+
+        self.caliper_detected_peak_times = np.array([])
+        self.caliper_peak_graphics = []
+        self.caliper_projection_graphics = []
+
+        self._caliper_sync_in_progress = False
 
         font_css = f"font-size:13px; color:{UM_BLUE}; background:white; border:2px solid black;"
 
@@ -502,13 +521,187 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
         main_layout.addLayout(folderrow)
 
+        # ---- Caliper controls ----
+        caliperrow = QHBoxLayout()
+        caliperrow.setContentsMargins(0, 0, 0, 0)
+        caliperrow.setSpacing(4)
+
+        caliper_label = QLabel("Calipers:")
+        caliper_label.setStyleSheet(
+            f"font-size:12px; color:{UM_ACCENT}; font-weight:bold;"
+        )
+        caliperrow.addWidget(caliper_label)
+
+        self.caliper_toggle_btn = QPushButton("OFF")
+        self.caliper_toggle_btn.setCheckable(True)
+        self.caliper_toggle_btn.setChecked(False)
+        self.caliper_toggle_btn.setToolTip(
+            "Show or hide temporary waveform calipers. "
+            "Turning calipers on resets them to the center of the visible window."
+        )
+        self.caliper_toggle_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:#666666;
+                color:#FFFFFF;
+                font-size:12px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:checked {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_toggle_btn)
+
+        self.caliper_adjust_btn = QPushButton("Adjust OFF")
+        self.caliper_adjust_btn.setCheckable(True)
+        self.caliper_adjust_btn.setChecked(False)
+        self.caliper_adjust_btn.setDisabled(True)
+        self.caliper_adjust_btn.setToolTip(
+            "Turn Adjust on before dragging the caliper markers. "
+            "Annotation clicks are temporarily disabled while Adjust is on."
+        )
+        self.caliper_adjust_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:#666666;
+                color:#FFFFFF;
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:checked {{
+                background:#B8860B;
+                color:#FFFFFF;
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_adjust_btn)
+
+        source_label = QLabel("Source:")
+        source_label.setStyleSheet(
+            f"font-size:12px; color:{UM_ACCENT}; font-weight:bold;"
+        )
+        caliperrow.addWidget(source_label)
+
+        self.caliper_source_dropdown = QComboBox()
+        self.caliper_source_dropdown.setMinimumWidth(110)
+        self.caliper_source_dropdown.setMaximumWidth(150)
+        self.caliper_source_dropdown.setDisabled(True)
+        self.caliper_source_dropdown.setToolTip(
+            "Select the waveform used for caliper measurement and peak detection."
+        )
+        self.caliper_source_dropdown.setStyleSheet(
+            f"""
+            QComboBox {{
+                font-size:12px;
+                color:{UM_BLUE};
+                background:#FFFFFF;
+                border:1px solid {UM_ACCENT};
+                border-radius:3px;
+                padding:2px;
+            }}
+            QComboBox:disabled {{
+                color:#888888;
+                background:#F2F2F2;
+                border:1px solid #CCCCCC;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_source_dropdown)
+
+        self.caliper_projection_btn = QPushButton("Projection OFF")
+        self.caliper_projection_btn.setCheckable(True)
+        self.caliper_projection_btn.setChecked(False)
+        self.caliper_projection_btn.setDisabled(True)
+        self.caliper_projection_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:#666666;
+                color:#FFFFFF;
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:checked {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_projection_btn)
+
+        self.caliper_reset_btn = QPushButton("Reset")
+        self.caliper_reset_btn.setDisabled(True)
+        self.caliper_reset_btn.setToolTip(
+            "Move both calipers to the center of the current visible window."
+        )
+        self.caliper_reset_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_reset_btn)
+
+        self.caliper_result_label = QLabel("Calipers: Off")
+        self.caliper_result_label.setMinimumWidth(180)
+        self.caliper_result_label.setMaximumWidth(320)
+        self.caliper_result_label.setWordWrap(False)
+        self.caliper_result_label.setSizePolicy(
+            QSizePolicy.Preferred,
+            QSizePolicy.Fixed,
+        )
+        self.caliper_result_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color:{UM_BLUE};
+                background-color:#F4F7FA;
+                border:1px solid {UM_ACCENT};
+                border-radius:3px;
+                padding:3px 6px;
+                font-size:11px;
+                font-weight:bold;
+            }}
+            """
+        )
+        self.caliper_result_label.setToolTip(
+            "Temporary caliper measurement. Caliper measurements are not saved."
+        )
+        caliperrow.addWidget(self.caliper_result_label)
+
+        caliperrow.addStretch(1)
+
+        main_layout.addLayout(caliperrow)
+
         # -- Folder status label --
         self.folder_status = QLabel("")
         self.folder_status.setStyleSheet(f"font-size:12px; color:{UM_BLUE}; margin-top:0px; margin-bottom:0px; font-weight:bold;")
         main_layout.addWidget(self.folder_status)
-
-
-
 
         # ---- Waveform plots State Variable ----
         self.waveform_plots = []
@@ -706,9 +899,21 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         main_layout.setContentsMargins(4, 4, 4, 4)
 
         # -- SIGNALS wiring - same as before
+        # Folder setting
         self.set_folder_btn.clicked.connect(self.set_base_folder)
         self.browse_folder_btn.clicked.connect(self.browse_base_folder)
+
+        # Event Labels
         self.toggle_event_labels_btn.clicked.connect(self.toggle_event_labels_visibility)
+
+        # Calipers
+        self.caliper_toggle_btn.toggled.connect(self.toggle_calipers)
+        self.caliper_adjust_btn.toggled.connect(self.toggle_caliper_adjust_mode)
+        self.caliper_source_dropdown.currentIndexChanged.connect(self.handle_caliper_source_changed)
+        self.caliper_projection_btn.toggled.connect(self.toggle_caliper_projection)
+        self.caliper_reset_btn.clicked.connect(self.reset_calipers)
+
+        # UI sidebar
         self.username_input.currentTextChanged.connect(self.handle_user_changed)
         self.load_subject_btn.clicked.connect(self.load_subject_data)
         self.load_annotation_btn.clicked.connect(self.handle_load_annotation)
