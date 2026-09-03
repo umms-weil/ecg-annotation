@@ -36,9 +36,11 @@ Quick Start
    :maxdepth: 1
    :caption: User Manual Pages
 
+   Connect to Network <connect_to_network>
    Getting Started <getting_started>
    Annotation Workflow <annotation_workflow>
    Interface Guide <interface_guide>
+   Waveform Calipers <calipers>
    Saving and Resuming <saving_and_resuming>
    Completion and Finalization <completion_and_finalization>
    Walkthrough Videos <walkthrough_videos>

@@ -66,7 +66,7 @@ DEFAULT_COLOR = "LightGray"
 # Performance diagnostics Configurable
 # ---------------------------------------------------------------------------
 
-PERF_DIAGNOSTICS_ENABLED = True
+PERF_DIAGNOSTICS_ENABLED = False
 
 # ---------------------------------------------------------------------------
 # Caliper configuration
@@ -84,6 +84,8 @@ CALIPER_CALCULATION_WAVEFORMS = [
 
 CALIPER_START_COLOR = (0, 102, 204)
 CALIPER_END_COLOR = (204, 51, 51)
+CALIPER_LINE_WIDTH = 4
+CALIPER_LINE_WIDTH_HOVER = 8
 
 CALIPER_INITIAL_WINDOW_FRACTION = 0.15
 CALIPER_MINIMUM_SEPARATION_SEC = 0.1
@@ -136,7 +138,7 @@ CALIPER_PEAK_DOT_SIZE = 9
 
 # Caliper Projections
 CALIPER_PROJECTION_COLOR = (25, 85, 145, 210)
-CALIPER_PROJECTION_LINE_WIDTH = 2
+CALIPER_PROJECTION_LINE_WIDTH = 4
 CALIPER_PROJECTION_MAX_VISIBLE_MARKERS = 200
 CALIPER_PROJECTION_VIEW_BUFFER_INTERVALS = 1
 CALIPER_PROJECTION_DEBOUNCE_MS = 40
@@ -2082,11 +2084,11 @@ class AnnotationAppCallbacks:
 
         start_pen = pg.mkPen(
             CALIPER_START_COLOR,
-            width=3,
+            width=CALIPER_LINE_WIDTH,
         )
         end_pen = pg.mkPen(
             CALIPER_END_COLOR,
-            width=3,
+            width=CALIPER_LINE_WIDTH,
         )
 
         for plot_idx, plot in enumerate(self.waveform_plots):
@@ -2102,12 +2104,12 @@ class AnnotationAppCallbacks:
             else:
                 current_start_pen = pg.mkPen(
                     CALIPER_START_COLOR,
-                    width=2,
+                    width=CALIPER_LINE_WIDTH,
                     style=QtCore.Qt.DashLine,
                 )
                 current_end_pen = pg.mkPen(
                     CALIPER_END_COLOR,
-                    width=2,
+                    width=CALIPER_LINE_WIDTH,
                     style=QtCore.Qt.DashLine,
                 )
 
@@ -2118,7 +2120,7 @@ class AnnotationAppCallbacks:
                 pen=current_start_pen,
                 hoverPen=pg.mkPen(
                     CALIPER_START_COLOR,
-                    width=6,
+                    width=CALIPER_LINE_WIDTH_HOVER,
                 ),
             )
             start_line.is_caliper_item = True
@@ -2133,7 +2135,7 @@ class AnnotationAppCallbacks:
                 pen=current_end_pen,
                 hoverPen=pg.mkPen(
                     CALIPER_END_COLOR,
-                    width=6,
+                    width=CALIPER_LINE_WIDTH_HOVER,
                 ),
             )
             end_line.is_caliper_item = True
