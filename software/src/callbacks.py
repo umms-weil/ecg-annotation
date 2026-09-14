@@ -17,6 +17,18 @@ from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 import pyqtgraph as pg
+try:
+    from scipy.signal import butter, detrend, find_peaks, sosfiltfilt
+    SCIPY_SIGNAL_AVAILABLE = True
+except ImportError:
+    butter = None
+    detrend = None
+    find_peaks = None
+    sosfiltfilt = None
+    SCIPY_SIGNAL_AVAILABLE = False
+
+# Testing performance import
+from time import perf_counter
 
 UM_MAIZE = "#FFCB05"
 UM_BLUE = "#00274C"
@@ -25,22 +37,17 @@ UM_WHITE = "#FFFFFF"
 UM_RED = "#D50032"
 COMPLETION_GREEN = "#199E40"
 
-# WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
+
+# ---------------------------------------------------------------------------
+# Waveforms Present
+# ---------------------------------------------------------------------------
+
 WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
 
-# LABEL_COLORS = {
-#     "Normal Heart Rhythm": "LightGreen",
-#     "Sinus tachycardia": "LightBlue",
-#     "Bradycardia": "Khaki",
-#     "Supraventricular tachycardia": "Tomato",
-#     "Atrial Flutter": "Lavender",
-#     "Atrial Fibrillation": "SlateGray",
-#     "Ventricular Tachycardia": "Orange",
-#     "Ventricular Fibrillation": "Red",
-#     "Atrial Pacing Rhythm": "Gold",
-#     "Ventricular Pacing Rhythm": "Teal",
-#     "Idioventricular Rhythm": "Purple"
-# }
+# ---------------------------------------------------------------------------
+# Color Assignment
+# ---------------------------------------------------------------------------
+
 LABEL_COLORS = {
     "Normal Heart Rhythm": (0, 158, 96, 60),
     "Sinus tachycardia": (255, 128, 0, 60),
@@ -55,6 +62,89 @@ LABEL_COLORS = {
 }
 DEFAULT_COLOR = "LightGray"
 
+# ---------------------------------------------------------------------------
+# Performance diagnostics Configurable
+# ---------------------------------------------------------------------------
+
+PERF_DIAGNOSTICS_ENABLED = False
+
+# ---------------------------------------------------------------------------
+# Caliper configuration
+# ---------------------------------------------------------------------------
+
+# Creation of Calipers
+CALIPER_CALCULATION_WAVEFORMS = [
+    "I",
+    "II",
+    "III",
+    "V",
+    "AVF",
+    "AVL",
+]
+
+CALIPER_START_COLOR = (0, 102, 204)
+CALIPER_END_COLOR = (204, 51, 51)
+CALIPER_LINE_WIDTH = 4
+CALIPER_LINE_WIDTH_HOVER = 8
+
+CALIPER_INITIAL_WINDOW_FRACTION = 0.15
+CALIPER_MINIMUM_SEPARATION_SEC = 0.1
+
+CALIPER_DETECTOR_SETTINGS = {
+    "I": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "II": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "III": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "V": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "AVF": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+    "AVL": {
+        "detector": "ecg",
+        "rate_unit": "BPM",
+        "minimum_rate": 0.0,
+        "maximum_rate": 300.0,
+    },
+}
+
+CALIPER_MINIMUM_SELECTION_SEC = 0.25
+CALIPER_ECG_BANDPASS_LOW_HZ = 3.0
+CALIPER_ECG_BANDPASS_HIGH_HZ = 30.0
+CALIPER_ECG_INTEGRATION_WINDOW_SEC = 0.08
+CALIPER_ECG_REFINEMENT_WINDOW_SEC = 0.08
+CALIPER_PEAK_DOT_SIZE = 9
+
+# Caliper Projections
+CALIPER_PROJECTION_COLOR = (25, 85, 145, 210)
+CALIPER_PROJECTION_LINE_WIDTH = 4
+CALIPER_PROJECTION_MAX_VISIBLE_MARKERS = 200
+CALIPER_PROJECTION_VIEW_BUFFER_INTERVALS = 1
+CALIPER_PROJECTION_DEBOUNCE_MS = 40
+
+# ---------------------------------------------------------------------------
+
 class RelativeAxis(pg.AxisItem):
     def __init__(self, t0, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -65,73 +155,497 @@ class RelativeAxis(pg.AxisItem):
         return [f"{v - self.t0:.1f}" for v in values]
 
 class AnnotationAppCallbacks:
+
+    # ---------------------------------------------------------------------------
+    # Performance diagnostics Functionality (Private)
+    # ---------------------------------------------------------------------------
+
+    def _perf_log(self, operation, elapsed_seconds, **details):
+        """
+        Print a standardized performance diagnostic line.
+        """
+        if not PERF_DIAGNOSTICS_ENABLED:
+            return
+
+        detail_text = " ".join(
+            f"{key}={value}"
+            for key, value in details.items()
+        )
+
+        if detail_text:
+            detail_text = f" | {detail_text}"
+
+        print(
+            f"[PERF] {operation}: "
+            f"{elapsed_seconds:.4f} sec"
+            f"{detail_text}"
+        )
+
+
+    def _format_bytes(self, byte_count):
+        """
+        Convert a byte count into a readable string.
+        """
+        try:
+            value = float(byte_count)
+        except (TypeError, ValueError):
+            return "unknown"
+
+        units = ["B", "KB", "MB", "GB", "TB"]
+
+        for unit in units:
+            if value < 1024.0 or unit == units[-1]:
+                return f"{value:.2f} {unit}"
+
+            value /= 1024.0
+
+        return f"{value:.2f} TB"
+
+
+    def _get_array_nbytes(self, value):
+        """
+        Return NumPy storage size for an array-like value.
+        """
+        if value is None:
+            return 0
+
+        try:
+            return int(np.asarray(value).nbytes)
+        except Exception:
+            return 0
+
+
+    def _print_waveform_memory_summary(self):
+        """
+        Print point counts and approximate NumPy memory usage for loaded waveforms.
+        """
+        if not PERF_DIAGNOSTICS_ENABLED:
+            return
+
+        time_axis = getattr(self, "time_axis", None)
+        leads = getattr(self, "leads_ds", None) or []
+        lead_names = getattr(self, "lead_names", None) or []
+        time_axes_by_lead = getattr(self, "time_axes_by_lead", None) or []
+
+        time_points = 0
+        time_bytes = 0
+
+        if time_axis is not None:
+            try:
+                time_points = len(time_axis)
+            except Exception:
+                time_points = 0
+
+            time_bytes = self._get_array_nbytes(time_axis)
+
+        total_lead_points = 0
+        total_lead_bytes = 0
+
+        print("[PERF] ----- Loaded waveform summary -----")
+        print(
+            f"[PERF] Global time axis: "
+            f"points={time_points} "
+            f"memory={self._format_bytes(time_bytes)}"
+        )
+
+        for index, lead in enumerate(leads):
+            name = (
+                lead_names[index]
+                if index < len(lead_names)
+                else f"Signal {index + 1}"
+            )
+
+            if lead is None:
+                lead_points = 0
+                lead_bytes = 0
+            else:
+                try:
+                    lead_points = len(lead)
+                except Exception:
+                    lead_points = 0
+
+                lead_bytes = self._get_array_nbytes(lead)
+
+            total_lead_points += lead_points
+            total_lead_bytes += lead_bytes
+
+            if index < len(time_axes_by_lead):
+                lead_time_axis = time_axes_by_lead[index]
+
+                try:
+                    lead_time_points = len(lead_time_axis)
+                except Exception:
+                    lead_time_points = 0
+            else:
+                lead_time_points = time_points
+
+            print(
+                f"[PERF] Lead {index}: "
+                f"name={name} "
+                f"signal_points={lead_points} "
+                f"time_points={lead_time_points} "
+                f"memory={self._format_bytes(lead_bytes)}"
+            )
+
+        numpy_total = time_bytes + total_lead_bytes
+
+        print(
+            f"[PERF] Waveform totals: "
+            f"lead_points={total_lead_points} "
+            f"lead_memory={self._format_bytes(total_lead_bytes)} "
+            f"time_plus_leads={self._format_bytes(numpy_total)}"
+        )
+
+        data_store = getattr(self, "data_store", {})
+
+        if isinstance(data_store, dict):
+            stored_time = data_store.get("time")
+            stored_leads = data_store.get("leads")
+
+            print(
+                f"[PERF] data_store waveform copy: "
+                f"time_type={type(stored_time).__name__} "
+                f"leads_type={type(stored_leads).__name__}"
+            )
+
+            if isinstance(stored_time, list):
+                print(
+                    f"[PERF] WARNING: data_store['time'] is a Python list "
+                    f"containing {len(stored_time)} values."
+                )
+
+            if isinstance(stored_leads, list):
+                stored_lead_values = 0
+
+                for lead in stored_leads:
+                    if isinstance(lead, list):
+                        stored_lead_values += len(lead)
+
+                print(
+                    f"[PERF] WARNING: data_store['leads'] contains "
+                    f"{stored_lead_values} Python-list values."
+                )
+
+        print("[PERF] -----------------------------------")
+
+
+    def _get_plot_item_counts(self):
+        """
+        Return counts of graphics items currently attached to waveform plots.
+        """
+        counts = {
+            "total": 0,
+            "data_items": 0,
+            "regions": 0,
+            "text_items": 0,
+            "infinite_lines": 0,
+        }
+
+        for plot in getattr(self, "waveform_plots", []):
+            try:
+                items = list(plot.items())
+            except Exception:
+                continue
+
+            counts["total"] += len(items)
+
+            for item in items:
+                if isinstance(item, pg.PlotDataItem):
+                    counts["data_items"] += 1
+                elif isinstance(item, pg.LinearRegionItem):
+                    counts["regions"] += 1
+                elif isinstance(item, pg.TextItem):
+                    counts["text_items"] += 1
+                elif isinstance(item, pg.InfiniteLine):
+                    counts["infinite_lines"] += 1
+
+        return counts
+
+
+    def _print_plot_performance_summary(self):
+        """
+        Print graphics counts and PyQtGraph optimization state.
+        """
+        if not PERF_DIAGNOSTICS_ENABLED:
+            return
+
+        counts = self._get_plot_item_counts()
+
+        print(
+            "[PERF] Plot graphics: "
+            f"total={counts['total']} "
+            f"curves={counts['data_items']} "
+            f"regions={counts['regions']} "
+            f"text={counts['text_items']} "
+            f"lines={counts['infinite_lines']}"
+        )
+
+        for plot_index, plot in enumerate(
+            getattr(self, "waveform_plots", [])
+        ):
+            try:
+                data_items = plot.listDataItems()
+            except Exception:
+                data_items = []
+
+            for curve_index, curve in enumerate(data_items):
+                opts = getattr(curve, "opts", {})
+
+                print(
+                    f"[PERF] Plot {plot_index} curve {curve_index}: "
+                    f"clipToView={opts.get('clipToView', 'unknown')} "
+                    f"autoDownsample={opts.get('autoDownsample', 'unknown')} "
+                    f"downsample={opts.get('downsample', 'unknown')} "
+                    f"downsampleMethod={opts.get('downsampleMethod', 'unknown')}"
+                )
+
+    # ---------------------------------------------------------------------------
+
+
     def set_base_folder(self):
         folder_path = self.folder_input.text().strip().strip('"').strip("'")
         folder_path = os.path.normpath(folder_path)
+
         print("SET FOLDER CLICKED", folder_path)
+
         if not folder_path or not os.path.isdir(folder_path):
             self.base_folder = ""
             self.folder_status.setText("❌ Invalid folder.")
             return
+
+        previous_base_folder = getattr(self, "base_folder", "")
         self.base_folder = folder_path
-        self.folder_status.setText(f"📂 Base folder set: {folder_path}")
-        self.update_subject_dropdown()
+
+        self.folder_status.setText(
+            f"📂 Base folder set: {folder_path}"
+        )
+
+        # Invalidate cached discovery records only when the selected base folder
+        # changes. Clicking Set Folder again forces a fresh discovery scan.
+        if (
+            previous_base_folder != folder_path
+            or getattr(self, "_waveform_cache_base_folder", None) != folder_path
+        ):
+            self._waveform_record_cache = []
+            self._waveform_cache_base_folder = None
+
+        self.update_subject_dropdown(force_full_scan=True)
+
+    # ------------------------------------------------------------------
+    # Subject Search and Dropdown Population
+    # ------------------------------------------------------------------
+
+    def update_subject_dropdown(self, force_full_scan=False):
+        """
+        Timed wrapper around cached subject discovery, annotation-status checks,
+        and dropdown reconstruction.
+
+        Parameters
+        ----------
+        force_full_scan : bool
+            If True, rediscover waveform records from the base folder.
+            If False, reuse the in-memory waveform-record cache when available.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._update_subject_dropdown_impl(
+                force_full_scan=force_full_scan,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            base_folder = getattr(self, "base_folder", "")
+            user_name = self.get_user_name()
+
+            try:
+                record_count = self.subject_dropdown.count()
+            except Exception:
+                record_count = "unknown"
+
+            cache_available = bool(
+                getattr(self, "_waveform_record_cache", [])
+            )
+
+            self._perf_log(
+                "update_subject_dropdown",
+                elapsed,
+                records=record_count,
+                user=user_name,
+                force_full_scan=force_full_scan,
+                cache_available=cache_available,
+                base_folder=base_folder,
+            )
 
 
-    def update_subject_dropdown(self):
+    def _update_subject_dropdown_impl(self, force_full_scan=False):
+        """
+        Populate the subject dropdown using cached waveform discovery records.
+
+        Static waveform discovery is performed only when:
+
+        - a base folder is first selected,
+        - a different base folder is selected,
+        - force_full_scan is True.
+
+        Annotation status is checked separately for the active user.
+        """
         base_folder = getattr(self, "base_folder", None)
         combo = self.subject_dropdown
 
-        combo.clear()
-        combo.setDisabled(True)
-
         if not base_folder or not os.path.isdir(base_folder):
+            combo.clear()
+            combo.setDisabled(True)
             return
 
-        # IMPORTANT: get the active user directly from the widget.
         user_name = self.get_user_name()
 
         if user_name is not None:
             user_name = str(user_name).strip()
+        else:
+            user_name = ""
 
-        # Keep self.user_name synchronized for any other code that uses it.
         self.user_name = user_name
 
-        subjects = list_subjects(base_folder, user_name=user_name)
+        normalized_base_folder = os.path.normcase(
+            os.path.abspath(base_folder)
+        )
 
-        print(f"FOUND {len(subjects)} waveform records")
-        print(f"COMPLETION USER: {user_name}")
+        cached_base_folder = getattr(
+            self,
+            "_waveform_cache_base_folder",
+            None,
+        )
 
-        for s in subjects[:5]:
-            print("SUBJECT RECORD:", s)
+        cache_valid = (
+            bool(getattr(self, "_waveform_record_cache", []))
+            and cached_base_folder == normalized_base_folder
+        )
 
+        # Preserve the selected waveform record while rebuilding labels.
+        old_record = self.get_selected_subject_record()
+        old_key = self.get_record_refresh_key(old_record)
 
-        for subj in subjects:
-            total_annotations = subj.get("n_annotations", 0)
-            complete_annotations = subj.get("n_complete_annotations", 0)
+        # --------------------------------------------------------------
+        # Full waveform discovery
+        # --------------------------------------------------------------
+        if force_full_scan or not cache_valid:
+            discovery_start = perf_counter()
 
-            if total_annotations == 0:
-                icon = "⭕"
-            elif complete_annotations == total_annotations:
-                icon = "✅"
-            else:
-                icon = "🟡"
-
-            label = (
-                f"{icon} {subj['name']} "
-                f"({complete_annotations}/{total_annotations} complete)"
+            discovered_records = list_subjects(
+                base_folder,
+                user_name=user_name,
             )
 
-            combo.addItem(label, userData=subj)
+            discovery_elapsed = perf_counter() - discovery_start
 
-            idx = combo.count() - 1
+            # Store independent dictionaries in the session cache.
+            self._waveform_record_cache = [
+                dict(record)
+                for record in discovered_records
+                if isinstance(record, dict)
+            ]
 
-            if subj.get("kind") == "h5":
-                combo.setItemData(idx, subj.get("h5_path", ""), Qt.ToolTipRole)
-            elif subj.get("kind") == "csv":
-                combo.setItemData(idx, subj.get("csv_path", ""), Qt.ToolTipRole)
+            self._waveform_cache_base_folder = normalized_base_folder
 
-        combo.setDisabled(False)
+            self._perf_log(
+                "discover_waveform_records",
+                discovery_elapsed,
+                records=len(self._waveform_record_cache),
+                base_folder=base_folder,
+            )
+        else:
+            self._perf_log(
+                "discover_waveform_records CACHE_HIT",
+                0.0,
+                records=len(self._waveform_record_cache),
+                base_folder=base_folder,
+            )
+
+        # --------------------------------------------------------------
+        # Refresh only user-specific annotation status.
+        # This does not rediscover or reopen waveform files.
+        # --------------------------------------------------------------
+        annotation_status_start = perf_counter()
+
+        if user_name:
+            for record in self._waveform_record_cache:
+                self.refresh_record_annotation_status(
+                    record,
+                    user_name=user_name,
+                )
+        else:
+            for record in self._waveform_record_cache:
+                record["n_annotations"] = 0
+                record["n_complete_annotations"] = 0
+                record["has_annotations"] = False
+
+        annotation_status_elapsed = (
+            perf_counter() - annotation_status_start
+        )
+
+        self._perf_log(
+            "refresh_annotation_status_all_records",
+            annotation_status_elapsed,
+            records=len(self._waveform_record_cache),
+            user=user_name,
+        )
+
+        # --------------------------------------------------------------
+        # Populate dropdown from cached records.
+        # --------------------------------------------------------------
+        populate_start = perf_counter()
+
+        combo.blockSignals(True)
+        combo.clear()
+        combo.setDisabled(True)
+
+        selected_index = -1
+
+        for record in self._waveform_record_cache:
+            label = self.get_subject_dropdown_label(record)
+
+            combo.addItem(
+                label,
+                userData=record,
+            )
+
+            index = combo.count() - 1
+            record_key = self.get_record_refresh_key(record)
+
+            if old_key and record_key == old_key:
+                selected_index = index
+
+            tooltip = self.get_record_tooltip(record)
+
+            if tooltip:
+                combo.setItemData(
+                    index,
+                    tooltip,
+                    Qt.ToolTipRole,
+                )
+
+        if selected_index >= 0:
+            combo.setCurrentIndex(selected_index)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(0)
+
+        combo.setDisabled(combo.count() == 0)
+        combo.blockSignals(False)
+
+        populate_elapsed = perf_counter() - populate_start
+
+        self._perf_log(
+            "populate_subject_dropdown_from_cache",
+            populate_elapsed,
+            records=combo.count(),
+        )
+
+        print(f"FOUND {combo.count()} waveform records")
+        print(f"COMPLETION USER: {user_name}")
+
+        for record in self._waveform_record_cache[:5]:
+            print("SUBJECT RECORD:", record)
 
 
     def get_record_refresh_key(self, record):
@@ -150,64 +664,397 @@ class AnnotationAppCallbacks:
         )
 
 
+    def get_annotation_filenames_for_record(self, record, user_name):
+        """
+        Return partial and complete annotation filenames for a specific cached
+        waveform record and user.
+
+        This avoids depending on the currently selected dropdown item.
+        """
+        if not isinstance(record, dict):
+            return None, None
+
+        subject = str(record.get("subject", "") or "").strip()
+        file_tag = str(record.get("file_tag", "") or "").strip()
+        user_name = str(user_name or "").strip()
+
+        if not subject or not user_name:
+            return None, None
+
+        if file_tag:
+            base = f"annotations_{subject}_{file_tag}_{user_name}"
+        else:
+            base = f"annotations_{subject}_{user_name}"
+
+        return (
+            f"{base}.csv",
+            f"{base}_COMPLETE.csv",
+        )
+
+
+    def get_annotation_output_folder_for_record(self, record, user_name):
+        """
+        Return the user-specific annotation folder for a cached waveform record.
+        """
+        if not isinstance(record, dict):
+            return None
+
+        user_name = str(user_name or "").strip()
+
+        if not user_name:
+            return None
+
+        output_path = record.get("output_path", "")
+
+        if output_path:
+            return os.path.join(
+                output_path,
+                user_name,
+            )
+
+        base_folder = getattr(self, "base_folder", None)
+        subject = record.get("subject", "")
+
+        if base_folder and subject:
+            return os.path.join(
+                base_folder,
+                subject,
+                "output",
+                user_name,
+            )
+
+        return None
+
+
+    def refresh_record_annotation_status(self, record, user_name=None):
+        """
+        Refresh annotation counts for one cached waveform record.
+
+        This inspects only the known user output folder. It does not rescan the
+        waveform hierarchy or reopen waveform files.
+
+        Returns
+        -------
+        dict
+            The updated record dictionary.
+        """
+        if not isinstance(record, dict):
+            return record
+
+        if user_name is None:
+            user_name = self.get_user_name()
+
+        user_name = str(user_name or "").strip()
+
+        if not user_name:
+            record["n_annotations"] = 0
+            record["n_complete_annotations"] = 0
+            record["has_annotations"] = False
+            return record
+
+        output_folder = self.get_annotation_output_folder_for_record(
+            record,
+            user_name,
+        )
+
+        partial_filename, complete_filename = (
+            self.get_annotation_filenames_for_record(
+                record,
+                user_name,
+            )
+        )
+
+        if (
+            not output_folder
+            or not partial_filename
+            or not complete_filename
+        ):
+            record["n_annotations"] = 0
+            record["n_complete_annotations"] = 0
+            record["has_annotations"] = False
+            return record
+
+        partial_exists = False
+        complete_exists = False
+
+        try:
+            with os.scandir(output_folder) as entries:
+                filenames = {
+                    entry.name
+                    for entry in entries
+                    if entry.is_file()
+                }
+
+            partial_exists = partial_filename in filenames
+            complete_exists = complete_filename in filenames
+
+        except FileNotFoundError:
+            pass
+
+        except NotADirectoryError:
+            pass
+
+        except PermissionError as exc:
+            print(
+                "WARNING: Could not inspect annotation folder "
+                f"{output_folder}: {exc}"
+            )
+
+        except OSError as exc:
+            print(
+                "WARNING: Could not inspect annotation folder "
+                f"{output_folder}: {exc}"
+            )
+
+        total_annotations = int(partial_exists) + int(complete_exists)
+        complete_annotations = int(complete_exists)
+
+        record["completion_user"] = user_name
+        record["n_annotations"] = total_annotations
+        record["n_complete_annotations"] = complete_annotations
+        record["has_annotations"] = total_annotations > 0
+
+        return record
+
+
+    def get_subject_dropdown_label(self, record):
+        """
+        Build the visible dropdown label for one waveform record.
+        """
+        total_annotations = int(
+            record.get("n_annotations", 0) or 0
+        )
+        complete_annotations = int(
+            record.get("n_complete_annotations", 0) or 0
+        )
+
+        if total_annotations == 0:
+            icon = "⭕"
+        elif complete_annotations == total_annotations:
+            icon = "✅"
+        else:
+            icon = "🟡"
+
+        return (
+            f"{icon} {record.get('name', '')} "
+            f"({complete_annotations}/{total_annotations} complete)"
+        )
+
+
+    def get_record_tooltip(self, record):
+        """
+        Return a source-path tooltip for one waveform record.
+        """
+        if not isinstance(record, dict):
+            return ""
+
+        kind = record.get("kind", "")
+
+        if kind == "h5":
+            return str(record.get("h5_path", "") or "")
+
+        if kind == "csv":
+            return str(record.get("csv_path", "") or "")
+
+        if kind == "h5_multi":
+            h5_paths = record.get("h5_paths", {})
+
+            if isinstance(h5_paths, dict):
+                return "\n".join(
+                    f"{namespace}: {path}"
+                    for namespace, path in sorted(h5_paths.items())
+                )
+
+        return str(
+            record.get("source_path", "")
+            or record.get("encounter_path", "")
+            or ""
+        )
+
+
+    def refresh_selected_record_annotation_status(self):
+        """
+        Refresh annotation status for only the currently selected waveform record.
+
+        This avoids rebuilding the full dropdown and avoids rescanning all records.
+        """
+        start_time = perf_counter()
+
+        record = self.get_selected_subject_record()
+        user_name = self.get_user_name()
+
+        if not isinstance(record, dict) or not user_name:
+            return
+
+        record_key = self.get_record_refresh_key(record)
+
+        updated_record = None
+
+        for cached_record in getattr(
+            self,
+            "_waveform_record_cache",
+            [],
+        ):
+            if self.get_record_refresh_key(cached_record) == record_key:
+                self.refresh_record_annotation_status(
+                    cached_record,
+                    user_name=user_name,
+                )
+                updated_record = cached_record
+                break
+
+        if updated_record is None:
+            self.refresh_record_annotation_status(
+                record,
+                user_name=user_name,
+            )
+            updated_record = record
+
+        index = self.subject_dropdown.currentIndex()
+
+        if index >= 0:
+            self.subject_dropdown.setItemText(
+                index,
+                self.get_subject_dropdown_label(updated_record),
+            )
+
+            self.subject_dropdown.setItemData(
+                index,
+                updated_record,
+                Qt.UserRole,
+            )
+
+            tooltip = self.get_record_tooltip(updated_record)
+
+            if tooltip:
+                self.subject_dropdown.setItemData(
+                    index,
+                    tooltip,
+                    Qt.ToolTipRole,
+                )
+
+        self.current_subject_record = updated_record
+
+        elapsed = perf_counter() - start_time
+
+        self._perf_log(
+            "refresh_selected_record_annotation_status",
+            elapsed,
+            user=user_name,
+            record=updated_record.get("name", ""),
+        )
+
+
     def refresh_subject_dropdown_preserve_selection(self):
         """
-        Refresh the subject dropdown counts/icons while keeping the same selected
-        waveform record if possible.
+        Timed wrapper around cached completion-count refresh and selection
+        restoration.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._refresh_subject_dropdown_preserve_selection_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "refresh_subject_dropdown_preserve_selection",
+                elapsed,
+            )
+
+
+    def _refresh_subject_dropdown_preserve_selection_impl(self):
+        """
+        Refresh all user-specific annotation counts while reusing cached waveform
+        discovery records.
+
+        This does not rerun recursive waveform discovery unless no valid cache exists.
         """
         old_record = self.get_selected_subject_record()
         old_key = self.get_record_refresh_key(old_record)
 
-        self.update_subject_dropdown()
+        self.update_subject_dropdown(
+            force_full_scan=False,
+        )
 
         if not old_key:
             return
 
-        for idx in range(self.subject_dropdown.count()):
-            record = self.subject_dropdown.itemData(idx)
+        for index in range(self.subject_dropdown.count()):
+            record = self.subject_dropdown.itemData(index)
             new_key = self.get_record_refresh_key(record)
 
-            if new_key == old_key:
-                self.subject_dropdown.setCurrentIndex(idx)
+            if new_key != old_key:
+                continue
 
-                if isinstance(record, dict):
-                    self.current_subject_record = record
-                    self.current_subject = record.get("subject", "")
-                    self.current_encounter = record.get("encounter", "")
-                    self.current_namespace = record.get("namespace", "")
-                    self.current_file_tag = record.get("file_tag", "")
-                    self.current_output_path = record.get("output_path", "")
-                    self.current_h5_path = record.get("h5_path", "")
+            self.subject_dropdown.setCurrentIndex(index)
 
-                break
+            if isinstance(record, dict):
+                self.current_subject_record = record
+                self.current_subject = record.get("subject", "")
+                self.current_encounter = record.get("encounter", "")
+                self.current_namespace = record.get("namespace", "")
+                self.current_file_tag = record.get("file_tag", "")
+                self.current_output_path = record.get("output_path", "")
+                self.current_h5_path = record.get("h5_path", "")
 
-    def handle_user_changed(self, *args):
+            break
+
+
+    def handle_user_changed(self):
+            """
+            Timed wrapper around changing of user
+            """
+            start_time = perf_counter()
+    
+            try:
+                return self._handle_user_changed_impl()
+            finally:
+                elapsed = perf_counter() - start_time
+    
+                self._perf_log(
+                    "handle_user_changed",
+                    elapsed,
+                )
+
+
+    def _handle_user_changed_impl(self, *args):
         """
-        Called when selected user changes.
+        Called when the selected user changes.
 
-        Refresh subject completion counts for the newly selected user and clear
-        currently displayed annotations from the previous user.
+        Reuse cached waveform records and refresh only the user-specific annotation
+        status for those records.
         """
         user_name = self.get_user_name()
 
         if user_name is not None:
             user_name = str(user_name).strip()
+        else:
+            user_name = ""
 
         self.user_name = user_name
 
         print(f"USER CHANGED TO: {self.user_name}")
 
-        # Refresh the dropdown counts/icons for this user.
-        self.update_subject_dropdown()
+        # Reuse cached waveform discovery records.
+        # This checks annotation status for the new user without reopening waveform
+        # files or recursively rediscovering the waveform hierarchy.
+        self.update_subject_dropdown(
+            force_full_scan=False,
+        )
 
-        # Clear annotations currently shown from the old user.
+        # Clear annotations displayed for the previous user.
         self.annotations = []
         self.waveform_complete = False
         self.terminal_event_status = ""
         self.terminal_event_comment = ""
         self.current_marker = None
 
-        if hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
+        if (
+            hasattr(self, "time_axis")
+            and self.time_axis is not None
+            and len(self.time_axis) > 0
+        ):
             self.last_mark = float(self.time_axis[0])
         else:
             self.last_mark = None
@@ -218,12 +1065,17 @@ class AnnotationAppCallbacks:
         self.update_finalize_button_state()
 
         self.mark_warning.setText(
-            f"User changed to '{self.user_name}'. Load annotations for this user if needed."
+            f"User changed to '{self.user_name}'. "
+            "Load annotations for this user if needed."
         )
         self.mark_warning.setWordWrap(True)
         self.mark_warning.setStyleSheet(
             "color: #285680; font-size: 13px; font-weight: bold;"
         )
+
+    # ------------------------------------------------------------------
+    # Establish Plotting Parameter
+    # ------------------------------------------------------------------
 
     def get_global_valid_time_range(self):
         """
@@ -349,6 +1201,9 @@ class AnnotationAppCallbacks:
 
         return label
 
+    # ------------------------------------------------------------------
+    # Waveform Y-Axis Scaling
+    # ------------------------------------------------------------------
 
     def autoscale_y(self, plot, signal):
         """
@@ -366,7 +1221,30 @@ class AnnotationAppCallbacks:
         else:
             plot.setYRange(-1.0, 1.0, padding=0)
 
+
     def adjust_y_scale(self, plot_idx, zoom="up"):
+        """
+        Timed wrapper around manual Y-axis zoom.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._adjust_y_scale_impl(
+                plot_idx,
+                zoom=zoom,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "adjust_y_scale",
+                elapsed,
+                plot_idx=plot_idx,
+                zoom=zoom,
+            )
+
+
+    def _adjust_y_scale_impl(self, plot_idx, zoom="up"):
         """
         Adjusts the Y-axis scaling of the selected PlotWidget by zooming in or out.
         Zooms in by shrinking Y range (zoom="up"), or zooms out by expanding (zoom="down").
@@ -392,6 +1270,28 @@ class AnnotationAppCallbacks:
 
 
     def shift_y_scale(self, plot_idx, shift="up"):
+        """
+        Timed wrapper around manual Y-axis shifting.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._shift_y_scale_impl(
+                plot_idx,
+                shift=shift,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "shift_y_scale",
+                elapsed,
+                plot_idx=plot_idx,
+                shift=shift,
+            )
+
+
+    def _shift_y_scale_impl(self, plot_idx, shift="up"):
         """
         Shifts the Y-axis center of the selected PlotWidget by moving it up or down.
         Shifts by moving Y range (shift="up"), or zooms out by expanding (shift="down").
@@ -515,6 +1415,7 @@ class AnnotationAppCallbacks:
             self.autoscale_visible_y_for_plot(plot_idx, force=False)
             self.update_all_auto_y_button_states()
 
+
     def disable_auto_y_for_plot(self, plot_idx):
         """
         Disable Auto-Y for a plot after manual Y-axis intervention.
@@ -543,6 +1444,41 @@ class AnnotationAppCallbacks:
 
 
     def autoscale_visible_y_all(self):
+        """
+        Timed wrapper around visible-window Auto-Y calculations.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._autoscale_visible_y_all_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            enabled_count = sum(
+                1
+                for enabled in getattr(
+                    self,
+                    "auto_y_enabled_by_user",
+                    [],
+                )
+                if enabled
+            )
+
+            try:
+                x_min, x_max = self.waveform_plots[0].viewRange()[0]
+                visible_seconds = float(x_max) - float(x_min)
+            except Exception:
+                visible_seconds = "unknown"
+
+            self._perf_log(
+                "autoscale_visible_y_all",
+                elapsed,
+                enabled_plots=enabled_count,
+                visible_seconds=visible_seconds,
+            )
+
+
+    def _autoscale_visible_y_all_impl(self):
         """
         Autoscale Y-axis for all plots whose Auto-Y is enabled by the user,
         using the current visible X-window plus a small time buffer.
@@ -703,7 +1639,2204 @@ class AnnotationAppCallbacks:
 
         self.waveform_plots[plot_idx].setYRange(y_min, y_max, padding=0)
         return True
-    
+
+
+    # ------------------------------------------------------------------
+    # Caliper Functionality
+    # ------------------------------------------------------------------
+
+    def normalize_caliper_waveform_name(self, value):
+        """
+        Normalize a waveform name for matching against the configured caliper list.
+        """
+        return "".join(
+            character
+            for character in str(value).upper()
+            if character.isalnum()
+        )
+
+
+    def is_caliper_waveform_allowed(self, waveform_name):
+        """
+        Return True when a waveform is configured for caliper calculation.
+        """
+        normalized_name = self.normalize_caliper_waveform_name(
+            waveform_name
+        )
+
+        configured_names = {
+            self.normalize_caliper_waveform_name(name)
+            for name in CALIPER_CALCULATION_WAVEFORMS
+        }
+
+        return normalized_name in configured_names
+
+
+    def caliper_signal_has_data(self, plot_idx):
+        """
+        Return True when the selected waveform has at least two finite samples.
+        """
+        leads = getattr(self, "leads_ds", None)
+
+        if leads is None:
+            return False
+
+        if plot_idx < 0 or plot_idx >= len(leads):
+            return False
+
+        signal = leads[plot_idx]
+
+        if signal is None:
+            return False
+
+        try:
+            signal_array = np.asarray(signal, dtype=float)
+        except Exception:
+            return False
+
+        if signal_array.size < 2:
+            return False
+
+        return np.count_nonzero(np.isfinite(signal_array)) >= 2
+
+
+    def populate_caliper_source_dropdown(self):
+        """
+        Populate the caliper source dropdown using configured, loaded waveforms
+        that contain finite data.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._populate_caliper_source_dropdown_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            source_count = 0
+
+            if hasattr(self, "caliper_source_dropdown"):
+                source_count = self.caliper_source_dropdown.count()
+
+            self._perf_log(
+                "populate_caliper_source_dropdown",
+                elapsed,
+                sources=source_count,
+            )
+
+
+    def _populate_caliper_source_dropdown_impl(self):
+        if not hasattr(self, "caliper_source_dropdown"):
+            return
+
+        dropdown = self.caliper_source_dropdown
+
+        previous_plot_idx = dropdown.currentData()
+
+        dropdown.blockSignals(True)
+        dropdown.clear()
+
+        lead_names = getattr(self, "lead_names", None) or []
+
+        preferred_dropdown_index = -1
+        restored_dropdown_index = -1
+
+        for plot_idx, lead_name in enumerate(lead_names):
+            if plot_idx >= len(getattr(self, "waveform_plots", [])):
+                continue
+
+            if not self.is_caliper_waveform_allowed(lead_name):
+                continue
+
+            if not self.caliper_signal_has_data(plot_idx):
+                continue
+
+            dropdown.addItem(
+                str(lead_name),
+                userData=plot_idx,
+            )
+
+            dropdown_index = dropdown.count() - 1
+
+            if previous_plot_idx == plot_idx:
+                restored_dropdown_index = dropdown_index
+
+            if (
+                self.normalize_caliper_waveform_name(lead_name)
+                == self.normalize_caliper_waveform_name("II")
+            ):
+                preferred_dropdown_index = dropdown_index
+
+        if restored_dropdown_index >= 0:
+            dropdown.setCurrentIndex(restored_dropdown_index)
+        elif preferred_dropdown_index >= 0:
+            dropdown.setCurrentIndex(preferred_dropdown_index)
+        elif dropdown.count() > 0:
+            dropdown.setCurrentIndex(0)
+
+        dropdown.setDisabled(dropdown.count() == 0)
+        dropdown.blockSignals(False)
+
+        if dropdown.count() > 0:
+            self.caliper_source_plot_idx = dropdown.currentData()
+        else:
+            self.caliper_source_plot_idx = None
+            self.clear_calipers(
+                clear_measurement=True,
+                update_toggle=True,
+            )
+
+
+    def toggle_caliper_adjust_mode(self, enabled):
+        """
+        Timed wrapper around caliper adjustment mode.
+
+        While adjustment mode is enabled, plot clicks do not create annotation
+        endpoints. The source-plot caliper lines remain draggable.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_caliper_adjust_mode_impl(enabled)
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_caliper_adjust_mode",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_caliper_adjust_mode_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if not getattr(self, "calipers_enabled", False):
+            enabled = False
+
+        self.caliper_adjust_enabled = enabled
+
+        if hasattr(self, "caliper_adjust_btn"):
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(enabled)
+            self.caliper_adjust_btn.setText(
+                "Adjust ON" if enabled else "Adjust OFF"
+            )
+            self.caliper_adjust_btn.setEnabled(
+                getattr(self, "calipers_enabled", False)
+            )
+            self.caliper_adjust_btn.blockSignals(False)
+
+        # Allow either caliper to be dragged from any waveform plot.
+        for _plot, line in getattr(
+            self,
+            "caliper_start_lines",
+            [],
+        ):
+            line.setMovable(enabled)
+            line.setZValue(10000)
+
+        for _plot, line in getattr(
+            self,
+            "caliper_end_lines",
+            [],
+        ):
+            line.setMovable(enabled)
+            line.setZValue(10000)
+
+        if enabled:
+            self.caliper_result_label.setStyleSheet(
+                """
+                QLabel {
+                    color: #00274C;
+                    background-color: #FFF4CC;
+                    border: 2px solid #B8860B;
+                    border-radius: 3px;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                """
+            )
+        else:
+            self.caliper_result_label.setStyleSheet(
+                """
+                QLabel {
+                    color: #00274C;
+                    background-color: #F4F7FA;
+                    border: 1px solid #285680;
+                    border-radius: 3px;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                """
+            )
+
+        print(
+            "[CALIPERS] Adjust mode:",
+            enabled,
+            "| start lines:",
+            len(getattr(self, "caliper_start_lines", [])),
+            "| end lines:",
+            len(getattr(self, "caliper_end_lines", [])),
+        )
+
+        self.update_caliper_measurement_display()
+
+
+    def _safe_remove_caliper_item(self, plot, item):
+        """
+        Remove one caliper item without failing if the plot was already cleared.
+        """
+        if plot is None or item is None:
+            return
+
+        try:
+            plot.removeItem(item)
+        except Exception:
+            pass
+
+
+    def clear_caliper_graphics(self):
+        """
+        Remove all temporary caliper graphics from all waveform plots.
+        """
+        for plot, line in getattr(
+            self,
+            "caliper_start_lines",
+            [],
+        ):
+            self._safe_remove_caliper_item(
+                plot,
+                line,
+            )
+
+        for plot, line in getattr(
+            self,
+            "caliper_end_lines",
+            [],
+        ):
+            self._safe_remove_caliper_item(
+                plot,
+                line,
+            )
+
+        self.caliper_start_lines = []
+        self.caliper_end_lines = []
+
+        self.clear_caliper_peak_graphics()
+        self.clear_caliper_projection_graphics()
+
+
+    def clear_calipers(
+        self,
+        clear_measurement=True,
+        update_toggle=False,
+    ):
+        """
+        Remove caliper graphics and optionally clear all measurement state.
+        """
+        self.caliper_adjust_enabled = False
+
+        self.caliper_projection_requested = False
+        self.caliper_projection_message = ""
+
+        if hasattr(self, "caliper_adjust_btn"):
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(False)
+            self.caliper_adjust_btn.setText("Adjust OFF")
+            self.caliper_adjust_btn.setDisabled(True)
+            self.caliper_adjust_btn.blockSignals(False)
+
+        self.clear_caliper_graphics()
+
+        if clear_measurement:
+            self.caliper_start_time = None
+            self.caliper_end_time = None
+            self.clear_caliper_calculation()
+
+        self.calipers_enabled = False
+        self.caliper_projection_enabled = False
+
+        if hasattr(self, "caliper_projection_btn"):
+            self.caliper_projection_btn.blockSignals(True)
+            self.caliper_projection_btn.setChecked(False)
+            self.caliper_projection_btn.setText("Projection OFF")
+            self.caliper_projection_btn.setDisabled(True)
+            self.caliper_projection_btn.blockSignals(False)
+
+        if hasattr(self, "caliper_reset_btn"):
+            self.caliper_reset_btn.setDisabled(True)
+
+        if hasattr(self, "caliper_result_label"):
+            self.caliper_result_label.setText("Calipers: Off")
+
+        if update_toggle and hasattr(self, "caliper_toggle_btn"):
+            self.caliper_toggle_btn.blockSignals(True)
+            self.caliper_toggle_btn.setChecked(False)
+            self.caliper_toggle_btn.setText("OFF")
+            self.caliper_toggle_btn.blockSignals(False)
+
+
+    def get_centered_caliper_times(self):
+        """
+        Return initial caliper positions centered in the current visible X-range.
+        """
+        if not getattr(self, "waveform_plots", []):
+            return None, None
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            x_min = float(x_min)
+            x_max = float(x_max)
+        except Exception:
+            return None, None
+
+        if (
+            not np.isfinite(x_min)
+            or not np.isfinite(x_max)
+            or x_max <= x_min
+        ):
+            return None, None
+
+        visible_span = x_max - x_min
+        center = (x_min + x_max) / 2.0
+
+        separation = max(
+            visible_span * CALIPER_INITIAL_WINDOW_FRACTION,
+            CALIPER_MINIMUM_SEPARATION_SEC,
+        )
+
+        start_time = center - separation / 2.0
+        end_time = center + separation / 2.0
+
+        loaded_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        loaded_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        if loaded_start is not None:
+            start_time = max(
+                start_time,
+                float(loaded_start),
+            )
+
+        if loaded_end is not None:
+            end_time = min(
+                end_time,
+                float(loaded_end),
+            )
+
+        if end_time <= start_time:
+            return None, None
+
+        return start_time, end_time
+
+
+    def draw_caliper_lines(self):
+        """
+        Draw draggable caliper lines on the selected source plot and mirrored,
+        non-draggable lines on all other waveform plots.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._draw_caliper_lines_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "draw_caliper_lines",
+                elapsed,
+                source_plot=self.caliper_source_plot_idx,
+                plot_count=len(
+                    getattr(self, "waveform_plots", [])
+                ),
+            )
+
+
+    def _draw_caliper_lines_impl(self):
+        self.clear_caliper_graphics()
+
+        if not getattr(self, "calipers_enabled", False):
+            return
+
+        if self.caliper_source_plot_idx is None:
+            return
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            return
+
+        adjust_enabled = getattr(
+            self,
+            "caliper_adjust_enabled",
+            False,
+        )
+
+        start_pen = pg.mkPen(
+            CALIPER_START_COLOR,
+            width=CALIPER_LINE_WIDTH,
+        )
+        end_pen = pg.mkPen(
+            CALIPER_END_COLOR,
+            width=CALIPER_LINE_WIDTH,
+        )
+
+        for plot_idx, plot in enumerate(self.waveform_plots):
+            is_source_plot = (
+                plot_idx == self.caliper_source_plot_idx
+            )
+
+            # Make the source waveform visually distinct, but allow dragging
+            # from any waveform while Adjust mode is enabled.
+            if is_source_plot:
+                current_start_pen = start_pen
+                current_end_pen = end_pen
+            else:
+                current_start_pen = pg.mkPen(
+                    CALIPER_START_COLOR,
+                    width=CALIPER_LINE_WIDTH,
+                    style=QtCore.Qt.DashLine,
+                )
+                current_end_pen = pg.mkPen(
+                    CALIPER_END_COLOR,
+                    width=CALIPER_LINE_WIDTH,
+                    style=QtCore.Qt.DashLine,
+                )
+
+            start_line = pg.InfiniteLine(
+                pos=self.caliper_start_time,
+                angle=90,
+                movable=adjust_enabled,
+                pen=current_start_pen,
+                hoverPen=pg.mkPen(
+                    CALIPER_START_COLOR,
+                    width=CALIPER_LINE_WIDTH_HOVER,
+                ),
+            )
+            start_line.is_caliper_item = True
+            start_line.caliper_role = "start"
+            start_line.caliper_plot_idx = plot_idx
+            start_line.setZValue(10000)
+
+            end_line = pg.InfiniteLine(
+                pos=self.caliper_end_time,
+                angle=90,
+                movable=adjust_enabled,
+                pen=current_end_pen,
+                hoverPen=pg.mkPen(
+                    CALIPER_END_COLOR,
+                    width=CALIPER_LINE_WIDTH_HOVER,
+                ),
+            )
+            end_line.is_caliper_item = True
+            end_line.caliper_role = "end"
+            end_line.caliper_plot_idx = plot_idx
+            end_line.setZValue(10000)
+
+            plot.addItem(
+                start_line,
+                ignoreBounds=True,
+            )
+            plot.addItem(
+                end_line,
+                ignoreBounds=True,
+            )
+
+            self.caliper_start_lines.append(
+                (plot, start_line)
+            )
+            self.caliper_end_lines.append(
+                (plot, end_line)
+            )
+
+            # Every visible caliper line can be dragged while Adjust mode is on.
+            start_line.sigPositionChanged.connect(
+                lambda line, role="start":
+                    self.handle_caliper_line_moved(
+                        role,
+                        line,
+                    )
+            )
+
+            end_line.sigPositionChanged.connect(
+                lambda line, role="end":
+                    self.handle_caliper_line_moved(
+                        role,
+                        line,
+                    )
+            )
+
+            start_line.sigPositionChangeFinished.connect(
+                lambda line, role="start":
+                    self.handle_caliper_drag_finished(
+                        role,
+                        line,
+                    )
+            )
+
+            end_line.sigPositionChangeFinished.connect(
+                lambda line, role="end":
+                    self.handle_caliper_drag_finished(
+                        role,
+                        line,
+                    )
+            )
+
+
+    def handle_caliper_line_moved(self, role, moved_line):
+        """
+        Synchronize mirrored caliper lines while one source marker is dragged.
+        """
+        if self._caliper_sync_in_progress:
+            return
+
+        try:
+            position = float(moved_line.value())
+        except Exception:
+            return
+
+        if not np.isfinite(position):
+            return
+
+        loaded_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        loaded_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        if loaded_start is not None:
+            position = max(
+                position,
+                float(loaded_start),
+            )
+
+        if loaded_end is not None:
+            position = min(
+                position,
+                float(loaded_end),
+            )
+
+        if role == "start":
+            self.caliper_start_time = position
+            line_collection = self.caliper_start_lines
+        else:
+            self.caliper_end_time = position
+            line_collection = self.caliper_end_lines
+
+        self.clear_caliper_calculation()
+
+        projection_available = (
+            self.caliper_projection_is_available()
+        )
+
+        self.set_caliper_projection_available(
+            projection_available,
+            preserve_request=True,
+        )
+
+        self._caliper_sync_in_progress = True
+
+        try:
+            for _plot, line in line_collection:
+                if line is moved_line:
+                    continue
+
+                line.setValue(position)
+        finally:
+            self._caliper_sync_in_progress = False
+
+        if (
+            projection_available
+            and getattr(
+                self,
+                "caliper_projection_requested",
+                False,
+            )
+        ):
+            self.caliper_projection_enabled = True
+            self.schedule_caliper_projection_update()
+        else:
+            self.caliper_projection_enabled = False
+            self.clear_caliper_projection_graphics()
+
+        self.update_caliper_measurement_display()
+
+
+    def handle_caliper_drag_finished(self, role, moved_line):
+        """
+        Finalize the current caliper positions after a drag operation.
+        """
+        start_time = perf_counter()
+
+        try:
+            self.handle_caliper_line_moved(
+                role,
+                moved_line,
+            )
+
+            self.update_caliper_measurement()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_caliper_drag_finished",
+                elapsed,
+                role=role,
+            )
+
+
+    def update_caliper_measurement_display(self):
+        """
+        Update the compact caliper result label.
+        """
+        if not hasattr(self, "caliper_result_label"):
+            return
+
+        if not self.calipers_enabled:
+            self.caliper_result_label.setText(
+                "Calipers: Off"
+            )
+            return
+
+        source_name = "Unknown"
+
+        if hasattr(self, "caliper_source_dropdown"):
+            source_name = (
+                self.caliper_source_dropdown.currentText()
+                or "Unknown"
+            )
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            self.caliper_result_label.setText(
+                f"{source_name} | Adjust markers"
+            )
+            return
+
+        selection_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selection_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selected_duration = selection_end - selection_start
+
+        peak_count = len(
+            getattr(
+                self,
+                "caliper_detected_peak_times",
+                [],
+            )
+        )
+
+        estimated_rate = getattr(
+            self,
+            "caliper_estimated_rate",
+            None,
+        )
+
+        rate_unit = getattr(
+            self,
+            "caliper_rate_unit",
+            "",
+        )
+
+        status = getattr(
+            self,
+            "caliper_measurement_status",
+            "",
+        )
+
+        message = getattr(
+            self,
+            "caliper_measurement_message",
+            "",
+        )
+
+        average_interval = getattr(
+            self,
+            "caliper_average_interval_sec",
+            None,
+        )
+
+        median_interval = getattr(
+            self,
+            "caliper_median_interval_sec",
+            None,
+        )
+
+        if estimated_rate is None:
+            if self.caliper_adjust_enabled:
+                display_text = (
+                    f"{source_name} | {selected_duration:.2f} s | Adjusting"
+                )
+            else:
+                display_text = (
+                    f"{source_name} | {peak_count} peaks | {status or 'Unable'}"
+                )
+        else:
+            display_text = (
+                f"{source_name} | {peak_count} peaks | "
+                f"{estimated_rate:.1f} {rate_unit} | {status}"
+            )
+
+        self.caliper_result_label.setText(display_text)
+
+        tooltip_lines = [
+            f"Source waveform: {source_name}",
+            f"Selection start: {selection_start:.6f}",
+            f"Selection end: {selection_end:.6f}",
+            f"Selected duration: {selected_duration:.6f} seconds",
+            f"Detected peaks: {peak_count}",
+        ]
+
+        if average_interval is not None:
+            tooltip_lines.append(
+                f"Average interval: {average_interval:.6f} seconds"
+            )
+
+        if median_interval is not None:
+            tooltip_lines.append(
+                f"Median interval: {median_interval:.6f} seconds"
+            )
+
+        if estimated_rate is not None:
+            tooltip_lines.append(
+                f"Estimated rate: {estimated_rate:.3f} {rate_unit}"
+            )
+
+        if status:
+            tooltip_lines.append(
+                f"Status: {status}"
+            )
+
+        if message:
+            tooltip_lines.append(message)
+
+        projection_message = getattr(
+            self,
+            "caliper_projection_message",
+            "",
+        )
+
+        if projection_message:
+            tooltip_lines.append(
+                f"Projection: {projection_message}"
+            )
+
+        tooltip_lines.append(
+            "Detected peak dots are temporary and are not saved."
+        )
+
+        self.caliper_result_label.setToolTip(
+            "\n".join(tooltip_lines)
+        )
+
+
+    def update_caliper_measurement(self):
+        """
+        Timed wrapper around caliper measurement updates.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._update_caliper_measurement_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "update_caliper_measurement",
+                elapsed,
+                source_plot=self.caliper_source_plot_idx,
+            )
+
+
+    def _update_caliper_measurement_impl(self):
+
+        self.clear_caliper_calculation()
+
+        projection_available = (
+            self.caliper_projection_is_available()
+        )
+
+        self.set_caliper_projection_available(
+            projection_available,
+            preserve_request=True,
+        )
+
+        if not self.calipers_enabled:
+            self.update_caliper_measurement_display()
+            return
+
+        (
+            time_values,
+            signal_values,
+            source_name,
+            settings,
+        ) = self.get_caliper_source_segment()
+
+        if time_values.size < 2 or signal_values.size < 2:
+            self.caliper_measurement_status = "Unable"
+            self.caliper_measurement_message = (
+                "No valid samples are available inside the calipers."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        selected_duration = float(
+            time_values[-1] - time_values[0]
+        )
+
+        if selected_duration < CALIPER_MINIMUM_SELECTION_SEC:
+            self.caliper_measurement_status = "Unable"
+            self.caliper_measurement_message = (
+                "The selected interval is too short."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        sampling_frequency = (
+            self.estimate_caliper_sampling_frequency(
+                time_values
+            )
+        )
+
+        if sampling_frequency is None:
+            self.caliper_measurement_status = "Unable"
+            self.caliper_measurement_message = (
+                "Unable to estimate the waveform sampling frequency."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        if not SCIPY_SIGNAL_AVAILABLE:
+            self.caliper_measurement_status = "Unavailable"
+            self.caliper_measurement_message = (
+                "SciPy is required for automatic peak detection."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        detector_type = settings.get(
+            "detector",
+            "generic",
+        )
+
+        detection_start = perf_counter()
+
+        if detector_type == "ecg":
+            peak_indices = self.detect_caliper_ecg_peaks(
+                time_values,
+                signal_values,
+                sampling_frequency,
+                settings,
+            )
+        else:
+            peak_indices = self.detect_caliper_generic_peaks(
+                time_values,
+                signal_values,
+                sampling_frequency,
+                settings,
+            )
+
+        detection_elapsed = perf_counter() - detection_start
+
+        peak_indices = np.asarray(
+            peak_indices,
+            dtype=int,
+        )
+
+        peak_indices = peak_indices[
+            (peak_indices >= 0)
+            & (peak_indices < time_values.size)
+        ]
+
+        peak_times = time_values[peak_indices]
+        peak_values = signal_values[peak_indices]
+
+        self.caliper_detected_peak_times = peak_times
+        self.caliper_detected_peak_values = peak_values
+
+        result = self.calculate_caliper_rate(
+            peak_times,
+            settings,
+        )
+
+        self.caliper_average_interval_sec = result.get(
+            "average_interval_sec"
+        )
+        self.caliper_median_interval_sec = result.get(
+            "median_interval_sec"
+        )
+        self.caliper_estimated_rate = result.get(
+            "estimated_rate"
+        )
+        self.caliper_rate_unit = result.get(
+            "rate_unit",
+            "",
+        )
+        self.caliper_measurement_status = result.get(
+            "status",
+            "Unable",
+        )
+        self.caliper_measurement_message = result.get(
+            "message",
+            "",
+        )
+
+        self.draw_caliper_peak_dots(
+            peak_times,
+            peak_values,
+        )
+
+        if getattr(
+            self,
+            "caliper_projection_requested",
+            False,
+        ):
+            self.caliper_projection_enabled = (
+                self.caliper_projection_is_available()
+            )
+
+            if self.caliper_projection_enabled:
+                self.update_caliper_projection_graphics()
+
+        self._perf_log(
+            "detect_caliper_peaks",
+            detection_elapsed,
+            source=source_name,
+            detector=detector_type,
+            samples=time_values.size,
+            sampling_frequency=f"{sampling_frequency:.3f}",
+            peaks=peak_times.size,
+        )
+
+        self.update_caliper_measurement_display()
+
+
+    def toggle_calipers(self, enabled):
+        """
+        Timed wrapper around enabling or disabling calipers.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_calipers_impl(enabled)
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_calipers",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_calipers_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if enabled:
+            if (
+                not hasattr(self, "caliper_source_dropdown")
+                or self.caliper_source_dropdown.count() == 0
+            ):
+                self.calipers_enabled = False
+                self.caliper_adjust_enabled = False
+
+                self.caliper_toggle_btn.blockSignals(True)
+                self.caliper_toggle_btn.setChecked(False)
+                self.caliper_toggle_btn.setText("OFF")
+                self.caliper_toggle_btn.blockSignals(False)
+
+                self.caliper_adjust_btn.blockSignals(True)
+                self.caliper_adjust_btn.setChecked(False)
+                self.caliper_adjust_btn.setText("Adjust OFF")
+                self.caliper_adjust_btn.setEnabled(False)
+                self.caliper_adjust_btn.blockSignals(False)
+
+                self.caliper_projection_enabled = False
+                self.caliper_projection_requested = False
+                self.caliper_projection_message = ""
+
+                self.caliper_result_label.setText(
+                    "Calipers: No eligible waveform"
+                )
+                return
+
+            self.calipers_enabled = True
+            self.caliper_adjust_enabled = False
+
+            self.caliper_toggle_btn.setText("ON")
+            self.caliper_source_dropdown.setEnabled(True)
+            self.caliper_reset_btn.setEnabled(True)
+
+            self.caliper_source_plot_idx = (
+                self.caliper_source_dropdown.currentData()
+            )
+
+            # Reset and draw the calipers first.
+            self.reset_calipers()
+
+            # Enable Adjust after reset, because cleanup/reset methods may
+            # temporarily disable it.
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(False)
+            self.caliper_adjust_btn.setText("Adjust OFF")
+            self.caliper_adjust_btn.setEnabled(True)
+            self.caliper_adjust_btn.blockSignals(False)
+
+        else:
+            self.clear_calipers(
+                clear_measurement=True,
+                update_toggle=False,
+            )
+
+            self.caliper_toggle_btn.setText("OFF")
+
+            self.caliper_adjust_btn.blockSignals(True)
+            self.caliper_adjust_btn.setChecked(False)
+            self.caliper_adjust_btn.setText("Adjust OFF")
+            self.caliper_adjust_btn.setEnabled(False)
+            self.caliper_adjust_btn.blockSignals(False)
+
+            if self.caliper_source_dropdown.count() > 0:
+                self.caliper_source_dropdown.setEnabled(True)
+
+
+    def reset_calipers(self):
+        """
+        Timed wrapper around recentering the caliper markers.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._reset_calipers_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "reset_calipers",
+                elapsed,
+                enabled=self.calipers_enabled,
+            )
+
+
+    def _reset_calipers_impl(self):
+        if not self.calipers_enabled:
+            return
+
+        start_time, end_time = self.get_centered_caliper_times()
+
+        if start_time is None or end_time is None:
+            self.caliper_result_label.setText(
+                "Calipers: No valid waveform range"
+            )
+            return
+
+        self.caliper_start_time = float(start_time)
+        self.caliper_end_time = float(end_time)
+
+        self.clear_caliper_calculation()
+
+        self.set_caliper_projection_available(
+            True,
+            preserve_request=True,
+        )
+
+        self.draw_caliper_lines()
+
+        self.calipers_enabled = True
+
+        self.update_caliper_measurement()
+
+
+    def handle_caliper_source_changed(self, dropdown_index):
+        """
+        Timed wrapper around changing the caliper source waveform.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._handle_caliper_source_changed_impl(
+                dropdown_index
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_caliper_source_changed",
+                elapsed,
+                dropdown_index=dropdown_index,
+                source_plot=self.caliper_source_plot_idx,
+            )
+
+
+    def _handle_caliper_source_changed_impl(
+        self,
+        dropdown_index,
+    ):
+        if dropdown_index < 0:
+            self.caliper_source_plot_idx = None
+            return
+
+        plot_idx = self.caliper_source_dropdown.itemData(
+            dropdown_index
+        )
+
+        if plot_idx is None:
+            self.caliper_source_plot_idx = None
+            return
+
+        self.caliper_source_plot_idx = int(plot_idx)
+
+        if self.calipers_enabled:
+            self.draw_caliper_lines()
+            self.update_caliper_measurement()
+
+
+    def toggle_caliper_projection(self, enabled):
+        """
+        Timed wrapper around the projection visibility setting.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_caliper_projection_impl(enabled)
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_caliper_projection",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_caliper_projection_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if enabled and not self.caliper_projection_is_available():
+            enabled = False
+
+        self.caliper_projection_requested = enabled
+        self.caliper_projection_enabled = enabled
+
+        if hasattr(self, "caliper_projection_btn"):
+            self.caliper_projection_btn.blockSignals(True)
+            self.caliper_projection_btn.setChecked(enabled)
+            self.caliper_projection_btn.setText(
+                "Projection ON"
+                if enabled
+                else "Projection OFF"
+            )
+            self.caliper_projection_btn.blockSignals(False)
+
+        if enabled:
+            self.update_caliper_projection_graphics()
+        else:
+            self.clear_caliper_projection_graphics()
+            self.caliper_projection_message = ""
+
+        self.update_caliper_measurement_display()
+
+    # ------------------------------------------------------------------
+    # Caliper Calculation
+    # ------------------------------------------------------------------
+
+    def clear_caliper_peak_graphics(self):
+        """
+        Remove temporary detected-peak dots without removing the caliper lines.
+        """
+        for plot, item in getattr(
+            self,
+            "caliper_peak_graphics",
+            [],
+        ):
+            self._safe_remove_caliper_item(plot, item)
+
+        self.caliper_peak_graphics = []
+
+
+    def clear_caliper_calculation(self):
+        """
+        Clear temporary peak-detection and rate-calculation state.
+
+        Projection is based on the complete selected caliper duration, so clearing
+        peak detection must not disable projection.
+        """
+        self.clear_caliper_peak_graphics()
+
+        self.caliper_detected_peak_times = np.array([])
+        self.caliper_detected_peak_values = np.array([])
+
+        self.caliper_average_interval_sec = None
+        self.caliper_median_interval_sec = None
+        self.caliper_estimated_rate = None
+        self.caliper_rate_unit = ""
+        self.caliper_measurement_status = ""
+        self.caliper_measurement_message = ""
+
+
+    def get_caliper_detector_settings(self, waveform_name):
+        """
+        Return detector settings for the selected waveform.
+        """
+        normalized_name = self.normalize_caliper_waveform_name(
+            waveform_name
+        )
+
+        for configured_name, settings in CALIPER_DETECTOR_SETTINGS.items():
+            if (
+                self.normalize_caliper_waveform_name(configured_name)
+                == normalized_name
+            ):
+                return dict(settings)
+
+        return {
+            "detector": "generic",
+            "rate_unit": "cycles/min",
+            "minimum_rate": 4.0,
+            "maximum_rate": 300.0,
+        }
+
+
+    def get_caliper_source_segment(self):
+        """
+        Extract the selected waveform samples between the two caliper markers.
+
+        Returns
+        -------
+        tuple
+            ``(time_values, signal_values, source_name, settings)``.
+
+            Empty arrays are returned if no valid segment is available.
+        """
+        empty_result = (
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+            "",
+            {},
+        )
+
+        plot_idx = getattr(
+            self,
+            "caliper_source_plot_idx",
+            None,
+        )
+
+        if plot_idx is None:
+            return empty_result
+
+        leads = getattr(self, "leads_ds", None) or []
+        lead_names = getattr(self, "lead_names", None) or []
+
+        if plot_idx < 0 or plot_idx >= len(leads):
+            return empty_result
+
+        signal = leads[plot_idx]
+
+        if signal is None:
+            return empty_result
+
+        signal_values = np.asarray(signal, dtype=float)
+
+        if (
+            hasattr(self, "time_axes_by_lead")
+            and self.time_axes_by_lead is not None
+            and plot_idx < len(self.time_axes_by_lead)
+            and self.time_axes_by_lead[plot_idx] is not None
+            and len(self.time_axes_by_lead[plot_idx]) > 0
+        ):
+            time_values = np.asarray(
+                self.time_axes_by_lead[plot_idx],
+                dtype=float,
+            )
+        else:
+            time_values = np.asarray(
+                getattr(self, "time_axis", []),
+                dtype=float,
+            )
+
+        sample_count = min(
+            time_values.size,
+            signal_values.size,
+        )
+
+        if sample_count < 2:
+            return empty_result
+
+        time_values = time_values[:sample_count]
+        signal_values = signal_values[:sample_count]
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            return empty_result
+
+        selection_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selection_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+
+        valid = (
+            np.isfinite(time_values)
+            & np.isfinite(signal_values)
+            & (time_values >= selection_start)
+            & (time_values <= selection_end)
+        )
+
+        if np.count_nonzero(valid) < 2:
+            return empty_result
+
+        segment_time = time_values[valid]
+        segment_signal = signal_values[valid]
+
+        sort_order = np.argsort(segment_time)
+        segment_time = segment_time[sort_order]
+        segment_signal = segment_signal[sort_order]
+
+        # Remove duplicate timestamps because they interfere with sampling-rate
+        # estimation and peak spacing.
+        unique_mask = np.ones(
+            segment_time.size,
+            dtype=bool,
+        )
+
+        if segment_time.size > 1:
+            unique_mask[1:] = np.diff(segment_time) > 0
+
+        segment_time = segment_time[unique_mask]
+        segment_signal = segment_signal[unique_mask]
+
+        source_name = (
+            str(lead_names[plot_idx])
+            if plot_idx < len(lead_names)
+            else f"Signal {plot_idx + 1}"
+        )
+
+        settings = self.get_caliper_detector_settings(
+            source_name
+        )
+
+        return (
+            segment_time,
+            segment_signal,
+            source_name,
+            settings,
+        )
+
+
+    def estimate_caliper_sampling_frequency(self, time_values):
+        """
+        Estimate sampling frequency from a selected time vector.
+        """
+        time_values = np.asarray(
+            time_values,
+            dtype=float,
+        )
+
+        if time_values.size < 2:
+            return None
+
+        time_differences = np.diff(time_values)
+
+        time_differences = time_differences[
+            np.isfinite(time_differences)
+            & (time_differences > 0)
+        ]
+
+        if time_differences.size == 0:
+            return None
+
+        median_difference = float(
+            np.median(time_differences)
+        )
+
+        if (
+            not np.isfinite(median_difference)
+            or median_difference <= 0
+        ):
+            return None
+
+        sampling_frequency = 1.0 / median_difference
+
+        if (
+            not np.isfinite(sampling_frequency)
+            or sampling_frequency <= 0
+        ):
+            return None
+
+        return float(sampling_frequency)
+
+
+    def detect_caliper_ecg_peaks(
+        self,
+        time_values,
+        signal_values,
+        sampling_frequency,
+        settings,
+    ):
+        """
+        Detect QRS-like events using a lightweight, polarity-independent energy
+        detector.
+
+        This is a measurement aid for visually reviewed calipers, not a diagnostic
+        rhythm-classification algorithm.
+        """
+        if not SCIPY_SIGNAL_AVAILABLE:
+            return np.array([], dtype=int)
+
+        time_values = np.asarray(
+            time_values,
+            dtype=float,
+        )
+        signal_values = np.asarray(
+            signal_values,
+            dtype=float,
+        )
+
+        if signal_values.size < 5:
+            return np.array([], dtype=int)
+
+        working_signal = detrend(
+            signal_values,
+            type="linear",
+        )
+
+        nyquist_frequency = sampling_frequency / 2.0
+
+        low_hz = CALIPER_ECG_BANDPASS_LOW_HZ
+        high_hz = min(
+            CALIPER_ECG_BANDPASS_HIGH_HZ,
+            nyquist_frequency * 0.90,
+        )
+
+        if high_hz <= low_hz:
+            filtered_signal = working_signal
+        else:
+            try:
+                filter_sos = butter(
+                    2,
+                    [low_hz, high_hz],
+                    btype="bandpass",
+                    fs=sampling_frequency,
+                    output="sos",
+                )
+
+                filtered_signal = sosfiltfilt(
+                    filter_sos,
+                    working_signal,
+                )
+            except Exception:
+                filtered_signal = working_signal
+
+        derivative_signal = np.diff(
+            filtered_signal,
+            prepend=filtered_signal[0],
+        )
+
+        energy_signal = derivative_signal ** 2
+
+        integration_samples = max(
+            1,
+            int(
+                round(
+                    CALIPER_ECG_INTEGRATION_WINDOW_SEC
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        integration_kernel = (
+            np.ones(integration_samples, dtype=float)
+            / integration_samples
+        )
+
+        integrated_energy = np.convolve(
+            energy_signal,
+            integration_kernel,
+            mode="same",
+        )
+
+        finite_energy = integrated_energy[
+            np.isfinite(integrated_energy)
+        ]
+
+        if finite_energy.size == 0:
+            return np.array([], dtype=int)
+
+        energy_median = float(
+            np.median(finite_energy)
+        )
+        energy_std = float(
+            np.std(finite_energy)
+        )
+
+        if not np.isfinite(energy_std) or energy_std <= 0:
+            return np.array([], dtype=int)
+
+        maximum_rate = float(
+            settings.get("maximum_rate", 300.0)
+        )
+
+        minimum_peak_distance_sec = 60.0 / maximum_rate
+
+        minimum_peak_distance_samples = max(
+            1,
+            int(
+                round(
+                    minimum_peak_distance_sec
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        peak_height = energy_median + 0.35 * energy_std
+        peak_prominence = max(
+            0.15 * energy_std,
+            np.finfo(float).eps,
+        )
+
+        candidate_indices, _properties = find_peaks(
+            integrated_energy,
+            height=peak_height,
+            prominence=peak_prominence,
+            distance=minimum_peak_distance_samples,
+        )
+
+        if candidate_indices.size == 0:
+            return np.array([], dtype=int)
+
+        refinement_radius = max(
+            1,
+            int(
+                round(
+                    CALIPER_ECG_REFINEMENT_WINDOW_SEC
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        refined_indices = []
+
+        for candidate_index in candidate_indices:
+            search_start = max(
+                0,
+                candidate_index - refinement_radius,
+            )
+            search_stop = min(
+                filtered_signal.size,
+                candidate_index + refinement_radius + 1,
+            )
+
+            local_signal = np.abs(
+                filtered_signal[search_start:search_stop]
+            )
+
+            if local_signal.size == 0:
+                continue
+
+            local_index = int(
+                np.argmax(local_signal)
+            )
+
+            refined_index = search_start + local_index
+            refined_indices.append(refined_index)
+
+        if not refined_indices:
+            return np.array([], dtype=int)
+
+        refined_indices = np.asarray(
+            sorted(set(refined_indices)),
+            dtype=int,
+        )
+
+        # Reapply minimum spacing after local refinement.
+        accepted_indices = []
+
+        for index in refined_indices:
+            if not accepted_indices:
+                accepted_indices.append(int(index))
+                continue
+
+            if (
+                index - accepted_indices[-1]
+                >= minimum_peak_distance_samples
+            ):
+                accepted_indices.append(int(index))
+                continue
+
+            previous_index = accepted_indices[-1]
+
+            if (
+                abs(filtered_signal[index])
+                > abs(filtered_signal[previous_index])
+            ):
+                accepted_indices[-1] = int(index)
+
+        return np.asarray(
+            accepted_indices,
+            dtype=int,
+        )
+
+
+    def detect_caliper_generic_peaks(
+        self,
+        time_values,
+        signal_values,
+        sampling_frequency,
+        settings,
+    ):
+        """
+        Detect repeating positive or negative peaks in a non-ECG waveform.
+
+        Both polarities are evaluated, and the stronger plausible sequence is used.
+        """
+        if not SCIPY_SIGNAL_AVAILABLE:
+            return np.array([], dtype=int)
+
+        signal_values = np.asarray(
+            signal_values,
+            dtype=float,
+        )
+
+        if signal_values.size < 5:
+            return np.array([], dtype=int)
+
+        working_signal = detrend(
+            signal_values,
+            type="linear",
+        )
+
+        maximum_rate = float(
+            settings.get("maximum_rate", 300.0)
+        )
+
+        minimum_peak_distance_sec = 60.0 / maximum_rate
+
+        minimum_peak_distance_samples = max(
+            1,
+            int(
+                round(
+                    minimum_peak_distance_sec
+                    * sampling_frequency
+                )
+            ),
+        )
+
+        signal_std = float(
+            np.std(working_signal)
+        )
+
+        if not np.isfinite(signal_std) or signal_std <= 0:
+            return np.array([], dtype=int)
+
+        prominence = max(
+            signal_std * 0.25,
+            np.finfo(float).eps,
+        )
+
+        positive_indices, positive_properties = find_peaks(
+            working_signal,
+            prominence=prominence,
+            distance=minimum_peak_distance_samples,
+        )
+
+        negative_indices, negative_properties = find_peaks(
+            -working_signal,
+            prominence=prominence,
+            distance=minimum_peak_distance_samples,
+        )
+
+        positive_prominences = positive_properties.get(
+            "prominences",
+            np.array([]),
+        )
+        negative_prominences = negative_properties.get(
+            "prominences",
+            np.array([]),
+        )
+
+        positive_score = (
+            float(np.median(positive_prominences))
+            * max(1, positive_indices.size)
+            if positive_prominences.size > 0
+            else 0.0
+        )
+
+        negative_score = (
+            float(np.median(negative_prominences))
+            * max(1, negative_indices.size)
+            if negative_prominences.size > 0
+            else 0.0
+        )
+
+        if negative_score > positive_score:
+            return np.asarray(
+                negative_indices,
+                dtype=int,
+            )
+
+        return np.asarray(
+            positive_indices,
+            dtype=int,
+        )
+
+
+    # ------------------------------------------------------------------
+    # Caliper Projection
+    # ------------------------------------------------------------------
+
+    def clear_caliper_projection_graphics(self):
+        """
+        Remove temporary projected interval markers from all waveform plots.
+        """
+        for plot, item in getattr(
+            self,
+            "caliper_projection_graphics",
+            [],
+        ):
+            self._safe_remove_caliper_item(
+                plot,
+                item,
+            )
+
+        self.caliper_projection_graphics = []
+
+
+    def set_caliper_projection_available(
+        self,
+        available,
+        preserve_request=True,
+    ):
+        """
+        Enable or disable the projection control based on whether a valid
+        peak-to-peak interval is available.
+
+        Parameters
+        ----------
+        available : bool
+            True when projection spacing is valid.
+        preserve_request : bool
+            Preserve the user's previous Projection On preference during temporary
+            recalculation.
+        """
+        available = bool(available)
+
+        if not hasattr(self, "caliper_projection_btn"):
+            return
+
+        if not preserve_request:
+            self.caliper_projection_requested = False
+
+        if not available:
+            self.caliper_projection_enabled = False
+
+            self.caliper_projection_btn.blockSignals(True)
+            self.caliper_projection_btn.setChecked(False)
+            self.caliper_projection_btn.setText("Projection OFF")
+            self.caliper_projection_btn.setEnabled(False)
+            self.caliper_projection_btn.blockSignals(False)
+
+            self.clear_caliper_projection_graphics()
+            return
+
+        self.caliper_projection_btn.setEnabled(True)
+
+        requested = bool(
+            getattr(
+                self,
+                "caliper_projection_requested",
+                False,
+            )
+        )
+
+        self.caliper_projection_enabled = requested
+
+        self.caliper_projection_btn.blockSignals(True)
+        self.caliper_projection_btn.setChecked(requested)
+        self.caliper_projection_btn.setText(
+            "Projection ON"
+            if requested
+            else "Projection OFF"
+        )
+        self.caliper_projection_btn.blockSignals(False)
+
+
+    def caliper_projection_is_available(self):
+        """
+        Return True when the two caliper markers define a valid projection range.
+
+        Projection uses the complete manually selected caliper duration. It does
+        not depend on detected peaks or the calculated heart rate.
+        """
+        if not getattr(self, "calipers_enabled", False):
+            return False
+
+        duration = self.get_caliper_selected_duration()
+
+        return duration is not None
+
+
+    def schedule_caliper_projection_update(self, *args):
+        """
+        Debounce projected-marker updates after panning or zooming.
+
+        Peak detection is not rerun. Only visible projection graphics are updated.
+        """
+        if not getattr(self, "caliper_projection_enabled", False):
+            return
+
+        if not hasattr(self, "caliper_projection_timer"):
+            return
+
+        self.caliper_projection_timer.start()
+
+
+    def get_visible_caliper_projection_positions(self):
+        """
+        Return repeated caliper-range markers for the visible X-range.
+
+        The complete selected caliper duration is used as the projection spacing.
+
+        If the selected calipers span start_time to end_time, projected markers are
+        created at:
+
+            start_time - n * selected_duration
+
+        and:
+
+            end_time + n * selected_duration
+
+        where n begins at 1.
+
+        The original start and end caliper positions are not included because they
+        are already displayed as the primary caliper lines.
+
+        Returns
+        -------
+        tuple
+            ``(positions, too_many_markers)``.
+        """
+        if not self.caliper_projection_is_available():
+            return np.array([], dtype=float), False
+
+        try:
+            x_min, x_max = self.waveform_plots[0].viewRange()[0]
+            x_min = float(x_min)
+            x_max = float(x_max)
+        except Exception:
+            return np.array([], dtype=float), False
+
+        if (
+            not np.isfinite(x_min)
+            or not np.isfinite(x_max)
+            or x_max <= x_min
+        ):
+            return np.array([], dtype=float), False
+
+        caliper_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        caliper_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+
+        selected_duration = caliper_end - caliper_start
+
+        if (
+            not np.isfinite(selected_duration)
+            or selected_duration < CALIPER_MINIMUM_SEPARATION_SEC
+        ):
+            return np.array([], dtype=float), False
+
+        buffer_time = (
+            CALIPER_PROJECTION_VIEW_BUFFER_INTERVALS
+            * selected_duration
+        )
+
+        buffered_min = x_min - buffer_time
+        buffered_max = x_max + buffer_time
+
+        # Number of complete selected-duration intervals visible before the start
+        # caliper and after the end caliper.
+        backward_count = max(
+            0,
+            int(
+                np.floor(
+                    (caliper_start - buffered_min)
+                    / selected_duration
+                )
+            ),
+        )
+
+        forward_count = max(
+            0,
+            int(
+                np.floor(
+                    (buffered_max - caliper_end)
+                    / selected_duration
+                )
+            ),
+        )
+
+        total_marker_count = backward_count + forward_count
+
+        if (
+            total_marker_count
+            > CALIPER_PROJECTION_MAX_VISIBLE_MARKERS
+        ):
+            return np.array([], dtype=float), True
+
+        if backward_count > 0:
+            backward_steps = np.arange(
+                1,
+                backward_count + 1,
+                dtype=float,
+            )
+
+            backward_positions = (
+                caliper_start
+                - backward_steps * selected_duration
+            )
+        else:
+            backward_positions = np.array(
+                [],
+                dtype=float,
+            )
+
+        if forward_count > 0:
+            forward_steps = np.arange(
+                1,
+                forward_count + 1,
+                dtype=float,
+            )
+
+            forward_positions = (
+                caliper_end
+                + forward_steps * selected_duration
+            )
+        else:
+            forward_positions = np.array(
+                [],
+                dtype=float,
+            )
+
+        positions = np.concatenate(
+            (
+                backward_positions,
+                forward_positions,
+            )
+        )
+
+        if positions.size == 0:
+            return positions, False
+
+        loaded_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        loaded_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        valid = (
+            np.isfinite(positions)
+            & (positions >= buffered_min)
+            & (positions <= buffered_max)
+        )
+
+        if loaded_start is not None:
+            valid &= positions >= float(loaded_start)
+
+        if loaded_end is not None:
+            valid &= positions <= float(loaded_end)
+
+        positions = np.sort(positions[valid])
+
+        return positions, False
+
+
+    def update_caliper_projection_graphics(self):
+        """
+        Timed wrapper around visible projection-marker rendering.
+        """
+        start_time = perf_counter()
+
+        marker_count = 0
+        too_many_markers = False
+
+        try:
+            (
+                marker_count,
+                too_many_markers,
+            ) = self._update_caliper_projection_graphics_impl()
+
+            return marker_count
+
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "update_caliper_projection_graphics",
+                elapsed,
+                markers_per_plot=marker_count,
+                plot_count=len(
+                    getattr(self, "waveform_plots", [])
+                ),
+                too_many=too_many_markers,
+            )
+
+
+    def _update_caliper_projection_graphics_impl(self):
+        self.clear_caliper_projection_graphics()
+
+        if not getattr(
+            self,
+            "caliper_projection_enabled",
+            False,
+        ):
+            return 0, False
+
+        if not self.caliper_projection_is_available():
+            return 0, False
+
+        (
+            projection_positions,
+            too_many_markers,
+        ) = self.get_visible_caliper_projection_positions()
+
+        if too_many_markers:
+            self.caliper_projection_message = (
+                "Zoom in to display projection markers."
+            )
+
+            if hasattr(self, "caliper_projection_btn"):
+                self.caliper_projection_btn.setText(
+                    "Projection: Zoom In"
+                )
+
+            self.update_caliper_measurement_display()
+            return 0, True
+
+        self.caliper_projection_message = ""
+
+        if hasattr(self, "caliper_projection_btn"):
+            self.caliper_projection_btn.setText(
+                "Projection ON"
+            )
+
+        if projection_positions.size == 0:
+            return 0, False
+
+        projection_pen = pg.mkPen(
+            CALIPER_PROJECTION_COLOR,
+            width=CALIPER_PROJECTION_LINE_WIDTH,
+            style=QtCore.Qt.DotLine,
+        )
+
+        for plot in self.waveform_plots:
+            for projection_time in projection_positions:
+                projection_line = pg.InfiniteLine(
+                    pos=float(projection_time),
+                    angle=90,
+                    movable=False,
+                    pen=projection_pen,
+                )
+
+                projection_line.is_caliper_item = True
+                projection_line.is_caliper_projection = True
+                projection_line.setZValue(1500)
+
+                plot.addItem(
+                    projection_line,
+                    ignoreBounds=True,
+                )
+
+                self.caliper_projection_graphics.append(
+                    (
+                        plot,
+                        projection_line,
+                    )
+                )
+
+        return int(projection_positions.size), False
+
+
+    def get_caliper_selected_duration(self):
+        """
+        Return the complete duration between the two caliper markers.
+
+        Returns
+        -------
+        float or None
+            Positive selected duration in seconds, or None when the markers do not
+            define a valid projection interval.
+        """
+        start_time = getattr(
+            self,
+            "caliper_start_time",
+            None,
+        )
+        end_time = getattr(
+            self,
+            "caliper_end_time",
+            None,
+        )
+
+        if start_time is None or end_time is None:
+            return None
+
+        try:
+            start_time = float(start_time)
+            end_time = float(end_time)
+        except (TypeError, ValueError):
+            return None
+
+        if not np.isfinite(start_time) or not np.isfinite(end_time):
+            return None
+
+        duration = abs(end_time - start_time)
+
+        if duration < CALIPER_MINIMUM_SEPARATION_SEC:
+            return None
+
+        return float(duration)
+
+
+    # ------------------------------------------------------------------
+    # Event Labels
+    # ------------------------------------------------------------------
+
     def toggle_event_labels_visibility(self):
         """
         Show/hide all event marker text labels without replotting waveforms or lines.
@@ -731,7 +3864,265 @@ class AnnotationAppCallbacks:
             for item in list(plot.items()):
                 if isinstance(item, pg.TextItem) and getattr(item, "is_event_marker", False):
                     item.setVisible(visible)
-        
+
+
+    def calculate_caliper_rate(
+        self,
+        peak_times,
+        settings,
+    ):
+        """
+        Validate detected peaks and calculate an average rate.
+
+        Returns
+        -------
+        dict
+            Measurement details and review status.
+        """
+        peak_times = np.asarray(
+            peak_times,
+            dtype=float,
+        )
+
+        result = {
+            "valid": False,
+            "status": "Unable",
+            "message": "Unable to calculate a reliable rate.",
+            "peak_count": int(peak_times.size),
+            "interval_count": 0,
+            "average_interval_sec": None,
+            "median_interval_sec": None,
+            "estimated_rate": None,
+            "rate_unit": settings.get(
+                "rate_unit",
+                "cycles/min",
+            ),
+        }
+
+        if peak_times.size < 2:
+            result["message"] = (
+                "Fewer than two waveform peaks were detected."
+            )
+            return result
+
+        intervals = np.diff(peak_times)
+
+        intervals = intervals[
+            np.isfinite(intervals)
+            & (intervals > 0)
+        ]
+
+        if intervals.size == 0:
+            result["message"] = (
+                "No valid peak-to-peak intervals were detected."
+            )
+            return result
+
+        average_interval = float(
+            np.mean(intervals)
+        )
+        median_interval = float(
+            np.median(intervals)
+        )
+
+        full_peak_duration = float(
+            peak_times[-1] - peak_times[0]
+        )
+
+        interval_count = int(
+            peak_times.size - 1
+        )
+
+        if full_peak_duration <= 0:
+            result["message"] = (
+                "Detected peak times do not define a valid duration."
+            )
+            return result
+
+        average_rate = (
+            60.0
+            * interval_count
+            / full_peak_duration
+        )
+
+        minimum_rate = float(
+            settings.get("minimum_rate", 4.0)
+        )
+        maximum_rate = float(
+            settings.get("maximum_rate", 300.0)
+        )
+
+        result.update(
+            {
+                "peak_count": int(peak_times.size),
+                "interval_count": interval_count,
+                "average_interval_sec": average_interval,
+                "median_interval_sec": median_interval,
+                "estimated_rate": float(average_rate),
+            }
+        )
+
+        if (
+            not np.isfinite(average_rate)
+            or average_rate < minimum_rate
+            or average_rate > maximum_rate
+        ):
+            result["status"] = "Review"
+            result["message"] = (
+                "Detected rate is outside the configured expected range."
+            )
+            return result
+
+        interval_mean = float(
+            np.mean(intervals)
+        )
+
+        if interval_mean > 0:
+            interval_variation = float(
+                np.std(intervals) / interval_mean
+            )
+        else:
+            interval_variation = float("inf")
+
+        individual_rates = 60.0 / intervals
+
+        out_of_range_intervals = np.count_nonzero(
+            (individual_rates < minimum_rate)
+            | (individual_rates > maximum_rate)
+        )
+
+        if peak_times.size == 2:
+            status = "Review"
+            message = (
+                "Rate calculated from one detected interval; "
+                "visually confirm the peak dots."
+            )
+        elif (
+            interval_variation <= 0.20
+            and out_of_range_intervals == 0
+        ):
+            status = "Timing Consistent"
+            message = (
+                "Detected peak sequence is internally consistent. "
+                "Visually confirm the peak dots."
+            )
+        else:
+            status = "Review"
+            message = (
+                "Detected intervals are irregular or include possible "
+                "missed/double detections. Review the peak dots."
+            )
+
+        result["valid"] = True
+        result["status"] = status
+        result["message"] = message
+        result["interval_variation"] = interval_variation
+
+        return result
+
+
+    def draw_caliper_peak_dots(
+        self,
+        peak_times,
+        peak_values,
+    ):
+        """
+        Draw temporary detected-peak dots on the selected source waveform only.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._draw_caliper_peak_dots_impl(
+                peak_times,
+                peak_values,
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "draw_caliper_peak_dots",
+                elapsed,
+                peaks=len(peak_times),
+                source_plot=self.caliper_source_plot_idx,
+            )
+
+
+    def _draw_caliper_peak_dots_impl(
+        self,
+        peak_times,
+        peak_values,
+    ):
+        self.clear_caliper_peak_graphics()
+
+        if not self.calipers_enabled:
+            return
+
+        plot_idx = self.caliper_source_plot_idx
+
+        if plot_idx is None:
+            return
+
+        if plot_idx < 0 or plot_idx >= len(self.waveform_plots):
+            return
+
+        peak_times = np.asarray(
+            peak_times,
+            dtype=float,
+        )
+        peak_values = np.asarray(
+            peak_values,
+            dtype=float,
+        )
+
+        point_count = min(
+            peak_times.size,
+            peak_values.size,
+        )
+
+        if point_count == 0:
+            return
+
+        peak_times = peak_times[:point_count]
+        peak_values = peak_values[:point_count]
+
+        plot = self.waveform_plots[plot_idx]
+
+        peak_item = pg.ScatterPlotItem(
+            x=peak_times,
+            y=peak_values,
+            symbol="o",
+            size=CALIPER_PEAK_DOT_SIZE,
+            pen=pg.mkPen(
+                255,
+                255,
+                255,
+                width=1,
+            ),
+            brush=pg.mkBrush(
+                180,
+                0,
+                180,
+                230,
+            ),
+        )
+
+        peak_item.is_caliper_item = True
+        peak_item.is_caliper_peak_item = True
+        peak_item.setZValue(11000)
+
+        plot.addItem(
+            peak_item,
+            ignoreBounds=True,
+        )
+
+        self.caliper_peak_graphics.append(
+            (plot, peak_item)
+        )
+
+    # ------------------------------------------------------------------
+    # Waveform Finalization
+    # ------------------------------------------------------------------
+       
     def get_waveform_end_time(self):
         """
         Return final timestamp across all loaded signal time axes.
@@ -745,6 +4136,7 @@ class AnnotationAppCallbacks:
             return float(global_end)
 
         return None
+
     
     def is_at_waveform_end(self, value, tolerance=1e-6):
         """
@@ -770,6 +4162,7 @@ class AnnotationAppCallbacks:
             return abs(float(value) - waveform_end) <= tolerance
         except Exception:
             return False
+
     
     def last_annotation_reaches_waveform_end(self):
         """
@@ -786,6 +4179,7 @@ class AnnotationAppCallbacks:
 
         return self.is_at_waveform_end(annotations[-1].get("end", None))
 
+
     def clear_terminal_completion_fields(self):
         """
         Clear waveform completion state and terminal event metadata.
@@ -798,6 +4192,7 @@ class AnnotationAppCallbacks:
             ann["waveform_complete"] = False
             ann["terminal_event_status"] = ""
             ann["terminal_event_comment"] = ""
+
 
     def apply_terminal_completion_to_annotations(self, status, comment):
         """
@@ -825,6 +4220,7 @@ class AnnotationAppCallbacks:
             annotations[-1]["terminal_event_status"] = status
             annotations[-1]["terminal_event_comment"] = comment
 
+
     def update_finalize_button_state(self):
         """
         Enable the Finalize Waveform button only when the latest annotation
@@ -840,6 +4236,7 @@ class AnnotationAppCallbacks:
         )
 
         self.finalize_waveform_btn.setDisabled(not can_finalize)
+
 
     def show_final_completion_dialog(self):
         """
@@ -916,7 +4313,33 @@ class AnnotationAppCallbacks:
 
         return status, comment
 
+
     def handle_finalize_waveform_clicked(self):
+        """
+        Timed wrapper around finalization, redraw, saving, and UI updates.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._handle_finalize_waveform_clicked_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_finalize_waveform_clicked TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+                waveform_complete=getattr(
+                    self,
+                    "waveform_complete",
+                    False,
+                ),
+            )
+            
+
+    def _handle_finalize_waveform_clicked_impl(self):
         """
         Finalize waveform annotation after the final annotation reaches the
         waveform end.
@@ -981,6 +4404,10 @@ class AnnotationAppCallbacks:
 
         self.update_sidebar_ui()
 
+    # ------------------------------------------------------------------
+    # Plotting and Marking on Waveform
+    # ------------------------------------------------------------------
+
     def get_plot_safe_view_y_range(self, plot):
             try:
                 y_min, y_max = plot.viewRange()[1]
@@ -995,7 +4422,36 @@ class AnnotationAppCallbacks:
             except Exception:
                 return -1.0, 1.0
 
+
     def plot_event_markers(self):
+        """
+        Timed wrapper around event-line and event-label construction.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._plot_event_markers_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            manifest_events = getattr(self, "manifest_events", None)
+
+            try:
+                event_count = len(manifest_events)
+            except Exception:
+                event_count = 0
+
+            self._perf_log(
+                "plot_event_markers",
+                elapsed,
+                event_rows=event_count,
+                waveform_plots=len(
+                    getattr(self, "waveform_plots", [])
+                ),
+            )
+
+
+    def _plot_event_markers_impl(self):
         """
         Plots vertical dashed lines and labels for each event in self.manifest_events,
         using the front end's relative second axis.
@@ -1113,6 +4569,36 @@ class AnnotationAppCallbacks:
 
 
     def plot_all_leads(self):
+        """
+        Timed wrapper around waveform curve and event-marker construction.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._plot_all_leads_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            total_points = 0
+
+            for lead in getattr(self, "leads_ds", []) or []:
+                if lead is not None:
+                    try:
+                        total_points += len(lead)
+                    except Exception:
+                        pass
+
+            self._perf_log(
+                "plot_all_leads",
+                elapsed,
+                total_lead_points=total_points,
+                lead_count=len(getattr(self, "leads_ds", []) or []),
+            )
+
+            self._print_plot_performance_summary()
+
+
+    def _plot_all_leads_impl(self):
         """
         Plots each lead waveform, applies robust autoscale (centered at zero), installs axis labels,
         and overlays event markers (vertical dashed lines + labels) for all valid events.
@@ -1399,6 +4885,9 @@ class AnnotationAppCallbacks:
             if not self.manifest_events.empty:
                 self.plot_event_markers()
 
+    # ------------------------------------------------------------------
+    # Annotation Functionality
+    # ------------------------------------------------------------------
 
     def delete_annotation_files_for_current_user(self):
         """
@@ -1421,9 +4910,37 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete annotation file {path}: {e}")
 
-        self.refresh_subject_dropdown_preserve_selection()
+        self.refresh_selected_record_annotation_status()
+
 
     def handle_remove_last_mark(self):
+        """
+        Timed wrapper around undo, graphics rebuilding, saving, and refresh.
+        """
+        annotation_count_before = len(
+            getattr(self, "annotations", [])
+        )
+
+        start_time = perf_counter()
+
+        try:
+            return self._handle_remove_last_mark_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            annotation_count_after = len(
+                getattr(self, "annotations", [])
+            )
+
+            self._perf_log(
+                "handle_remove_last_mark TOTAL",
+                elapsed,
+                annotations_before=annotation_count_before,
+                annotations_after=annotation_count_after,
+            )
+
+
+    def _handle_remove_last_mark_impl(self):
         """
         Removes the most recent annotation ('last mark') from table and plots.
         Resets sidebar and markers to previous state or initial if no marks remain.
@@ -1457,7 +4974,33 @@ class AnnotationAppCallbacks:
         else:
             self.delete_annotation_files_for_current_user()
 
+
     def handle_load_annotation(self):
+        """
+        Timed wrapper around annotation file loading and graphics reconstruction.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._handle_load_annotation_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_load_annotation TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+                waveform_complete=getattr(
+                    self,
+                    "waveform_complete",
+                    False,
+                ),
+            )
+
+
+    def _handle_load_annotation_impl(self):
         print("LOAD ANNOTATIONS BUTTON CLICKED")
         user_name = self.get_user_name()
         subject = self.get_selected_subject_name()
@@ -1573,7 +5116,7 @@ class AnnotationAppCallbacks:
         self.update_waveform_and_mark()
         self.update_sidebar_ui()
         self.update_finalize_button_state()
-        self.refresh_subject_dropdown_preserve_selection()
+        # self.refresh_subject_dropdown_preserve_selection()
 
         # --- Center plot(s) on last annotation's end if loaded ---
         if self.annotations and hasattr(self, "time_axis") and self.time_axis is not None and len(self.time_axis) > 0:
@@ -1635,6 +5178,7 @@ class AnnotationAppCallbacks:
         # Make sure final visual state is correct after message override
         self.update_finalize_button_state()
 
+
     def get_loaded_global_time_range(self):
         """
         Return global min/max absolute epoch seconds across all loaded signal time axes.
@@ -1667,7 +5211,37 @@ class AnnotationAppCallbacks:
 
         return min(starts), max(stops)
 
+    # ------------------------------------------------------------------
+    # Loading Waveform Data
+    # ------------------------------------------------------------------
+
     def load_subject_data(self):
+        """
+        Timed wrapper around the full subject-loading workflow.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._load_subject_data_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            record = self.get_selected_subject_record() or {}
+
+            self._perf_log(
+                "load_subject_data TOTAL",
+                elapsed,
+                subject=record.get("subject", ""),
+                encounter=record.get("encounter", ""),
+                file_tag=record.get("file_tag", ""),
+                kind=record.get("kind", ""),
+            )
+
+            self._print_waveform_memory_summary()
+            self._print_plot_performance_summary()
+
+            
+    def _load_subject_data_impl(self):
         subject_idx = self.subject_dropdown.currentIndex()
         if subject_idx < 0:
             print("No subject selected.")
@@ -1680,6 +5254,18 @@ class AnnotationAppCallbacks:
             print("Invalid subject selection. Expected subject record dict.")
             self.data_store = {}
             return
+
+        # Clear temporary caliper state before replacing waveform plots.
+        self.clear_calipers(
+            clear_measurement=True,
+            update_toggle=True,
+        )
+
+        if hasattr(self, "caliper_source_dropdown"):
+            self.caliper_source_dropdown.blockSignals(True)
+            self.caliper_source_dropdown.clear()
+            self.caliper_source_dropdown.setDisabled(True)
+            self.caliper_source_dropdown.blockSignals(False)
 
         subject_name = record.get("subject", "")
         encounter_name = record.get("encounter", "")
@@ -1715,6 +5301,8 @@ class AnnotationAppCallbacks:
         code_start_sec = None
         code_stop_sec = None
 
+        waveform_load_start = perf_counter()
+
         loaded_waveforms = load_waveforms_for_subject(
             base_folder,
             record,
@@ -1723,12 +5311,37 @@ class AnnotationAppCallbacks:
             code_stop_sec=None,
             desired_waveforms=WAVEFORM_PLOT_ORDER,
         )
+
+        waveform_load_elapsed = perf_counter() - waveform_load_start
+
+        # Timing Waveform Loading
+        self._perf_log(
+            "load_waveforms_for_subject",
+            waveform_load_elapsed,
+            kind=record.get("kind", ""),
+            source_path=record.get(
+                "h5_path",
+                record.get("csv_path", ""),
+            ),
+        )
+        # Start timer
+        normalization_start = perf_counter()
+
         times_ds = loaded_waveforms.get("times_ds", None)
         times_by_lead = loaded_waveforms.get("times_by_lead", None)
         leads_ds = loaded_waveforms.get("leads_ds", None)
         lead_names = loaded_waveforms.get("lead_names", None)
         units = loaded_waveforms.get("units", None)
         Fs = loaded_waveforms.get("Fs", None)
+
+        # Calculate Time
+        normalization_elapsed = perf_counter() - normalization_start
+        self._perf_log(
+            "normalize_and_assign_loaded_waveforms",
+            normalization_elapsed,
+            global_time_points=len(times_ds),
+            lead_count=len(leads_ds),
+        )
 
         if times_ds is None:
             times_ds = np.array([])
@@ -1783,12 +5396,17 @@ class AnnotationAppCallbacks:
         self.code_stop_sec = None
 
         print(times_ds, leads_ds, lead_names, units, Fs)
+
         # --- Filter manifest events for current subject and code window ---
         # ------------------------------------------------------------------
         # Load manifest events as optional metadata only.
         # Do not use them to crop the waveform.
         # Do not set code_start_sec/code_stop_sec from them.
         # ------------------------------------------------------------------
+
+        # Timer for Manifest Loader
+        manifest_load_start = perf_counter()
+
         self.manifest_events = pd.DataFrame()
 
         if os.path.exists(code_csv_path):
@@ -1833,6 +5451,16 @@ class AnnotationAppCallbacks:
             print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
             self.manifest_events = pd.DataFrame()
 
+        # Manifest Timer stop
+        manifest_load_elapsed = perf_counter() - manifest_load_start
+
+        self._perf_log(
+            "load_manifest_events",
+            manifest_load_elapsed,
+            event_count=len(self.manifest_events),
+            manifest_path=code_csv_path,
+        )
+
         print("data x:", times_ds[:10], "...", times_ds[-10:])
         print("annot", [ (a['start'], a['end']) for a in self.annotations ])
         print("viewRange before region:", self.waveform_plots[0].viewRange())
@@ -1853,15 +5481,38 @@ class AnnotationAppCallbacks:
             self.last_mark = 0.0
         self.current_marker = None
     
+        data_store_start = perf_counter()
+
         self.data_store = {
             "time": times_ds.tolist() if hasattr(times_ds, "tolist") else list(times_ds),
-            "leads": [l.tolist() if l is not None else None for l in leads_ds],
+            "leads": [
+                lead.tolist() if lead is not None else None
+                for lead in leads_ds
+            ],
             "lead_names": lead_names,
             "subject": subject_name,
             "encounter": encounter_name,
             "file_tag": record.get("file_tag", ""),
-            "source_path": record.get("h5_path", record.get("csv_path", "")),
+            "source_path": record.get(
+                "h5_path",
+                record.get("csv_path", ""),
+            ),
         }
+
+        data_store_elapsed = perf_counter() - data_store_start
+
+        stored_lead_value_count = sum(
+            len(lead)
+            for lead in self.data_store["leads"]
+            if isinstance(lead, list)
+        )
+
+        self._perf_log(
+            "build_data_store_python_lists",
+            data_store_elapsed,
+            time_values=len(self.data_store["time"]),
+            lead_values=stored_lead_value_count,
+        )
         self.annotations = []
         print("Loaded data for:", subject_name)
         # After assigning self.time_axis, self.leads_ds, self.lead_names:
@@ -1876,6 +5527,8 @@ class AnnotationAppCallbacks:
             self.event_labels_visible = True
         
         self.plot_all_leads()
+
+        self.populate_caliper_source_dropdown()
 
         self.schedule_visible_y_autoscale()
 
@@ -2081,9 +5734,18 @@ class AnnotationAppCallbacks:
             if mouse_event.button() != Qt.LeftButton:
                 return
 
+            # While the user is adjusting the calipers, ordinary plot clicks must not
+            # create or move annotation endpoints.
+            if (
+                getattr(self, "calipers_enabled", False)
+                and getattr(self, "caliper_adjust_enabled", False)
+            ):
+                return
+
             if getattr(self, "waveform_complete", False):
                 self.mark_warning.setText(
-                    "Waveform annotation is complete. Remove the last mark if you need to revise it."
+                    "Waveform annotation is complete. Remove the last mark "
+                    "if you need to revise it."
                 )
                 self.mark_warning.setStyleSheet(
                     "font-size:13px; font-weight:bold; color:#199E40;"
@@ -2127,9 +5789,36 @@ class AnnotationAppCallbacks:
         x_max = x_min + window_width
         for plt in self.waveform_plots:
             plt.setXRange(x_min, x_max, padding=0)
-    
+
 
     def handle_mark_clicked(self):
+        """
+        Timed wrapper around the complete Mark-button workflow.
+        """
+        annotation_count_before = len(
+            getattr(self, "annotations", [])
+        )
+
+        start_time = perf_counter()
+
+        try:
+            return self._handle_mark_clicked_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            annotation_count_after = len(
+                getattr(self, "annotations", [])
+            )
+
+            self._perf_log(
+                "handle_mark_clicked TOTAL",
+                elapsed,
+                annotations_before=annotation_count_before,
+                annotations_after=annotation_count_after,
+            )
+            
+
+    def _handle_mark_clicked_impl(self):
         print("handle_mark_clicked CALLED")
 
         if getattr(self, "waveform_complete", False):
@@ -2158,9 +5847,20 @@ class AnnotationAppCallbacks:
                 "encounter": record.get("encounter", "") if record else "",
                 "namespace": record.get("namespace", "") if record else "",
                 "file_tag": record.get("file_tag", "") if record else "",
-                "source_path": record.get("h5_path", record.get("csv_path", "")) if record else "",
+                "source_path": (
+                    record.get(
+                        "h5_path",
+                        record.get("csv_path", ""),
+                    )
+                    if record
+                    else ""
+                ),
                 "cpr": self.get_cpr_val(),
-                "rhythm_label": self.rhythm_dropdown.currentText() if self.rhythm_dropdown.isEnabled() else "",
+                "rhythm_label": (
+                    self.rhythm_dropdown.currentText()
+                    if self.rhythm_dropdown.isEnabled()
+                    else ""
+                ),
                 "rhythm_expl": self.rhythm_explanation.toPlainText(),
                 "start": self.last_mark,
                 "end": self.current_marker,
@@ -2174,7 +5874,7 @@ class AnnotationAppCallbacks:
             print(f"APPENDING ANNOTATION: {ann}")
             self.annotations.append(ann)
 
-            # Prepare for next marking
+            # Prepare for the next annotation.
             self.last_mark = self.current_marker
             self.current_marker = None
             self.pending_clear_sidebar = True
@@ -2187,20 +5887,28 @@ class AnnotationAppCallbacks:
         self.update_table_data()
         self.update_finalize_button_state()
 
-        if final_segment_reached and not getattr(self, "waveform_complete", False):
+        if final_segment_reached and not getattr(
+            self,
+            "waveform_complete",
+            False,
+        ):
             self.mark_warning.setText(
-                "End of waveform reached. Please click 'Finalize Waveform' when ready."
+                "End of waveform reached. Please click "
+                "'Finalize Waveform' when ready."
             )
             self.mark_warning.setStyleSheet(
                 "font-size:13px; font-weight:bold; color:#285680;"
             )
             self.mark_warning.setWordWrap(True)
-
             self.update_finalize_button_state()
 
-        self.autosave_annotations()
+        # Do not autosave after every mark.
+        # The QTimer performs autosave every two minutes.
 
-        print("Current ANNOTATIONS LIST after marking:", self.annotations)
+        print(
+            "Current ANNOTATIONS LIST after marking:",
+            self.annotations,
+        )
 
 
     def get_user_name(self):
@@ -2214,6 +5922,7 @@ class AnnotationAppCallbacks:
         elif hasattr(self.username_input, "text"):
             return self.username_input.text().strip()
         return ""
+
     
     def get_selected_subject_record(self):
         """
@@ -2317,6 +6026,33 @@ class AnnotationAppCallbacks:
         self.remove_last_btn.setDisabled(len(self.annotations) == 0)
 
     def update_waveform_and_mark(self):
+        """
+        Timed wrapper around annotation and pending-marker graphics rebuilding.
+        """
+        before_counts = self._get_plot_item_counts()
+        start_time = perf_counter()
+
+        try:
+            return self._update_waveform_and_mark_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+            after_counts = self._get_plot_item_counts()
+
+            self._perf_log(
+                "update_waveform_and_mark",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+                items_before=before_counts["total"],
+                items_after=after_counts["total"],
+                regions_after=after_counts["regions"],
+                text_after=after_counts["text_items"],
+                lines_after=after_counts["infinite_lines"],
+            )
+
+
+    def _update_waveform_and_mark_impl(self):
         marker = getattr(self, "current_marker", None)
         last_mark = getattr(self, "last_mark", None)
         annotations = getattr(self, "annotations", [])
@@ -2334,8 +6070,30 @@ class AnnotationAppCallbacks:
                         items_to_remove.append(item)
 
                 elif isinstance(item, pg.InfiniteLine):
-                    if getattr(item, "is_marker", False) and not getattr(item, "is_event_marker", False):
+                    # Adding check for Calipers
+                    is_annotation_marker = getattr(
+                        item,
+                        "is_marker",
+                        False,
+                    )
+                    is_event_marker = getattr(
+                        item,
+                        "is_event_marker",
+                        False,
+                    )
+                    is_caliper_item = getattr(
+                        item,
+                        "is_caliper_item",
+                        False,
+                    )
+
+                    if (
+                        is_annotation_marker
+                        and not is_event_marker
+                        and not is_caliper_item
+                    ):
                         items_to_remove.append(item)
+
             for itm in items_to_remove:
                 plot.removeItem(itm)
 
@@ -2410,6 +6168,26 @@ class AnnotationAppCallbacks:
 
 
     def save_all_to_file(self):
+        """
+        Timed wrapper around manual annotation saving and dropdown refresh.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._save_all_to_file_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "save_all_to_file TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+            )
+
+
+    def _save_all_to_file_impl(self):
         annotations = getattr(self, "annotations", [])
         subject = self.get_selected_subject_name()
         user_name = self.get_user_name()
@@ -2454,13 +6232,49 @@ class AnnotationAppCallbacks:
                 except Exception as e:
                     print(f"Warning: Could not delete complete annotation file: {e}")
 
-        pd.DataFrame(annotations).to_csv(fullpath, index=False)
+        # Save Timer Start
+        csv_write_start = perf_counter()
+
+        pd.DataFrame(annotations).to_csv(
+            fullpath,
+            index=False,
+        )
+
+        # Save Timer Calculation
+        csv_write_elapsed = perf_counter() - csv_write_start
+        self._perf_log(
+            "manual_save_csv_write",
+            csv_write_elapsed,
+            rows=len(annotations),
+            path=fullpath,
+        )
         self.save_message.setText(f"Saved to {fullpath}")
 
-        self.refresh_subject_dropdown_preserve_selection()
+        # Maintain refresh on manual save
+        self.refresh_selected_record_annotation_status()
 
 
     def autosave_annotations(self):
+        """
+        Timed wrapper around autosave and completion-count refresh.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._autosave_annotations_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "autosave_annotations TOTAL",
+                elapsed,
+                annotations=len(
+                    getattr(self, "annotations", [])
+                ),
+            )
+            
+
+    def _autosave_annotations_impl(self):
         annotations = getattr(self, "annotations", [])
         subject = self.get_selected_subject_name()
         user_name = self.get_user_name()
@@ -2470,6 +6284,7 @@ class AnnotationAppCallbacks:
             return
 
         output_folder = self.get_annotation_output_folder()
+
         if not output_folder:
             return
 
@@ -2477,8 +6292,14 @@ class AnnotationAppCallbacks:
 
         partial_filename, complete_filename = self.get_annotation_filenames()
 
-        partial_path = os.path.join(output_folder, partial_filename)
-        complete_path = os.path.join(output_folder, complete_filename)
+        partial_path = os.path.join(
+            output_folder,
+            partial_filename,
+        )
+        complete_path = os.path.join(
+            output_folder,
+            complete_filename,
+        )
 
         if getattr(self, "waveform_complete", False):
             fullpath = complete_path
@@ -2486,23 +6307,51 @@ class AnnotationAppCallbacks:
             if os.path.exists(partial_path):
                 try:
                     os.remove(partial_path)
-                    print(f"Deleted partial annotation file: {partial_path}")
-                except Exception as e:
-                    print(f"Warning: Could not delete partial annotation file: {e}")
+                    print(
+                        "Deleted partial annotation file: "
+                        f"{partial_path}"
+                    )
+                except Exception as exc:
+                    print(
+                        "Warning: Could not delete partial annotation "
+                        f"file: {exc}"
+                    )
         else:
             fullpath = partial_path
 
             if os.path.exists(complete_path):
                 try:
                     os.remove(complete_path)
-                    print(f"Deleted complete annotation file after reverting to partial: {complete_path}")
-                except Exception as e:
-                    print(f"Warning: Could not delete complete annotation file: {e}")
+                    print(
+                        "Deleted complete annotation file after "
+                        f"reverting to partial: {complete_path}"
+                    )
+                except Exception as exc:
+                    print(
+                        "Warning: Could not delete complete annotation "
+                        f"file: {exc}"
+                    )
 
-        pd.DataFrame(annotations).to_csv(fullpath, index=False)
+        # Save Timer Start
+        csv_write_start = perf_counter()
+
+        pd.DataFrame(annotations).to_csv(
+            fullpath,
+            index=False,
+        )
+
+        # Save Timer Calculation
+        csv_write_elapsed = perf_counter() - csv_write_start
+        self._perf_log(
+            "autosave_csv_write",
+            csv_write_elapsed,
+            rows=len(annotations),
+            path=fullpath,
+        )
         self.save_message.setText(f"Auto-saved to {fullpath}")
 
-        self.refresh_subject_dropdown_preserve_selection()
+        # Possible slow-down
+        #self.refresh_subject_dropdown_preserve_selection()
 
     # --- Utility slots for GUI logic that you will implement: ---
     def get_cpr_val(self):

@@ -28,6 +28,7 @@ Recommended Reading Order
    Waveform Loading <waveform_loading>
    Annotation Lifecycle <annotation_lifecycle>
    UI and Callback Reference <ui_callbacks>
+   Caliper Implementation <caliper_implementation>
    Packaging and Distribution <packaging>
    Testing and Validation <testing_validation>
    Debugging Guide <debugging>

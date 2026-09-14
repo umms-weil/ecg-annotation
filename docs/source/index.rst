@@ -35,6 +35,7 @@ If you are installing, extending, packaging, or maintaining the app, start here:
    Getting Started <user_manual/getting_started>
    Annotation Workflow <user_manual/annotation_workflow>
    Interface Guide <user_manual/interface_guide>
+   Waveform Calipers <user_manual/calipers>
    Saving and Resuming <user_manual/saving_and_resuming>
    Completion and Finalization <user_manual/completion_and_finalization>
    Walkthrough Videos <user_manual/walkthrough_videos>
@@ -53,6 +54,7 @@ If you are installing, extending, packaging, or maintaining the app, start here:
    Waveform Loading <developer_manual/waveform_loading>
    Annotation Lifecycle <developer_manual/annotation_lifecycle>
    UI and Callback Reference <developer_manual/ui_callbacks>
+   Caliper Implementation <developer_manual/caliper_implementation>
    Packaging and Distribution <developer_manual/packaging>
    Testing and Validation <developer_manual/testing_validation>
    Debugging Guide <developer_manual/debugging>
