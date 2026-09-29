@@ -155,6 +155,13 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.caliper_peak_graphics = []
         self.caliper_projection_graphics = []
 
+        self.caliper_peak_mode = "auto"
+        self.caliper_auto_detection_enabled = True
+        self.caliper_manual_labeling_enabled = False
+
+        # Points remain in insertion order so Undo removes the most recently added dot.
+        self.caliper_manual_points = []
+
         self._caliper_sync_in_progress = False
 
         font_css = f"font-size:13px; color:{UM_BLUE}; background:white; border:2px solid black;"
@@ -622,6 +629,112 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         )
         caliperrow.addWidget(self.caliper_source_dropdown)
 
+        self.caliper_auto_btn = QPushButton("Auto Peaks ON")
+        self.caliper_auto_btn.setCheckable(True)
+        self.caliper_auto_btn.setChecked(True)
+        self.caliper_auto_btn.setDisabled(True)
+        self.caliper_auto_btn.setToolTip(
+            "Automatically detect waveform peaks between the calipers."
+        )
+        self.caliper_auto_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:#666666;
+                color:#FFFFFF;
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:checked {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_auto_btn)
+
+        self.caliper_manual_label_btn = QPushButton("Manual Label OFF")
+        self.caliper_manual_label_btn.setCheckable(True)
+        self.caliper_manual_label_btn.setChecked(False)
+        self.caliper_manual_label_btn.setDisabled(True)
+        self.caliper_manual_label_btn.setToolTip(
+            "Turn on manual labeling, then click the selected source waveform "
+            "inside the calipers to add temporary peak dots. "
+            "Normal annotation clicks are disabled while manual labeling is on."
+        )
+        self.caliper_manual_label_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:#666666;
+                color:#FFFFFF;
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:checked {{
+                background:#7A1FA2;
+                color:#FFFFFF;
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_manual_label_btn)
+
+        self.caliper_undo_dot_btn = QPushButton("Undo Dot")
+        self.caliper_undo_dot_btn.setDisabled(True)
+        self.caliper_undo_dot_btn.setToolTip(
+            "Remove the most recently added manual peak dot."
+        )
+        self.caliper_undo_dot_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_undo_dot_btn)
+
+        self.caliper_clear_dots_btn = QPushButton("Clear Dots")
+        self.caliper_clear_dots_btn.setDisabled(True)
+        self.caliper_clear_dots_btn.setToolTip(
+            "Remove all manually placed peak dots."
+        )
+        self.caliper_clear_dots_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background:{UM_BLUE};
+                color:{UM_MAIZE};
+                font-size:11px;
+                font-weight:bold;
+                border-radius:3px;
+                padding:3px 8px;
+            }}
+            QPushButton:disabled {{
+                background:#B0B0B0;
+                color:#FFFFFF;
+            }}
+            """
+        )
+        caliperrow.addWidget(self.caliper_clear_dots_btn)
+
         self.caliper_projection_btn = QPushButton("Projection OFF")
         self.caliper_projection_btn.setCheckable(True)
         self.caliper_projection_btn.setChecked(False)
@@ -946,6 +1059,11 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
         self.caliper_source_dropdown.currentIndexChanged.connect(self.handle_caliper_source_changed)
         self.caliper_projection_btn.toggled.connect(self.toggle_caliper_projection)
         self.caliper_reset_btn.clicked.connect(self.reset_calipers)
+
+        self.caliper_auto_btn.toggled.connect(self.toggle_caliper_auto_detection)
+        self.caliper_manual_label_btn.toggled.connect(self.toggle_caliper_manual_labeling)
+        self.caliper_undo_dot_btn.clicked.connect(self.undo_last_manual_caliper_dot)
+        self.caliper_clear_dots_btn.clicked.connect(self.clear_manual_caliper_dots)
 
         # UI sidebar
         self.username_input.currentTextChanged.connect(self.handle_user_changed)

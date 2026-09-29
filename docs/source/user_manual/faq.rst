@@ -110,6 +110,27 @@ Use the Y-axis controls next to each waveform:
 - **Y-** to shift down.
 - **AUTO ON/OFF** to control automatic Y-scaling.
 
+Can I manually select peaks for the Caliper rate?
+--------------------------------------------------
+
+Yes. Turn on Calipers, select the source waveform, position the caliper markers, and enable **Manual Label**.
+
+Click the repeating waveform events inside the caliper interval. After at least two dots are added, the app calculates a temporary manual BPM or cycle rate.
+
+Turn Manual Label off before resuming normal rhythm annotation.
+
+What if automatic Caliper peak detection is incorrect?
+-------------------------------------------------------
+
+Turn off **Auto Peaks** and use **Manual Label** to select the waveform events yourself.
+
+Use **Undo Dot** to remove the most recently added point or **Clear Dots** to restart the manual measurement.
+
+Are manually placed Caliper dots saved?
+----------------------------------------
+
+No. Manual dots, automatic dots, calculated rates, and projection markers are temporary and are not added to annotation files.
+
 What happens if my interval is too short?
 -----------------------------------------
 

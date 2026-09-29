@@ -7,3 +7,5 @@ software/dist/*
 supplemental/
 data/
 wheelhouse_win
+*.pyc
+__pycache__/

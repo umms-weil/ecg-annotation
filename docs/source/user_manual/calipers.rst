@@ -49,22 +49,34 @@ Caliper Controls
 The Calipers toolbar appears above the waveform plots.
 
 ``Calipers ON/OFF``
-   Shows or hides the caliper feature.
+   Shows or hides the complete caliper feature.
 
 ``Adjust ON/OFF``
-   Controls whether the caliper markers can be dragged.
+   Controls whether the start and end caliper markers can be dragged.
 
 ``Source``
-   Selects the waveform used for peak detection and rate calculation.
+   Selects the waveform used for automatic peak detection or manual dot placement.
+
+``Auto Peaks ON/OFF``
+   Enables or disables automatic peak detection within the selected caliper interval.
+
+``Manual Label ON/OFF``
+   Enables manual placement of temporary peak dots on the selected source waveform.
+
+``Undo Dot``
+   Removes the most recently added manual peak dot.
+
+``Clear Dots``
+   Removes all manually added peak dots.
 
 ``Projection ON/OFF``
    Shows or hides repeated markers based on the complete selected caliper range.
 
 ``Reset``
-   Moves the calipers to the center of the current visible time window.
+   Moves the start and end calipers to the center of the current visible time window.
 
 ``Result box``
-   Displays the selected source, detected peak count, estimated rate, and measurement status.
+   Displays the selected source, peak count, estimated rate, and calculation mode or status.
 
 Turning Calipers On
 -------------------
@@ -175,6 +187,227 @@ For other periodic physiological signals, the dots should align with the repeati
    Regularly spaced artifact can be mistaken for cardiac or physiological activity.
 
    For example, CPR compressions, pacing spikes, repetitive noise, or T waves may produce regularly spaced detections. A plausible rate does not guarantee that the dots represent true heartbeats.
+
+Peak Labeling Modes
+-------------------
+
+The Calipers feature supports two ways to identify repeating waveform events:
+
+- Automatic peak detection.
+- Manual peak labeling.
+
+Automatic and manual dots are temporary and are not saved with annotations.
+
+Automatic Peak Detection
+------------------------
+
+When **Auto Peaks ON** is selected, the app analyzes the source waveform between the two caliper markers.
+
+The app then:
+
+1. Detects candidate waveform peaks.
+2. Displays temporary dots at the accepted peak locations.
+3. Calculates the intervals between detected peaks.
+4. Displays an estimated rate.
+5. Displays a timing-consistency status.
+
+Automatic detection is useful for quickly estimating a rate, but it may be inaccurate when the waveform contains:
+
+- CPR artifact.
+- Pacing spikes.
+- Wide or unusual complexes.
+- Ventricular fibrillation.
+- Low-amplitude activity.
+- Repetitive noise.
+- Motion artifact.
+- Missing samples.
+- Highly irregular rhythms.
+
+.. important::
+
+   Always review the automatically detected dots.
+
+   A plausible BPM and a timing-consistent sequence do not guarantee that the detected dots represent true cardiac beats.
+
+Turning Automatic Detection Off
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Click **Auto Peaks ON** to turn automatic peak detection off.
+
+When automatic detection is off:
+
+- Automatic peak dots are removed.
+- The automatic rate is cleared.
+- The caliper start and end markers remain available.
+- Projection remains based on the complete selected caliper range.
+- Manual labeling can be enabled.
+
+Manual Peak Labeling
+--------------------
+
+Manual labeling allows the user to select the waveform events used for the rate calculation.
+
+This is useful when automatic detection does not correctly identify peaks in noisy, irregular, or artifact-heavy signals.
+
+To use manual labeling:
+
+1. Turn Calipers on.
+2. Select the desired source waveform.
+3. Position the start and end calipers around the interval of interest.
+4. Turn **Adjust OFF**.
+5. Click **Manual Label OFF** to turn manual labeling on.
+6. Click the desired waveform events on the selected source waveform.
+7. Add at least two dots to calculate a rate.
+8. Review the displayed manual BPM or cycle rate.
+9. Turn **Manual Label OFF** when finished placing dots.
+10. Continue normal rhythm annotation.
+
+While **Manual Label ON** is active:
+
+- Plot clicks add manual dots.
+- Normal annotation endpoint clicks are temporarily disabled.
+- Dots can be added only on the selected source waveform.
+- Dots can be added only between the two caliper markers.
+- Each click snaps to the nearest valid waveform sample.
+
+Manual Dot Appearance
+---------------------
+
+Manual peak dots use a different color from automatically detected dots.
+
+Manual dots appear only on the selected source waveform.
+
+The app stores each manual dot using:
+
+- The nearest valid waveform timestamp.
+- The actual waveform value at that timestamp.
+
+The mouse pointer's vertical position is not used as the saved dot value.
+
+Manual Rate Calculation
+-----------------------
+
+At least two manual dots are required.
+
+The app sorts the manual dots by waveform time and calculates:
+
+.. code-block:: text
+
+   interval count = number of manual dots - 1
+
+   manual rate =
+       60 × interval count
+       ÷ (last manual dot time - first manual dot time)
+
+For an ECG source, the result is displayed in BPM.
+
+For a configured non-ECG periodic source, the result may be displayed in cycles/min.
+
+Example:
+
+.. code-block:: text
+
+   II | 5 manual peaks | 76.2 BPM | Manual
+
+The app may also calculate the average and median intervals for additional measurement details.
+
+Manual calculations do not receive an automatic timing-confidence label. The result is labeled ``Manual`` because the user selected the waveform events.
+
+Undoing a Manual Dot
+--------------------
+
+Click **Undo Dot** to remove the most recently added manual dot.
+
+Undo uses the order in which the dots were added, not their left-to-right waveform order.
+
+After removing a dot:
+
+- The temporary dot graphics are updated.
+- The rate is recalculated.
+- If fewer than two dots remain, no rate is displayed.
+
+Clearing Manual Dots
+--------------------
+
+Click **Clear Dots** to remove all manually added dots.
+
+After clearing:
+
+- The manual BPM is cleared.
+- Manual labeling remains available.
+- New dots can be added inside the current caliper interval.
+
+Returning to Normal Annotation
+------------------------------
+
+Turn **Manual Label OFF** when finished placing dots.
+
+When manual labeling is turned off:
+
+- Existing manual dots remain visible.
+- The manual rate remains visible.
+- Plot clicks return to normal annotation behavior.
+- Caliper measurements remain temporary.
+
+This allows the user to review the manual rate and continue marking rhythm intervals normally.
+
+Adjust Mode and Manual Labeling
+-------------------------------
+
+Caliper adjustment and manual peak labeling are separate interaction modes.
+
+``Adjust ON``
+   Drag the start or end caliper markers.
+
+``Manual Label ON``
+   Click the source waveform to place manual peak dots.
+
+The two modes should not be active simultaneously.
+
+Turning on Adjust mode disables active manual dot placement. Turning on Manual Label mode turns Adjust mode off.
+
+Changing the Measurement Context
+--------------------------------
+
+Manual dots are cleared when their measurement context changes.
+
+This includes:
+
+- Moving either caliper marker.
+- Resetting the calipers.
+- Changing the source waveform.
+- Loading a new subject.
+- Turning Calipers off.
+- Switching back to automatic peak detection.
+
+This prevents old manual dots from being used with a different waveform or caliper interval.
+
+Automatic and Manual Results
+----------------------------
+
+Automatic and manual peak sets are not combined.
+
+``Automatic mode``
+   Uses only automatically detected peaks.
+
+``Manual mode``
+   Uses only user-selected peak dots.
+
+Switching modes clears the peak set from the previous mode and recalculates the result using the active mode.
+
+Projection and Peak Labeling
+----------------------------
+
+Projection is independent of automatic and manual peak labeling.
+
+Projection spacing is always based on the complete selected caliper duration:
+
+.. code-block:: text
+
+   projection spacing =
+       absolute(caliper end time - caliper start time)
+
+Automatic or manual peak intervals do not change the projection spacing.
 
 Estimated Rate
 --------------
@@ -323,17 +556,29 @@ Turning them back on creates a new centered selection in the current visible win
 Recommended Use
 ---------------
 
-For best results:
+For automatic detection:
 
 - Select a waveform with clearly visible repeating events.
 - Include multiple cycles when possible.
-- Place the boundaries around the area of interest.
-- Confirm every detected dot visually.
-- Try another available lead if one signal is noisy.
-- Use projection as a visual timing guide, not as an annotation.
-- Treat ``Review`` and ``Unable`` results cautiously.
-- Treat ``Timing Consistent`` as a description of timing consistency only.
+- Review every automatically detected dot.
+- Try another lead if the selected source is noisy.
+- Treat timing status as an internal consistency check only.
 
+For manual labeling:
+
+- Place dots on equivalent points in successive waveform cycles.
+- For ECG, use a consistent location such as the R peak or another repeatable QRS reference point.
+- Do not mix different waveform features, such as an R peak for one dot and a T wave for another.
+- Include multiple intervals when possible.
+- Use **Undo Dot** to correct the most recently added point.
+- Use **Clear Dots** if the selected points need to be restarted.
+- Turn Manual Label off before resuming normal rhythm annotation.
+
+For projection:
+
+- Use the start and end calipers to define the full interval to repeat.
+- Treat projected markers as visual references only.
+- Do not interpret projection lines as automatically identified beats or annotations.
 Known Limitations
 -----------------
 
