@@ -143,6 +143,13 @@ CALIPER_PROJECTION_MAX_VISIBLE_MARKERS = 200
 CALIPER_PROJECTION_VIEW_BUFFER_INTERVALS = 1
 CALIPER_PROJECTION_DEBOUNCE_MS = 40
 
+# Caliper Manual Dots
+CALIPER_AUTO_PEAK_COLOR = (180, 0, 180, 230)
+CALIPER_MANUAL_PEAK_COLOR = (255, 110, 0, 240)
+
+CALIPER_PEAK_DOT_BORDER_COLOR = (255, 255, 255, 255)
+CALIPER_MANUAL_DUPLICATE_TOLERANCE_SEC = 0.001
+
 # ---------------------------------------------------------------------------
 
 class RelativeAxis(pg.AxisItem):
@@ -1810,6 +1817,13 @@ class AnnotationAppCallbacks:
     def _toggle_caliper_adjust_mode_impl(self, enabled):
         enabled = bool(enabled)
 
+        if enabled and getattr(
+            self,
+            "caliper_manual_labeling_enabled",
+            False,
+        ):
+            self.caliper_manual_labeling_enabled = False
+
         if not getattr(self, "calipers_enabled", False):
             enabled = False
 
@@ -1882,6 +1896,8 @@ class AnnotationAppCallbacks:
         )
 
         self.update_caliper_measurement_display()
+
+        self.update_caliper_mode_controls()
 
 
     def _safe_remove_caliper_item(self, plot, item):
@@ -1976,6 +1992,13 @@ class AnnotationAppCallbacks:
             self.caliper_toggle_btn.setChecked(False)
             self.caliper_toggle_btn.setText("OFF")
             self.caliper_toggle_btn.blockSignals(False)
+
+        self.caliper_manual_points = []
+        self.caliper_manual_labeling_enabled = False
+        self.caliper_auto_detection_enabled = True
+        self.caliper_peak_mode = "auto"
+
+        self.update_caliper_mode_controls()
 
 
     def get_centered_caliper_times(self):
@@ -2238,6 +2261,9 @@ class AnnotationAppCallbacks:
             self.caliper_end_time = position
             line_collection = self.caliper_end_lines
 
+        if getattr(self, "caliper_peak_mode", "auto") == "manual":
+            self.caliper_manual_points = []
+
         self.clear_caliper_calculation()
 
         projection_available = (
@@ -2384,15 +2410,46 @@ class AnnotationAppCallbacks:
             None,
         )
 
-        if estimated_rate is None:
+        peak_mode = getattr(
+            self,
+            "caliper_peak_mode",
+            "auto",
+        )
+
+        manual_labeling = getattr(
+            self,
+            "caliper_manual_labeling_enabled",
+            False,
+        )
+
+        if peak_mode == "manual":
+            if estimated_rate is None:
+                if manual_labeling:
+                    display_text = (
+                        f"{source_name} | {peak_count} manual peaks | "
+                        "Click to label"
+                    )
+                else:
+                    display_text = (
+                        f"{source_name} | {peak_count} manual peaks | Manual"
+                    )
+            else:
+                display_text = (
+                    f"{source_name} | {peak_count} manual peaks | "
+                    f"{estimated_rate:.1f} {rate_unit} | Manual"
+                )
+
+        elif estimated_rate is None:
             if self.caliper_adjust_enabled:
                 display_text = (
                     f"{source_name} | {selected_duration:.2f} s | Adjusting"
                 )
             else:
                 display_text = (
-                    f"{source_name} | {peak_count} peaks | {status or 'Unable'}"
+                    f"{source_name} | {peak_count} peaks | "
+                    f"{status or 'Unable'}"
                 )
+
         else:
             display_text = (
                 f"{source_name} | {peak_count} peaks | "
@@ -2484,6 +2541,23 @@ class AnnotationAppCallbacks:
         )
 
         if not self.calipers_enabled:
+            self.update_caliper_measurement_display()
+            return
+
+        if getattr(self, "caliper_peak_mode", "auto") == "manual":
+            self.recalculate_manual_caliper_measurement()
+            return
+
+        if not getattr(
+            self,
+            "caliper_auto_detection_enabled",
+            True,
+        ):
+            self.clear_caliper_calculation()
+            self.caliper_measurement_status = "Off"
+            self.caliper_measurement_message = (
+                "Automatic peak detection is off."
+            )
             self.update_caliper_measurement_display()
             return
 
@@ -2693,6 +2767,13 @@ class AnnotationAppCallbacks:
                 self.caliper_source_dropdown.currentData()
             )
 
+            self.caliper_peak_mode = "auto"
+            self.caliper_auto_detection_enabled = True
+            self.caliper_manual_labeling_enabled = False
+            self.caliper_manual_points = []
+
+            self.update_caliper_mode_controls()
+
             # Reset and draw the calipers first.
             self.reset_calipers()
 
@@ -2755,6 +2836,8 @@ class AnnotationAppCallbacks:
         self.caliper_start_time = float(start_time)
         self.caliper_end_time = float(end_time)
 
+        self.caliper_manual_points = []
+
         self.clear_caliper_calculation()
 
         self.set_caliper_projection_available(
@@ -2808,6 +2891,9 @@ class AnnotationAppCallbacks:
 
         self.caliper_source_plot_idx = int(plot_idx)
 
+        self.caliper_manual_points = []
+        self.clear_caliper_calculation()
+
         if self.calipers_enabled:
             self.draw_caliper_lines()
             self.update_caliper_measurement()
@@ -2857,6 +2943,654 @@ class AnnotationAppCallbacks:
             self.caliper_projection_message = ""
 
         self.update_caliper_measurement_display()
+
+    # ------------------------------------------------------------------
+    # Manual Peak Detection on Calipers
+    # ------------------------------------------------------------------
+
+    def update_caliper_mode_controls(self):
+        """
+        Synchronize Auto, Manual Label, Undo Dot, and Clear Dots controls with the
+        current caliper state.
+        """
+        calipers_enabled = bool(
+            getattr(self, "calipers_enabled", False)
+        )
+
+        auto_enabled = bool(
+            getattr(
+                self,
+                "caliper_auto_detection_enabled",
+                False,
+            )
+        )
+
+        manual_labeling = bool(
+            getattr(
+                self,
+                "caliper_manual_labeling_enabled",
+                False,
+            )
+        )
+
+        manual_point_count = len(
+            getattr(self, "caliper_manual_points", [])
+        )
+
+        if hasattr(self, "caliper_auto_btn"):
+            self.caliper_auto_btn.blockSignals(True)
+            self.caliper_auto_btn.setChecked(auto_enabled)
+            self.caliper_auto_btn.setText(
+                "Auto Peaks ON"
+                if auto_enabled
+                else "Auto Peaks OFF"
+            )
+            self.caliper_auto_btn.setEnabled(calipers_enabled)
+            self.caliper_auto_btn.blockSignals(False)
+
+        if hasattr(self, "caliper_manual_label_btn"):
+            self.caliper_manual_label_btn.blockSignals(True)
+            self.caliper_manual_label_btn.setChecked(
+                manual_labeling
+            )
+            self.caliper_manual_label_btn.setText(
+                "Manual Label ON"
+                if manual_labeling
+                else "Manual Label OFF"
+            )
+            self.caliper_manual_label_btn.setEnabled(
+                calipers_enabled
+            )
+            self.caliper_manual_label_btn.blockSignals(False)
+
+        manual_mode = (
+            getattr(self, "caliper_peak_mode", "auto")
+            == "manual"
+        )
+
+        if hasattr(self, "caliper_undo_dot_btn"):
+            self.caliper_undo_dot_btn.setEnabled(
+                calipers_enabled
+                and manual_mode
+                and manual_point_count > 0
+            )
+
+        if hasattr(self, "caliper_clear_dots_btn"):
+            self.caliper_clear_dots_btn.setEnabled(
+                calipers_enabled
+                and manual_mode
+                and manual_point_count > 0
+            )
+
+
+    def toggle_caliper_auto_detection(self, enabled):
+        """
+        Timed wrapper around automatic peak-detection mode.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_caliper_auto_detection_impl(
+                enabled
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_caliper_auto_detection",
+                elapsed,
+                enabled=bool(enabled),
+            )
+
+
+    def _toggle_caliper_auto_detection_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if not getattr(self, "calipers_enabled", False):
+            enabled = False
+
+        if enabled:
+            self.caliper_peak_mode = "auto"
+            self.caliper_auto_detection_enabled = True
+            self.caliper_manual_labeling_enabled = False
+
+            self.caliper_manual_points = []
+
+            self.clear_caliper_calculation()
+            self.update_caliper_mode_controls()
+            self.update_caliper_measurement()
+            return
+
+        self.caliper_auto_detection_enabled = False
+
+        if getattr(self, "caliper_peak_mode", "auto") == "auto":
+            self.clear_caliper_calculation()
+            self.caliper_measurement_status = "Off"
+            self.caliper_measurement_message = (
+                "Automatic peak detection is off. "
+                "Turn on Manual Label to place peaks manually."
+            )
+
+        self.update_caliper_mode_controls()
+        self.update_caliper_measurement_display()
+
+
+    def toggle_caliper_manual_labeling(self, enabled):
+        """
+        Timed wrapper around manual caliper peak labeling.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._toggle_caliper_manual_labeling_impl(
+                enabled
+            )
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "toggle_caliper_manual_labeling",
+                elapsed,
+                enabled=bool(enabled),
+                points=len(
+                    getattr(
+                        self,
+                        "caliper_manual_points",
+                        [],
+                    )
+                ),
+            )
+
+
+    def _toggle_caliper_manual_labeling_impl(self, enabled):
+        enabled = bool(enabled)
+
+        if not getattr(self, "calipers_enabled", False):
+            enabled = False
+
+        if enabled:
+            switching_to_manual = (
+                getattr(self, "caliper_peak_mode", "auto")
+                != "manual"
+            )
+
+            self.caliper_peak_mode = "manual"
+            self.caliper_auto_detection_enabled = False
+            self.caliper_manual_labeling_enabled = True
+
+            # Caliper marker dragging and manual dot placement are mutually
+            # exclusive.
+            if getattr(self, "caliper_adjust_enabled", False):
+                self._toggle_caliper_adjust_mode_impl(False)
+
+            if switching_to_manual:
+                self.caliper_manual_points = []
+                self.clear_caliper_calculation()
+
+            self.caliper_measurement_status = "Manual"
+            self.caliper_measurement_message = (
+                "Click the selected source waveform inside the calipers "
+                "to add manual peak dots."
+            )
+
+            self.recalculate_manual_caliper_measurement()
+        else:
+            # Keep existing manual points and BPM visible. Only return plot clicks
+            # to normal annotation behavior.
+            self.caliper_manual_labeling_enabled = False
+
+        self.update_caliper_mode_controls()
+        self.update_caliper_measurement_display()
+
+
+    def get_caliper_source_arrays(self):
+        """
+        Return full time and signal arrays for the selected source waveform.
+
+        Returns
+        -------
+        tuple
+            ``(time_values, signal_values)``. Empty arrays are returned when the
+            selected source is unavailable.
+        """
+        empty = (
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+        )
+
+        plot_idx = getattr(
+            self,
+            "caliper_source_plot_idx",
+            None,
+        )
+
+        if plot_idx is None:
+            return empty
+
+        leads = getattr(self, "leads_ds", None) or []
+
+        if plot_idx < 0 or plot_idx >= len(leads):
+            return empty
+
+        signal = leads[plot_idx]
+
+        if signal is None:
+            return empty
+
+        signal_values = np.asarray(signal, dtype=float)
+
+        if (
+            hasattr(self, "time_axes_by_lead")
+            and self.time_axes_by_lead is not None
+            and plot_idx < len(self.time_axes_by_lead)
+            and self.time_axes_by_lead[plot_idx] is not None
+            and len(self.time_axes_by_lead[plot_idx]) > 0
+        ):
+            time_values = np.asarray(
+                self.time_axes_by_lead[plot_idx],
+                dtype=float,
+            )
+        else:
+            time_values = np.asarray(
+                getattr(self, "time_axis", []),
+                dtype=float,
+            )
+
+        sample_count = min(
+            time_values.size,
+            signal_values.size,
+        )
+
+        if sample_count < 1:
+            return empty
+
+        return (
+            time_values[:sample_count],
+            signal_values[:sample_count],
+        )
+
+
+    def handle_manual_caliper_plot_click(
+        self,
+        lead_idx,
+        mouse_event,
+    ):
+        """
+        Timed wrapper around manual peak-dot placement.
+        """
+        start_time = perf_counter()
+
+        added = False
+
+        try:
+            added = self._handle_manual_caliper_plot_click_impl(
+                lead_idx,
+                mouse_event,
+            )
+            return added
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "handle_manual_caliper_plot_click",
+                elapsed,
+                lead_idx=lead_idx,
+                source_plot=self.caliper_source_plot_idx,
+                added=added,
+                points=len(
+                    getattr(
+                        self,
+                        "caliper_manual_points",
+                        [],
+                    )
+                ),
+            )
+
+
+    def _handle_manual_caliper_plot_click_impl(
+        self,
+        lead_idx,
+        mouse_event,
+    ):
+        if not getattr(
+            self,
+            "caliper_manual_labeling_enabled",
+            False,
+        ):
+            return False
+
+        source_plot_idx = getattr(
+            self,
+            "caliper_source_plot_idx",
+            None,
+        )
+
+        if source_plot_idx is None or lead_idx != source_plot_idx:
+            self.caliper_measurement_message = (
+                "Manual peaks must be placed on the selected source waveform."
+            )
+            self.update_caliper_measurement_display()
+            return False
+
+        if (
+            self.caliper_start_time is None
+            or self.caliper_end_time is None
+        ):
+            return False
+
+        view_box = self.waveform_plots[lead_idx].getViewBox()
+        mouse_point = view_box.mapSceneToView(
+            mouse_event.scenePos()
+        )
+        clicked_time = float(mouse_point.x())
+
+        selection_start = min(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+        selection_end = max(
+            float(self.caliper_start_time),
+            float(self.caliper_end_time),
+        )
+
+        if (
+            clicked_time < selection_start
+            or clicked_time > selection_end
+        ):
+            self.caliper_measurement_status = "Manual"
+            self.caliper_measurement_message = (
+                "Click inside the two caliper markers."
+            )
+            self.update_caliper_measurement_display()
+            return False
+
+        time_values, signal_values = (
+            self.get_caliper_source_arrays()
+        )
+
+        if time_values.size == 0 or signal_values.size == 0:
+            return False
+
+        valid = (
+            np.isfinite(time_values)
+            & np.isfinite(signal_values)
+            & (time_values >= selection_start)
+            & (time_values <= selection_end)
+        )
+
+        if not np.any(valid):
+            return False
+
+        valid_times = time_values[valid]
+        valid_values = signal_values[valid]
+
+        sort_order = np.argsort(valid_times)
+        valid_times = valid_times[sort_order]
+        valid_values = valid_values[sort_order]
+
+        insertion_index = int(
+            np.searchsorted(
+                valid_times,
+                clicked_time,
+                side="left",
+            )
+        )
+
+        candidate_indices = []
+
+        if insertion_index < valid_times.size:
+            candidate_indices.append(insertion_index)
+
+        if insertion_index > 0:
+            candidate_indices.append(insertion_index - 1)
+
+        if not candidate_indices:
+            return False
+
+        nearest_index = min(
+            candidate_indices,
+            key=lambda index: abs(
+                float(valid_times[index])
+                - clicked_time
+            ),
+        )
+
+        peak_time = float(valid_times[nearest_index])
+        peak_value = float(valid_values[nearest_index])
+
+        sampling_frequency = (
+            self.estimate_caliper_sampling_frequency(
+                valid_times
+            )
+        )
+
+        if sampling_frequency is not None:
+            duplicate_tolerance = max(
+                CALIPER_MANUAL_DUPLICATE_TOLERANCE_SEC,
+                0.5 / sampling_frequency,
+            )
+        else:
+            duplicate_tolerance = (
+                CALIPER_MANUAL_DUPLICATE_TOLERANCE_SEC
+            )
+
+        for existing_time, _existing_value in getattr(
+            self,
+            "caliper_manual_points",
+            [],
+        ):
+            if abs(existing_time - peak_time) <= duplicate_tolerance:
+                self.caliper_measurement_status = "Manual"
+                self.caliper_measurement_message = (
+                    "A manual peak already exists at this waveform sample."
+                )
+                self.update_caliper_measurement_display()
+                return False
+
+        self.caliper_manual_points.append(
+            (peak_time, peak_value)
+        )
+
+        self.recalculate_manual_caliper_measurement()
+        self.update_caliper_mode_controls()
+
+        return True
+
+
+    def recalculate_manual_caliper_measurement(self):
+        """
+        Recalculate temporary manual peak graphics and rate.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._recalculate_manual_caliper_measurement_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "recalculate_manual_caliper_measurement",
+                elapsed,
+                points=len(
+                    getattr(
+                        self,
+                        "caliper_manual_points",
+                        [],
+                    )
+                ),
+            )
+
+
+    def _recalculate_manual_caliper_measurement_impl(self):
+        self.clear_caliper_peak_graphics()
+
+        points = list(
+            getattr(self, "caliper_manual_points", [])
+        )
+
+        points.sort(key=lambda point: point[0])
+
+        if points:
+            peak_times = np.asarray(
+                [point[0] for point in points],
+                dtype=float,
+            )
+            peak_values = np.asarray(
+                [point[1] for point in points],
+                dtype=float,
+            )
+        else:
+            peak_times = np.array([], dtype=float)
+            peak_values = np.array([], dtype=float)
+
+        self.caliper_detected_peak_times = peak_times
+        self.caliper_detected_peak_values = peak_values
+
+        self.caliper_average_interval_sec = None
+        self.caliper_median_interval_sec = None
+        self.caliper_estimated_rate = None
+
+        source_name = ""
+
+        if hasattr(self, "caliper_source_dropdown"):
+            source_name = (
+                self.caliper_source_dropdown.currentText()
+                or ""
+            )
+
+        settings = self.get_caliper_detector_settings(
+            source_name
+        )
+
+        self.caliper_rate_unit = settings.get(
+            "rate_unit",
+            "cycles/min",
+        )
+
+        if peak_times.size >= 1:
+            self.draw_caliper_peak_dots(
+                peak_times,
+                peak_values,
+            )
+
+        if peak_times.size < 2:
+            self.caliper_measurement_status = "Manual"
+            self.caliper_measurement_message = (
+                "Add at least two manual peak dots to calculate a rate."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        intervals = np.diff(peak_times)
+        intervals = intervals[
+            np.isfinite(intervals)
+            & (intervals > 0)
+        ]
+
+        if intervals.size == 0:
+            self.caliper_measurement_status = "Manual"
+            self.caliper_measurement_message = (
+                "The manual peak positions do not define valid intervals."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        total_duration = float(
+            peak_times[-1] - peak_times[0]
+        )
+        interval_count = int(
+            peak_times.size - 1
+        )
+
+        if total_duration <= 0:
+            self.caliper_measurement_status = "Manual"
+            self.caliper_measurement_message = (
+                "The manual peak positions do not define a valid duration."
+            )
+            self.update_caliper_measurement_display()
+            return
+
+        self.caliper_average_interval_sec = float(
+            np.mean(intervals)
+        )
+        self.caliper_median_interval_sec = float(
+            np.median(intervals)
+        )
+        self.caliper_estimated_rate = float(
+            60.0 * interval_count / total_duration
+        )
+
+        self.caliper_measurement_status = "Manual"
+        self.caliper_measurement_message = (
+            "Rate calculated from manually selected waveform peaks."
+        )
+
+        self.update_caliper_measurement_display()
+
+
+    def undo_last_manual_caliper_dot(self):
+        """
+        Timed wrapper around removing the most recently added manual peak.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._undo_last_manual_caliper_dot_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "undo_last_manual_caliper_dot",
+                elapsed,
+                remaining=len(
+                    getattr(
+                        self,
+                        "caliper_manual_points",
+                        [],
+                    )
+                ),
+            )
+
+
+    def _undo_last_manual_caliper_dot_impl(self):
+        if not getattr(self, "caliper_manual_points", []):
+            return
+
+        self.caliper_manual_points.pop()
+        self.recalculate_manual_caliper_measurement()
+        self.update_caliper_mode_controls()
+
+
+    def clear_manual_caliper_dots(self):
+        """
+        Timed wrapper around removing all manual peak dots.
+        """
+        start_time = perf_counter()
+
+        try:
+            return self._clear_manual_caliper_dots_impl()
+        finally:
+            elapsed = perf_counter() - start_time
+
+            self._perf_log(
+                "clear_manual_caliper_dots",
+                elapsed,
+            )
+
+
+    def _clear_manual_caliper_dots_impl(self):
+        self.caliper_manual_points = []
+
+        if getattr(self, "caliper_peak_mode", "auto") == "manual":
+            self.clear_caliper_calculation()
+            self.caliper_measurement_status = "Manual"
+            self.caliper_measurement_message = (
+                "Click the selected source waveform inside the calipers "
+                "to add manual peak dots."
+            )
+            self.update_caliper_measurement_display()
+
+        self.update_caliper_mode_controls()
 
     # ------------------------------------------------------------------
     # Caliper Calculation
@@ -4085,6 +4819,11 @@ class AnnotationAppCallbacks:
         peak_times = peak_times[:point_count]
         peak_values = peak_values[:point_count]
 
+        if getattr(self, "caliper_peak_mode", "auto") == "manual":
+            peak_color = CALIPER_MANUAL_PEAK_COLOR
+        else:
+            peak_color = CALIPER_AUTO_PEAK_COLOR
+
         plot = self.waveform_plots[plot_idx]
 
         peak_item = pg.ScatterPlotItem(
@@ -4093,21 +4832,15 @@ class AnnotationAppCallbacks:
             symbol="o",
             size=CALIPER_PEAK_DOT_SIZE,
             pen=pg.mkPen(
-                255,
-                255,
-                255,
+                *CALIPER_PEAK_DOT_BORDER_COLOR,
                 width=1,
             ),
-            brush=pg.mkBrush(
-                180,
-                0,
-                180,
-                230,
-            ),
+            brush=pg.mkBrush(*peak_color),
         )
 
         peak_item.is_caliper_item = True
         peak_item.is_caliper_peak_item = True
+        peak_item.caliper_peak_mode = self.caliper_peak_mode
         peak_item.setZValue(11000)
 
         plot.addItem(
@@ -5734,12 +6467,27 @@ class AnnotationAppCallbacks:
             if mouse_event.button() != Qt.LeftButton:
                 return
 
-            # While the user is adjusting the calipers, ordinary plot clicks must not
-            # create or move annotation endpoints.
+            # Caliper dragging temporarily suppresses annotation clicks.
             if (
                 getattr(self, "calipers_enabled", False)
                 and getattr(self, "caliper_adjust_enabled", False)
             ):
+                return
+
+            # Manual caliper labeling consumes plot clicks before annotation
+            # endpoint handling.
+            if (
+                getattr(self, "calipers_enabled", False)
+                and getattr(
+                    self,
+                    "caliper_manual_labeling_enabled",
+                    False,
+                )
+            ):
+                self.handle_manual_caliper_plot_click(
+                    lead_idx,
+                    mouse_event,
+                )
                 return
 
             if getattr(self, "waveform_complete", False):
