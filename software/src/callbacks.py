@@ -42,7 +42,7 @@ COMPLETION_GREEN = "#199E40"
 # Waveforms Present
 # ---------------------------------------------------------------------------
 
-WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
+WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "CHEST_IMPEDANCE", "ABP"]
 
 # ---------------------------------------------------------------------------
 # Color Assignment

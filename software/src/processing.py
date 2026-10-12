@@ -19,7 +19,7 @@ import pytz
 # =============================================================================
 
 # WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
-WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
+WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "CHEST_IMPEDANCE", "ABP"]
 
 H5_TIME_DATASET = "time_epoch_s"
 H5_SIGNALS_GROUP = "signals"
@@ -96,6 +96,16 @@ SIGNAL_ALIASES = {
         "RESP",
         "Respiration",
     ],
+    "ABP": [
+        "ABP",
+        "abp",
+        "Arterial Line",
+        "Arterial Blood Pressure",
+        "GE - ABP 1",
+        "GE-ABP1",
+        "ABP1",
+    ]
+
 }
 
 # =============================================================================
@@ -191,6 +201,9 @@ def resolve_canonical_signal_name(*names):
 
     if "AVR" in norm:
         return "AVR"
+
+    if "ABP" in norm:
+        return "ABP"
 
     return None
 
