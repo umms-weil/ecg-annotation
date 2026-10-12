@@ -19,7 +19,7 @@ import pytz
 # =============================================================================
 
 # WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "AVR"]
-WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
+WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "CHEST_IMPEDANCE", "ABP"]
 
 H5_TIME_DATASET = "time_epoch_s"
 H5_SIGNALS_GROUP = "signals"
@@ -96,6 +96,16 @@ SIGNAL_ALIASES = {
         "RESP",
         "Respiration",
     ],
+    "ABP": [
+        "ABP",
+        "abp",
+        "Arterial Line",
+        "Arterial Blood Pressure",
+        "GE - ABP 1",
+        "GE-ABP1",
+        "ABP1",
+    ]
+
 }
 
 # =============================================================================
@@ -191,6 +201,9 @@ def resolve_canonical_signal_name(*names):
 
     if "AVR" in norm:
         return "AVR"
+
+    if "ABP" in norm:
+        return "ABP"
 
     return None
 
@@ -561,6 +574,7 @@ def list_subjects_grouped_h5(base_folder: str, user_name: Optional[str] = None) 
                         "h5_paths": {},
                         "subject_path": subject_path,
                         "encounter_path": encounter_path,
+                        "manifest_path": os.path.join(encounter_path,"waveform_manifest.csv",),
                         "output_path": output_path,
                         "n_annotations": 0,
                         "n_complete_annotations": 0,
@@ -858,40 +872,581 @@ def list_annotation_files_for_record(
 # Code / event bounds
 # =============================================================================
 
-def get_events_for_window(manifest_path, subject, window_start, window_end):
+def get_events_for_window(
+    manifest_path,
+    subject,
+    window_start=None,
+    window_end=None,
+    encounter=None,
+):
     """
-    Load and return flowsheet/event rows for the given subject.
+    Load clinical events from an encounter-level waveform manifest.
+
+    The function supports the current lowercase manifest schema and creates
+    canonical columns expected by the plotting code:
+
+    - RECORDED_TIME
+    - FLO_MEAS_NAME
+    - FLOWSHEET_VALUE
+    - event_sec
+
+    Identifier filtering behavior
+    -----------------------------
+    1. Attempt to match subject using MRN or pat_mrn_id.
+    2. Attempt to match encounter using CSN or pat_enc_csn_id.
+    3. If no rows match but the manifest contains rows, treat the file as an
+       encounter-specific manifest and retain all rows.
+
+    Event-time behavior
+    -------------------
+    The first populated value is selected for each row from:
+
+    1. recorded_time
+    2. event_time
+    3. original_event_time
+    4. noted_date
+    5. record_date
+
+    Naive datetime values are interpreted as America/New_York local time.
+    Timezone-aware values retain their supplied timezone.
 
     Parameters
     ----------
     manifest_path : str
-        Path to manifest CSV.
+        Path to waveform_manifest.csv.
     subject : str
-        Subject UUID.
-    window_start : float
-        Start timestamp in epoch seconds.
-    window_end : float
-        End timestamp in epoch seconds.
+        Subject MRN or subject identifier.
+    window_start : float or None
+        Optional lower event-time bound in epoch seconds.
+    window_end : float or None
+        Optional upper event-time bound in epoch seconds.
+    encounter : str or None
+        Encounter CSN or encounter identifier.
 
     Returns
     -------
-    pd.DataFrame
-        Subject-specific event rows with ``event_sec`` column.
+    pandas.DataFrame
+        Normalized event rows.
     """
-    df = pd.read_csv(manifest_path)
-    df_subj = df[df["UUID"] == subject].copy()
-    df_subj["event_sec"] = df_subj["RECORDED_TIME"].apply(
-        datetime_string_to_seconds_since_1970
+    if not manifest_path or not os.path.isfile(manifest_path):
+        print(
+            "[MANIFEST] File not found:",
+            manifest_path,
+        )
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(
+            manifest_path,
+            dtype=str,
+            keep_default_na=False,
+        )
+    except Exception as exc:
+        print(
+            "[MANIFEST] Failed to read manifest:",
+            manifest_path,
+            exc,
+        )
+        return pd.DataFrame()
+
+    print(
+        "[MANIFEST] Loaded:",
+        f"path={manifest_path}",
+        f"rows={len(df)}",
     )
 
-    # Uncomment if you want strict event filtering:
-    # df_subj = df_subj[
-    #     (df_subj["event_sec"] >= window_start)
-    #     & (df_subj["event_sec"] <= window_end)
-    # ]
+    if df.empty:
+        return df
 
-    return df_subj
+    # Case-insensitive lookup:
+    # normalized lowercase name -> actual DataFrame column name.
+    column_lookup = {
+        str(column).strip().lower(): column
+        for column in df.columns
+    }
 
+    def get_column(*candidate_names):
+        """
+        Return the actual DataFrame column matching the first available
+        candidate name.
+        """
+        for candidate_name in candidate_names:
+            actual_column = column_lookup.get(
+                str(candidate_name).strip().lower()
+            )
+
+            if actual_column is not None:
+                return actual_column
+
+        return None
+
+    def is_missing_value(value):
+        """
+        Return True for empty or null-like manifest values.
+        """
+        if value is None or pd.isna(value):
+            return True
+
+        return str(value).strip().lower() in {
+            "",
+            "nan",
+            "nat",
+            "none",
+            "null",
+        }
+
+    def normalize_identifier(value):
+        """
+        Normalize MRN/CSN-like identifiers for comparisons.
+        """
+        if is_missing_value(value):
+            return ""
+
+        text = str(value).strip()
+
+        # Remove a decimal suffix sometimes introduced when an identifier was
+        # previously interpreted as a numeric value.
+        if text.endswith(".0"):
+            text = text[:-2]
+
+        return text
+
+    # ------------------------------------------------------------------
+    # Attempt MRN/CSN filtering.
+    # ------------------------------------------------------------------
+    original_df = df.copy()
+
+    subject_text = normalize_identifier(subject)
+    encounter_text = normalize_identifier(encounter)
+
+    mrn_columns = []
+
+    for candidate_name in (
+        "MRN",
+        "pat_mrn_id",
+    ):
+        actual_column = get_column(candidate_name)
+
+        if (
+            actual_column is not None
+            and actual_column not in mrn_columns
+        ):
+            mrn_columns.append(actual_column)
+
+    csn_columns = []
+
+    for candidate_name in (
+        "CSN",
+        "pat_enc_csn_id",
+    ):
+        actual_column = get_column(candidate_name)
+
+        if (
+            actual_column is not None
+            and actual_column not in csn_columns
+        ):
+            csn_columns.append(actual_column)
+
+    identifier_mask = pd.Series(
+        True,
+        index=df.index,
+        dtype=bool,
+    )
+
+    if subject_text and mrn_columns:
+        subject_mask = pd.Series(
+            False,
+            index=df.index,
+            dtype=bool,
+        )
+
+        for column in mrn_columns:
+            subject_mask |= (
+                df[column]
+                .map(normalize_identifier)
+                .eq(subject_text)
+            )
+
+        identifier_mask &= subject_mask
+
+    if encounter_text and csn_columns:
+        encounter_mask = pd.Series(
+            False,
+            index=df.index,
+            dtype=bool,
+        )
+
+        for column in csn_columns:
+            encounter_mask |= (
+                df[column]
+                .map(normalize_identifier)
+                .eq(encounter_text)
+            )
+
+        identifier_mask &= encounter_mask
+
+    filtered_df = df[identifier_mask].copy()
+
+    print(
+        "[MANIFEST] Identifier filtering:",
+        f"input_rows={len(df)}",
+        f"matched_rows={len(filtered_df)}",
+        f"subject={subject_text!r}",
+        f"encounter={encounter_text!r}",
+        f"mrn_columns={mrn_columns}",
+        f"csn_columns={csn_columns}",
+    )
+
+    # This file is stored directly in the selected encounter folder. If its
+    # identifiers differ from the dropdown metadata, retain its rows rather
+    # than discarding a valid encounter-specific manifest.
+    if filtered_df.empty and not original_df.empty:
+        print(
+            "[MANIFEST] WARNING: MRN/CSN values did not match the selected "
+            "record. Using all rows because this is an encounter-level "
+            "manifest."
+        )
+        df = original_df.copy()
+    else:
+        df = filtered_df
+
+    # ------------------------------------------------------------------
+    # Select the event timestamp for each row.
+    #
+    # Priority:
+    #   1. event_time
+    #   2. original_event_time
+    #   3. recorded_time
+    #   4. noted_date
+    #   5. record_date
+    #
+    # The first populated value in this order is used independently for
+    # each row.
+    # ------------------------------------------------------------------
+    event_time_columns = []
+
+    for candidate_name in (
+        "event_time",
+        "original_event_time",
+        "recorded_time",
+        "noted_date",
+        "record_date",
+    ):
+        actual_column = get_column(candidate_name)
+
+        if (
+            actual_column is not None
+            and actual_column not in event_time_columns
+        ):
+            event_time_columns.append(actual_column)
+
+    if not event_time_columns:
+        print(
+            "[MANIFEST] WARNING: No supported event-time column was found."
+        )
+
+        df["RECORDED_TIME"] = ""
+        df["EVENT_TIME_SOURCE"] = ""
+        df["event_sec"] = np.nan
+
+        return df.reset_index(drop=True)
+
+
+    def get_row_event_time_and_source(row):
+        """
+        Return the first populated event timestamp and its source column.
+        """
+        for column in event_time_columns:
+            value = row.get(column, None)
+
+            if not is_missing_value(value):
+                return value, column
+
+        return None, ""
+
+
+    selected_event_times = df.apply(
+        get_row_event_time_and_source,
+        axis=1,
+    )
+
+    df["RECORDED_TIME"] = selected_event_times.map(
+        lambda result: result[0]
+    )
+
+    df["EVENT_TIME_SOURCE"] = selected_event_times.map(
+        lambda result: result[1]
+    )
+
+
+    def convert_local_event_time_to_epoch(value):
+        """
+        Convert a manifest event timestamp to epoch seconds.
+
+        Numeric values are treated as epoch seconds or milliseconds.
+        Naive datetime strings are interpreted as local Eastern time using
+        America/New_York, which handles both EST and EDT.
+        Timezone-aware values retain their supplied timezone.
+        """
+        if is_missing_value(value):
+            return np.nan
+
+        # Support values already stored as epoch seconds or milliseconds.
+        try:
+            numeric_value = float(value)
+
+            if np.isfinite(numeric_value):
+                if numeric_value > 1e11:
+                    numeric_value /= 1000.0
+
+                return float(numeric_value)
+
+        except (TypeError, ValueError):
+            pass
+
+        timestamp_text = str(value).strip()
+
+        try:
+            parsed_timestamp = pd.Timestamp(timestamp_text)
+        except Exception as exc:
+            print(
+                "[MANIFEST] WARNING: Could not parse event timestamp:",
+                repr(value),
+                exc,
+            )
+            return np.nan
+
+        if pd.isna(parsed_timestamp):
+            return np.nan
+
+        try:
+            if parsed_timestamp.tzinfo is None:
+                # Manifest timestamps are local Eastern times.
+                # America/New_York automatically applies EST or EDT based
+                # on the event date.
+                parsed_timestamp = parsed_timestamp.tz_localize(
+                    "America/New_York",
+                    ambiguous="NaT",
+                    nonexistent="shift_forward",
+                )
+
+                if pd.isna(parsed_timestamp):
+                    print(
+                        "[MANIFEST] WARNING: Ambiguous local event timestamp:",
+                        repr(value),
+                    )
+                    return np.nan
+
+            return float(parsed_timestamp.timestamp())
+
+        except Exception as exc:
+            print(
+                "[MANIFEST] WARNING: Could not convert event timestamp:",
+                repr(value),
+                exc,
+            )
+            return np.nan
+
+
+    df["event_sec"] = df["RECORDED_TIME"].apply(
+        convert_local_event_time_to_epoch
+    )
+
+    numeric_event_seconds = pd.to_numeric(
+        df["event_sec"],
+        errors="coerce",
+    )
+
+    valid_time_mask = np.isfinite(
+        numeric_event_seconds
+    )
+
+    invalid_time_count = int(
+        np.count_nonzero(~valid_time_mask)
+    )
+
+    if invalid_time_count:
+        print(
+            "[MANIFEST] Rows without a usable event time:",
+            invalid_time_count,
+        )
+
+    df = df[valid_time_mask].copy()
+
+    df["event_sec"] = numeric_event_seconds[
+        valid_time_mask
+    ].astype(float)
+
+    # Diagnostic summary without printing MRN/CSN identifiers.
+    if not df.empty:
+        diagnostic_columns = [
+            "EVENT_TIME_SOURCE",
+            "RECORDED_TIME",
+            "event_sec",
+        ]
+
+        print("[MANIFEST] Selected event-time values:")
+        print(
+            df[diagnostic_columns].to_string(
+                index=False,
+            )
+        )
+
+        event_times_utc = pd.to_datetime(
+            df["event_sec"],
+            unit="s",
+            utc=True,
+        )
+
+        event_times_eastern = event_times_utc.dt.tz_convert(
+            "America/New_York"
+        )
+
+        print("[MANIFEST] Converted event times:")
+        for source, raw_value, epoch_value, utc_value, eastern_value in zip(
+            df["EVENT_TIME_SOURCE"],
+            df["RECORDED_TIME"],
+            df["event_sec"],
+            event_times_utc,
+            event_times_eastern,
+        ):
+            print(
+                "[MANIFEST] Event:",
+                f"source={source}",
+                f"raw={raw_value!r}",
+                f"epoch={epoch_value:.6f}",
+                f"utc={utc_value}",
+                f"eastern={eastern_value}",
+            )
+
+    # ------------------------------------------------------------------
+    # Create the event name expected by plot_event_markers().
+    #
+    # Prefer the flowsheet measurement name. For other event types, use the
+    # event display name, event type, diagnosis name, or a generic label.
+    # ------------------------------------------------------------------
+    event_name_columns = []
+
+    for candidate_name in (
+        "flo_meas_name",
+        "event_display_name",
+        "event_type",
+        "dx_name",
+    ):
+        actual_column = get_column(candidate_name)
+
+        if (
+            actual_column is not None
+            and actual_column not in event_name_columns
+        ):
+            event_name_columns.append(actual_column)
+
+    def get_row_event_name(row):
+        for column in event_name_columns:
+            value = row.get(column, None)
+
+            if not is_missing_value(value):
+                return str(value).strip()
+
+        return "Clinical Event"
+
+    df["FLO_MEAS_NAME"] = df.apply(
+        get_row_event_name,
+        axis=1,
+    )
+
+    # ------------------------------------------------------------------
+    # Create the event value expected by plot_event_markers().
+    # ------------------------------------------------------------------
+    event_value_columns = []
+
+    for candidate_name in (
+        "meas_value",
+        "event_status_c",
+        "code_blue_category",
+        "chief_complaint",
+    ):
+        actual_column = get_column(candidate_name)
+
+        if (
+            actual_column is not None
+            and actual_column not in event_value_columns
+        ):
+            event_value_columns.append(actual_column)
+
+    def get_row_event_value(row):
+        for column in event_value_columns:
+            value = row.get(column, None)
+
+            if not is_missing_value(value):
+                return str(value).strip()
+
+        return ""
+
+    df["FLOWSHEET_VALUE"] = df.apply(
+        get_row_event_value,
+        axis=1,
+    )
+
+    # ------------------------------------------------------------------
+    # Apply optional event-time filtering.
+    # ------------------------------------------------------------------
+    rows_before_time_filter = len(df)
+
+    if window_start is not None:
+        try:
+            start_value = float(window_start)
+
+            if np.isfinite(start_value):
+                df = df[
+                    df["event_sec"] >= start_value
+                ].copy()
+
+        except (TypeError, ValueError):
+            pass
+
+    if window_end is not None:
+        try:
+            end_value = float(window_end)
+
+            if np.isfinite(end_value):
+                df = df[
+                    df["event_sec"] <= end_value
+                ].copy()
+
+        except (TypeError, ValueError):
+            pass
+
+    print(
+        "[MANIFEST] Function-level time filtering:",
+        f"before={rows_before_time_filter}",
+        f"after={len(df)}",
+        f"window_start={window_start}",
+        f"window_end={window_end}",
+    )
+
+    # Remove duplicate representations of the same event.
+    duplicate_columns = [
+        column
+        for column in (
+            "FLO_MEAS_NAME",
+            "FLOWSHEET_VALUE",
+            "RECORDED_TIME",
+        )
+        if column in df.columns
+    ]
+
+    if duplicate_columns:
+        df = df.drop_duplicates(
+            subset=duplicate_columns
+        )
+
+    print(
+        "[MANIFEST] Returning events:",
+        len(df),
+    )
+
+    return df.reset_index(drop=True)
 
 def get_code_time_bounds(subject, code_csv_path, manifest_path=None):
     """

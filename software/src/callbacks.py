@@ -42,7 +42,7 @@ COMPLETION_GREEN = "#199E40"
 # Waveforms Present
 # ---------------------------------------------------------------------------
 
-WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "AVF", "AVL", "CHEST_IMPEDANCE"]
+WAVEFORM_PLOT_ORDER = ["I", "II", "III", "V", "CHEST_IMPEDANCE", "ABP"]
 
 # ---------------------------------------------------------------------------
 # Color Assignment
@@ -5219,9 +5219,35 @@ class AnnotationAppCallbacks:
             y_min, y_max = plot.viewRange()[1]
             label_y = y_max - 0.05 * (y_max - y_min)
             for idx, row in self.manifest_events.iterrows():
-                event_name = str(row['FLO_MEAS_NAME'])
-                event_value = str(row['FLOWSHEET_VALUE'])
-                event_sec = row['event_sec']
+                event_name = str(
+                    row.get(
+                        "FLO_MEAS_NAME",
+                        row.get(
+                            "event_display_name",
+                            row.get(
+                                "flo_meas_name",
+                                row.get("event_type", "Clinical Event"),
+                            ),
+                        ),
+                    )
+                )
+
+                event_value = str(
+                    row.get(
+                        "FLOWSHEET_VALUE",
+                        row.get("meas_value", ""),
+                    )
+                )
+
+                event_sec = row.get("event_sec", None)
+
+                try:
+                    event_sec = float(event_sec)
+                except (TypeError, ValueError):
+                    continue
+
+                if not np.isfinite(event_sec):
+                    continue
 
                 # Add vertical line marker
                 vline = pg.InfiniteLine(pos=event_sec, angle=90, pen=event_pen)
@@ -5944,6 +5970,154 @@ class AnnotationAppCallbacks:
 
         return min(starts), max(stops)
 
+
+    def load_manifest_events_for_current_waveform(
+        self,
+        manifest_path,
+        subject_name,
+        encounter_name,
+    ):
+        """
+        Load, normalize, and restrict encounter events to the currently loaded
+        waveform range.
+
+        Parameters
+        ----------
+        manifest_path : str
+            Path to the encounter-level waveform_manifest.csv.
+        subject_name : str
+            Selected subject MRN or identifier.
+        encounter_name : str
+            Selected encounter CSN or identifier.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Events occurring inside the loaded waveform time range.
+        """
+        if not manifest_path:
+            print(
+                "[MANIFEST] No manifest path was provided."
+            )
+            return pd.DataFrame()
+
+        if not os.path.isfile(manifest_path):
+            print(
+                "[MANIFEST] File does not exist:",
+                manifest_path,
+            )
+            return pd.DataFrame()
+
+        try:
+            events_df = get_events_for_window(
+                manifest_path=manifest_path,
+                subject=subject_name,
+                encounter=encounter_name,
+                window_start=None,
+                window_end=None,
+            )
+        except Exception as exc:
+            print(
+                "[MANIFEST] Failed to load event metadata:",
+                exc,
+            )
+            return pd.DataFrame()
+
+        if events_df is None or events_df.empty:
+            print(
+                "[MANIFEST] No usable events were returned before waveform "
+                "range filtering."
+            )
+            return pd.DataFrame() if events_df is None else events_df
+
+        if "event_sec" not in events_df.columns:
+            print(
+                "[MANIFEST] Returned events do not contain event_sec."
+            )
+            return pd.DataFrame()
+
+        event_seconds = pd.to_numeric(
+            events_df["event_sec"],
+            errors="coerce",
+        )
+
+        valid_event_mask = np.isfinite(
+            event_seconds
+        )
+
+        events_df = events_df[valid_event_mask].copy()
+        events_df["event_sec"] = event_seconds[
+            valid_event_mask
+        ].astype(float)
+
+        if events_df.empty:
+            print(
+                "[MANIFEST] No events have valid epoch timestamps."
+            )
+            return events_df
+
+        waveform_start = getattr(
+            self,
+            "loaded_waveform_start_sec",
+            None,
+        )
+        waveform_end = getattr(
+            self,
+            "loaded_waveform_end_sec",
+            None,
+        )
+
+        if waveform_start is None or waveform_end is None:
+            print(
+                "[MANIFEST] Loaded waveform bounds are unavailable; "
+                "returning all normalized events."
+            )
+            return events_df.reset_index(drop=True)
+
+        waveform_start = float(waveform_start)
+        waveform_end = float(waveform_end)
+
+        rows_before_filter = len(events_df)
+        minimum_event_time = float(
+            events_df["event_sec"].min()
+        )
+        maximum_event_time = float(
+            events_df["event_sec"].max()
+        )
+
+        print(
+            "[MANIFEST] Waveform range:",
+            waveform_start,
+            "to",
+            waveform_end,
+        )
+        print(
+            "[MANIFEST] Event range before waveform filtering:",
+            minimum_event_time,
+            "to",
+            maximum_event_time,
+        )
+
+        events_df = events_df[
+            (events_df["event_sec"] >= waveform_start)
+            & (events_df["event_sec"] <= waveform_end)
+        ].copy()
+
+        print(
+            "[MANIFEST] Waveform-window filtering:",
+            f"before={rows_before_filter}",
+            f"after={len(events_df)}",
+        )
+
+        if events_df.empty:
+            print(
+                "[MANIFEST] WARNING: Events were loaded but none overlap "
+                "the waveform range. Check timezone interpretation if the "
+                "times should overlap."
+            )
+
+        return events_df.reset_index(drop=True)
+
     # ------------------------------------------------------------------
     # Loading Waveform Data
     # ------------------------------------------------------------------
@@ -6027,7 +6201,25 @@ class AnnotationAppCallbacks:
         # Do NOT use waveform_manifest.csv to crop/window the waveform.
         # The manifest is metadata only.
         # ------------------------------------------------------------------
-        code_csv_path = os.path.join(base_folder, "waveform_manifest.csv")
+
+        code_csv_path = record.get("manifest_path", "")
+
+        if not code_csv_path:
+            encounter_path = record.get("encounter_path", "")
+
+            if encounter_path:
+                code_csv_path = os.path.join(
+                    encounter_path,
+                    "waveform_manifest.csv",
+                )
+
+        if not code_csv_path:
+            code_csv_path = os.path.join(
+                base_folder,
+                "waveform_manifest.csv",
+            )
+
+        self.current_manifest_path = code_csv_path
 
         self.recording_start_sec = None
         self.recording_end_sec = None
@@ -6140,52 +6332,23 @@ class AnnotationAppCallbacks:
         # Timer for Manifest Loader
         manifest_load_start = perf_counter()
 
-        self.manifest_events = pd.DataFrame()
+        # ------------------------------------------------------------------
+        # Load encounter-level manifest events as optional display metadata.
+        # These events do not control waveform cropping.
+        # ------------------------------------------------------------------
+        manifest_load_start = perf_counter()
 
-        if os.path.exists(code_csv_path):
-            try:
-                manifest_events_df = get_events_for_window(
-                    code_csv_path,
-                    subject_name,
-                    window_start=0,
-                    window_end=float("inf"),
-                )
+        self.manifest_events = (
+            self.load_manifest_events_for_current_waveform(
+                manifest_path=code_csv_path,
+                subject_name=subject_name,
+                encounter_name=encounter_name,
+            )
+        )
 
-                if "event_sec" not in manifest_events_df.columns and "RECORDED_TIME" in manifest_events_df.columns:
-                    manifest_events_df["event_sec"] = manifest_events_df["RECORDED_TIME"].apply(
-                        datetime_string_to_seconds_since_1970
-                    )
-
-                if {"FLO_MEAS_NAME", "FLOWSHEET_VALUE", "RECORDED_TIME"}.issubset(manifest_events_df.columns):
-                    manifest_events_df = manifest_events_df.drop_duplicates(
-                        subset=["FLO_MEAS_NAME", "FLOWSHEET_VALUE", "RECORDED_TIME"]
-                    )
-
-                # Optional: keep only events that fall inside the loaded waveform file.
-                if len(times_ds) > 0 and "event_sec" in manifest_events_df.columns:
-                    t_start = float(self.loaded_waveform_start_sec)
-                    t_stop = float(self.loaded_waveform_end_sec)
-
-                    manifest_events_df = manifest_events_df[
-                        (manifest_events_df["event_sec"] >= t_start)
-                        &
-                        (manifest_events_df["event_sec"] <= t_stop)
-                    ].copy()
-
-                self.manifest_events = manifest_events_df
-
-                print("Loaded manifest metadata/events:")
-                print(self.manifest_events)
-
-            except Exception as e:
-                print(f"WARNING: Could not load manifest metadata/events: {e}")
-                self.manifest_events = pd.DataFrame()
-        else:
-            print(f"WARNING: waveform_manifest.csv not found at {code_csv_path}")
-            self.manifest_events = pd.DataFrame()
-
-        # Manifest Timer stop
-        manifest_load_elapsed = perf_counter() - manifest_load_start
+        manifest_load_elapsed = (
+            perf_counter() - manifest_load_start
+        )
 
         self._perf_log(
             "load_manifest_events",
@@ -6193,6 +6356,9 @@ class AnnotationAppCallbacks:
             event_count=len(self.manifest_events),
             manifest_path=code_csv_path,
         )
+
+        print("Loaded manifest metadata/events:")
+        print(self.manifest_events)
 
         print("data x:", times_ds[:10], "...", times_ds[-10:])
         print("annot", [ (a['start'], a['end']) for a in self.annotations ])
