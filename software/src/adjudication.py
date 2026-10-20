@@ -92,6 +92,33 @@ ADJUDICATION_BOUNDARY_TOLERANCE_SEC: float = 1.0
 # Minimum of 1 second per annotation requirements
 MINIMUM_VALID_INTERVAL_SEC: float = 1.0
 
+# Tolerance used only when deciding whether sequential source intervals touch.
+# This is intentionally much smaller than the one-second adjudication boundary
+# matching tolerance.
+SOURCE_CONTINUITY_TOLERANCE_SEC: float = 1e-6
+
+VALID_CPR_VALUES: frozenset[str] = frozenset(
+    {
+        "Yes",
+        "No",
+        "Unable to Determine",
+    }
+)
+
+RHYTHMS_REQUIRING_EXPLANATION: frozenset[str] = frozenset(
+    {
+        "Unable to Determine",
+        "Other",
+    }
+)
+
+VALID_TERMINAL_EVENT_STATUSES: frozenset[str] = frozenset(
+    {
+        "continues_beyond_waveform",
+        "does_not_continue_beyond_waveform",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # File and folder names
@@ -516,14 +543,131 @@ class AnnotationInterval:
 
 
 @dataclass
-class BoundaryMatch:
+class TimelineBoundary:
     """
-    Describe an attempted match between one A and one B boundary.
+    Represent one boundary in a source annotation timeline.
 
-    ``midpoint`` is populated only when a compatible match is accepted.
+    Parameters
+    ----------
+    boundary_id : str
+        Stable identifier within one source timeline.
+
+    source_alias : str
+        Reviewer-facing source alias, such as ``Annotator A``.
+
+    boundary_index : int
+        Zero-based boundary position in the source timeline.
+
+    boundary_type : str
+        One of ``start``, ``internal``, or ``end``.
+
+    time : float
+        Absolute floating-point UTC epoch seconds.
+
+    interval_before : AnnotationInterval or None
+        Interval immediately before the boundary.
+
+    interval_after : AnnotationInterval or None
+        Interval immediately after the boundary.
+
+    Notes
+    -----
+    Internal boundaries retain both neighboring intervals so CPR and rhythm
+    compatibility can be checked before midpoint reconciliation.
     """
 
     boundary_id: str
+    source_alias: str
+    boundary_index: int
+    boundary_type: str
+    time: float
+
+    interval_before: Optional[
+        AnnotationInterval
+    ] = None
+
+    interval_after: Optional[
+        AnnotationInterval
+    ] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Return a JSON-safe boundary representation.
+
+        Returns
+        -------
+        dict[str, Any]
+            Serialized boundary and adjacent interval information.
+        """
+        return {
+            "boundary_id": self.boundary_id,
+            "source_alias": self.source_alias,
+            "boundary_index": int(
+                self.boundary_index
+            ),
+            "boundary_type": self.boundary_type,
+            "time": float(self.time),
+            "interval_before": (
+                self.interval_before.to_dict()
+                if self.interval_before is not None
+                else None
+            ),
+            "interval_after": (
+                self.interval_after.to_dict()
+                if self.interval_after is not None
+                else None
+            ),
+        }
+
+@dataclass
+class BoundaryMatch:
+    """
+    Describe an attempted or accepted source-boundary match.
+
+    Parameters
+    ----------
+    boundary_id : str
+        Stable identifier for this comparison result.
+
+    boundary_type : str
+        Boundary classification: ``start``, ``internal``, or ``end``.
+
+    boundary_index_a, boundary_index_b : int or None
+        Original boundary positions in the Annotator A and B timelines.
+
+    boundary_a, boundary_b : float or None
+        Original absolute UTC epoch boundary timestamps.
+
+    difference_seconds : float or None
+        Absolute difference between matched source boundaries.
+
+    midpoint : float or None
+        Reconciled midpoint for an accepted boundary match.
+
+    within_tolerance : bool
+        Whether the source boundaries are within the configured tolerance.
+
+    adjacent_labels_compatible : bool
+        Whether CPR and rhythm values agree on both applicable sides.
+
+    matched : bool
+        Whether the two boundaries were accepted as one reconciled boundary.
+
+    nearest_other_boundary : float or None
+        Nearest opposite-source boundary for an unmatched boundary.
+
+    nearest_difference_seconds : float or None
+        Distance to the nearest opposite-source boundary.
+
+    reasons : list[str]
+        One or more machine-readable disagreement reasons.
+    """
+
+    boundary_id: str
+    boundary_type: str
+
+    boundary_index_a: Optional[int]
+    boundary_index_b: Optional[int]
 
     boundary_a: Optional[float]
     boundary_b: Optional[float]
@@ -535,6 +679,9 @@ class BoundaryMatch:
     adjacent_labels_compatible: bool
     matched: bool
 
+    nearest_other_boundary: Optional[float] = None
+    nearest_difference_seconds: Optional[float] = None
+
     reasons: list[str] = field(
         default_factory=list
     )
@@ -542,9 +689,13 @@ class BoundaryMatch:
     def to_dict(self) -> dict[str, Any]:
         """
         Return a serializable boundary-match representation.
+
+        Returns
+        -------
+        dict[str, Any]
+            Boundary-match fields converted to standard Python values.
         """
         return asdict(self)
-
 
 @dataclass
 class ComparisonRegion:
@@ -2515,46 +2666,2819 @@ def _require_ready_source_annotation_files_impl(
 # Source CSV loading and normalization
 # =============================================================================
 
-# Functions for:
-#
-# - loading annotation CSV
-# - confirming required columns
-# - preserving floating-point epoch seconds
-# - normalizing blank/null values
-# - sorting intervals
-# - converting rows into AnnotationInterval objects
-# - retaining source-row information for diagnostics only
+def read_source_annotation_csv(
+    source: SourceAnnotationFile,
+) -> pd.DataFrame:
+    """
+    Read one source annotation CSV with timing and error diagnostics.
+
+    Parameters
+    ----------
+    source : SourceAnnotationFile
+        Metadata describing the source annotation file.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Raw source annotation rows.
+
+    Raises
+    ------
+    MissingInputError
+        If the source file no longer exists.
+
+    InvalidAnnotationError
+        If the file cannot be read, contains no rows, or is missing required
+        columns.
+
+    Notes
+    -----
+    The source file is opened read-only. This function never writes to,
+    renames, moves, or deletes the source annotation.
+    """
+    start_time = perf_counter()
+    dataframe: Optional[pd.DataFrame] = None
+
+    try:
+        dataframe = _read_source_annotation_csv_impl(
+            source=source,
+        )
+
+        return dataframe
+
+    except Exception as exc:
+        # Preserve the failure in source metadata for UI diagnostics.
+        source.readiness_status = InputReadinessStatus.INVALID
+        source.readiness_message = (
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        print(
+            "[ADJUDICATION] read_source_annotation_csv failed:",
+            f"alias={source.alias}",
+            f"path={source.path}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "read_source_annotation_csv",
+            perf_counter() - start_time,
+            alias=source.alias,
+            rows=(
+                len(dataframe)
+                if dataframe is not None
+                else 0
+            ),
+            path=source.path,
+        )
+
+
+def _read_source_annotation_csv_impl(
+    source: SourceAnnotationFile,
+) -> pd.DataFrame:
+    """
+    Read and perform basic schema checks on one source annotation CSV.
+
+    Parameters
+    ----------
+    source : SourceAnnotationFile
+        Source file metadata.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Raw annotation data with original row numbers retained in
+        ``_source_row``.
+
+    Raises
+    ------
+    MissingInputError
+        If the source path is not an existing file.
+
+    InvalidAnnotationError
+        If the CSV cannot be read, is empty, or lacks required columns.
+    """
+    source_path = (
+        source.path
+        .expanduser()
+        .resolve(strict=False)
+    )
+
+    if not source_path.is_file():
+        raise MissingInputError(
+            f"Source annotation file does not exist: {source_path}"
+        )
+
+    try:
+        # Read text-like values consistently. Start/end are converted
+        # explicitly below so floating-point epoch precision is retained.
+        dataframe = pd.read_csv(
+            source_path,
+            dtype="string",
+            keep_default_na=True,
+        )
+    except Exception as exc:
+        raise InvalidAnnotationError(
+            f"Could not read source annotation CSV "
+            f"{source_path}: {exc}"
+        ) from exc
+
+    if dataframe.empty:
+        raise InvalidAnnotationError(
+            f"Source annotation CSV contains no rows: {source_path}"
+        )
+
+    missing_columns = (
+        REQUIRED_ANNOTATION_COLUMNS
+        .difference(dataframe.columns)
+    )
+
+    if missing_columns:
+        raise InvalidAnnotationError(
+            f"Source annotation CSV is missing required columns: "
+            f"{sorted(missing_columns)}. Path: {source_path}"
+        )
+
+    dataframe = dataframe.copy()
+
+    # Preserve the original zero-based CSV data-row index for diagnostics.
+    # The CSV header is not included in this number.
+    dataframe["_source_row"] = np.arange(
+        len(dataframe),
+        dtype=int,
+    )
+
+    return dataframe
+
+
+def normalize_source_annotation_dataframe(
+    dataframe: pd.DataFrame,
+    source: SourceAnnotationFile,
+) -> pd.DataFrame:
+    """
+    Normalize source annotation values without changing boundary precision.
+
+    Parameters
+    ----------
+    dataframe : pandas.DataFrame
+        Raw source annotation rows.
+
+    source : SourceAnnotationFile
+        Metadata describing the source file and expected annotator identity.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Normalized rows sorted by ``start`` and ``end``.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If timestamps are invalid, user identity is inconsistent, or required
+        values cannot be normalized.
+
+    Notes
+    -----
+    Structural interval validation, including gaps and overlaps, is performed
+    in the next validation section. This function focuses on type and value
+    normalization.
+    """
+    start_time = perf_counter()
+    normalized: Optional[pd.DataFrame] = None
+
+    try:
+        normalized = (
+            _normalize_source_annotation_dataframe_impl(
+                dataframe=dataframe,
+                source=source,
+            )
+        )
+
+        return normalized
+
+    except Exception as exc:
+        source.readiness_status = InputReadinessStatus.INVALID
+        source.readiness_message = (
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        print(
+            "[ADJUDICATION] "
+            "normalize_source_annotation_dataframe failed:",
+            f"alias={source.alias}",
+            f"path={source.path}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "normalize_source_annotation_dataframe",
+            perf_counter() - start_time,
+            alias=source.alias,
+            rows=(
+                len(normalized)
+                if normalized is not None
+                else 0
+            ),
+        )
+
+
+def _normalize_source_annotation_dataframe_impl(
+    dataframe: pd.DataFrame,
+    source: SourceAnnotationFile,
+) -> pd.DataFrame:
+    """
+    Normalize one source DataFrame without timing or UI behavior.
+    """
+    normalized = dataframe.copy()
+
+    # ------------------------------------------------------------------
+    # Normalize text columns.
+    # ------------------------------------------------------------------
+    text_columns = [
+        "user",
+        "subject",
+        "encounter",
+        "namespace",
+        "file_tag",
+        "source_path",
+        "cpr",
+        "rhythm_label",
+        "rhythm_expl",
+        "terminal_event_status",
+        "terminal_event_comment",
+    ]
+
+    for column in text_columns:
+        normalized[column] = normalized[column].map(
+            clean_string
+        )
+
+    # ------------------------------------------------------------------
+    # Validate source-user identity.
+    # ------------------------------------------------------------------
+    source_users = [
+        value
+        for value in normalized["user"].unique()
+        if value
+    ]
+
+    if not source_users:
+        raise InvalidAnnotationError(
+            f"Source file contains no annotator username: {source.path}"
+        )
+
+    if len(source_users) != 1:
+        raise InvalidAnnotationError(
+            "Source file must contain exactly one annotator username, "
+            f"but found {source_users}. Path: {source.path}"
+        )
+
+    file_username = source_users[0]
+
+    if file_username != source.username:
+        raise InvalidAnnotationError(
+            f"Source username mismatch. Configured user is "
+            f"{source.username!r}, but the CSV contains "
+            f"{file_username!r}. Path: {source.path}"
+        )
+
+    # ------------------------------------------------------------------
+    # Convert boundaries to float64 epoch seconds.
+    #
+    # No rounding or conversion to integer milliseconds is performed.
+    # ------------------------------------------------------------------
+    normalized["start"] = pd.to_numeric(
+        normalized["start"],
+        errors="coerce",
+    ).astype("float64")
+
+    normalized["end"] = pd.to_numeric(
+        normalized["end"],
+        errors="coerce",
+    ).astype("float64")
+
+    invalid_start = ~np.isfinite(
+        normalized["start"].to_numpy(
+            dtype=float
+        )
+    )
+
+    invalid_end = ~np.isfinite(
+        normalized["end"].to_numpy(
+            dtype=float
+        )
+    )
+
+    invalid_time_mask = (
+        invalid_start
+        | invalid_end
+    )
+
+    if np.any(invalid_time_mask):
+        invalid_rows = normalized.loc[
+            invalid_time_mask,
+            "_source_row",
+        ].astype(int).tolist()
+
+        raise InvalidAnnotationError(
+            "Source annotation contains invalid start/end timestamps "
+            f"at data rows {invalid_rows}. Path: {source.path}"
+        )
+
+    # ------------------------------------------------------------------
+    # Normalize completion values.
+    # ------------------------------------------------------------------
+    normalized["waveform_complete"] = normalized[
+        "waveform_complete"
+    ].map(coerce_bool)
+
+    # Stable sorting ensures deterministic behavior when timestamps are equal.
+    normalized = normalized.sort_values(
+        by=[
+            "start",
+            "end",
+            "_source_row",
+        ],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    return normalized
+
+
+def dataframe_to_annotation_intervals(
+    dataframe: pd.DataFrame,
+    source: SourceAnnotationFile,
+) -> list[AnnotationInterval]:
+    """
+    Convert normalized source rows into interval dataclasses.
+
+    Parameters
+    ----------
+    dataframe : pandas.DataFrame
+        Normalized annotation rows.
+
+    source : SourceAnnotationFile
+        Source metadata providing the stable Annotator A/B alias.
+
+    Returns
+    -------
+    list[AnnotationInterval]
+        Intervals ordered by start time.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If a row cannot be converted into an interval.
+    """
+    start_time = perf_counter()
+    intervals: list[AnnotationInterval] = []
+
+    try:
+        intervals = _dataframe_to_annotation_intervals_impl(
+            dataframe=dataframe,
+            source=source,
+        )
+
+        return intervals
+
+    except Exception as exc:
+        source.readiness_status = InputReadinessStatus.INVALID
+        source.readiness_message = (
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        print(
+            "[ADJUDICATION] "
+            "dataframe_to_annotation_intervals failed:",
+            f"alias={source.alias}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "dataframe_to_annotation_intervals",
+            perf_counter() - start_time,
+            alias=source.alias,
+            intervals=len(intervals),
+        )
+
+
+def _dataframe_to_annotation_intervals_impl(
+    dataframe: pd.DataFrame,
+    source: SourceAnnotationFile,
+) -> list[AnnotationInterval]:
+    """
+    Convert normalized rows without timing or UI behavior.
+    """
+    intervals: list[AnnotationInterval] = []
+
+    for normalized_index, row in dataframe.iterrows():
+        source_row = int(
+            row.get(
+                "_source_row",
+                normalized_index,
+            )
+        )
+
+        try:
+            interval_start = validate_epoch_seconds(
+                row["start"],
+                f"start at source row {source_row}",
+            )
+
+            interval_end = validate_epoch_seconds(
+                row["end"],
+                f"end at source row {source_row}",
+            )
+
+            interval = AnnotationInterval(
+                user=clean_string(row["user"]),
+                subject=clean_string(row["subject"]),
+                encounter=clean_string(
+                    row["encounter"]
+                ),
+                namespace=clean_string(
+                    row["namespace"]
+                ),
+                file_tag=clean_string(
+                    row["file_tag"]
+                ),
+                source_path=clean_string(
+                    row["source_path"]
+                ),
+                cpr=clean_string(row["cpr"]),
+                rhythm_label=clean_string(
+                    row["rhythm_label"]
+                ),
+                rhythm_expl=clean_string(
+                    row["rhythm_expl"]
+                ),
+                start=interval_start,
+                end=interval_end,
+                waveform_complete=coerce_bool(
+                    row["waveform_complete"]
+                ),
+                terminal_event_status=clean_string(
+                    row["terminal_event_status"]
+                ),
+                terminal_event_comment=clean_string(
+                    row["terminal_event_comment"]
+                ),
+                source_alias=source.alias,
+                source_row=source_row,
+            )
+
+        except Exception as exc:
+            raise InvalidAnnotationError(
+                f"Could not normalize source row {source_row} "
+                f"from {source.path}: {exc}"
+            ) from exc
+
+        intervals.append(interval)
+
+    return intervals
+
+
+def load_source_annotation_intervals(
+    source: SourceAnnotationFile,
+) -> list[AnnotationInterval]:
+    """
+    Load and normalize one source annotator timeline.
+
+    Parameters
+    ----------
+    source : SourceAnnotationFile
+        Ready source-file metadata.
+
+    Returns
+    -------
+    list[AnnotationInterval]
+        Normalized source intervals in chronological order.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If the source is not ready or cannot be normalized.
+
+    Notes
+    -----
+    This function does not yet perform full gap/overlap validation. That is
+    handled by the source interval-validation section.
+    """
+    start_time = perf_counter()
+    intervals: list[AnnotationInterval] = []
+
+    try:
+        intervals = _load_source_annotation_intervals_impl(
+            source=source,
+        )
+
+        return intervals
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "load_source_annotation_intervals failed:",
+            f"alias={source.alias}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "load_source_annotation_intervals",
+            perf_counter() - start_time,
+            alias=source.alias,
+            intervals=len(intervals),
+            path=source.path,
+        )
+
+
+def _load_source_annotation_intervals_impl(
+    source: SourceAnnotationFile,
+) -> list[AnnotationInterval]:
+    """
+    Load one source timeline without timing or UI behavior.
+    """
+    if (
+        source.readiness_status
+        != InputReadinessStatus.READY
+    ):
+        raise InvalidAnnotationError(
+            f"{source.alias} is not ready for loading: "
+            f"{source.readiness_status.value}. "
+            f"{source.readiness_message}"
+        )
+
+    raw_dataframe = read_source_annotation_csv(
+        source
+    )
+
+    normalized_dataframe = (
+        normalize_source_annotation_dataframe(
+            dataframe=raw_dataframe,
+            source=source,
+        )
+    )
+
+    intervals = dataframe_to_annotation_intervals(
+        dataframe=normalized_dataframe,
+        source=source,
+    )
+
+    if not intervals:
+        raise InvalidAnnotationError(
+            f"{source.alias} produced no usable intervals."
+        )
+
+    return intervals
+
+
+def load_source_annotation_pair(
+    source_a: SourceAnnotationFile,
+    source_b: SourceAnnotationFile,
+) -> tuple[
+    list[AnnotationInterval],
+    list[AnnotationInterval],
+]:
+    """
+    Load and normalize the two required source timelines.
+
+    Parameters
+    ----------
+    source_a : SourceAnnotationFile
+        Source assigned to Annotator A.
+
+    source_b : SourceAnnotationFile
+        Source assigned to Annotator B.
+
+    Returns
+    -------
+    tuple[list[AnnotationInterval], list[AnnotationInterval]]
+        Chronological Annotator A and Annotator B interval lists.
+
+    Raises
+    ------
+    AdjudicationError
+        If source aliases are incorrect or both paths resolve to the same file.
+
+    InvalidAnnotationError
+        If either source timeline cannot be loaded.
+    """
+    start_time = perf_counter()
+
+    intervals_a: list[AnnotationInterval] = []
+    intervals_b: list[AnnotationInterval] = []
+
+    try:
+        (
+            intervals_a,
+            intervals_b,
+        ) = _load_source_annotation_pair_impl(
+            source_a=source_a,
+            source_b=source_b,
+        )
+
+        return intervals_a, intervals_b
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "load_source_annotation_pair failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "load_source_annotation_pair",
+            perf_counter() - start_time,
+            intervals_a=len(intervals_a),
+            intervals_b=len(intervals_b),
+        )
+
+
+def _load_source_annotation_pair_impl(
+    source_a: SourceAnnotationFile,
+    source_b: SourceAnnotationFile,
+) -> tuple[
+    list[AnnotationInterval],
+    list[AnnotationInterval],
+]:
+    """
+    Load both source timelines without timing or UI behavior.
+    """
+    if source_a.alias != ANNOTATOR_ALIASES[0]:
+        raise AdjudicationError(
+            f"Expected first source alias "
+            f"{ANNOTATOR_ALIASES[0]!r}, but received "
+            f"{source_a.alias!r}."
+        )
+
+    if source_b.alias != ANNOTATOR_ALIASES[1]:
+        raise AdjudicationError(
+            f"Expected second source alias "
+            f"{ANNOTATOR_ALIASES[1]!r}, but received "
+            f"{source_b.alias!r}."
+        )
+
+    normalized_path_a = (
+        source_a.path
+        .expanduser()
+        .resolve(strict=False)
+    )
+
+    normalized_path_b = (
+        source_b.path
+        .expanduser()
+        .resolve(strict=False)
+    )
+
+    if normalized_path_a == normalized_path_b:
+        raise DuplicateInputError(
+            "Annotator A and Annotator B resolve to the same source file: "
+            f"{normalized_path_a}"
+        )
+
+    intervals_a = load_source_annotation_intervals(
+        source_a
+    )
+
+    intervals_b = load_source_annotation_intervals(
+        source_b
+    )
+
+    return intervals_a, intervals_b
 
 
 # =============================================================================
 # Source interval validation
 # =============================================================================
 
-# Functions for:
-#
-# - end > start validation
-# - finite timestamp validation
-# - overlap detection
-# - gap detection
-# - complete-file validation
-# - CPR/rhythm/explanation validation
-# - producing structured validation results and warnings
+def append_validation_issue(
+    issues: list[ValidationIssue],
+    *,
+    code: str,
+    message: str,
+    severity: str = "error",
+    interval: Optional[AnnotationInterval] = None,
+    row_index: Optional[int] = None,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+) -> None:
+    """
+    Append one structured validation issue.
+
+    Parameters
+    ----------
+    issues : list[ValidationIssue]
+        Mutable collection receiving the new issue.
+
+    code : str
+        Stable machine-readable issue code.
+
+    message : str
+        Human-readable explanation.
+
+    severity : str
+        Usually ``error`` or ``warning``.
+
+    interval : AnnotationInterval or None
+        Optional interval used to populate source row and boundary details.
+
+    row_index : int or None
+        Explicit source row. Used when no interval object is available.
+
+    start, end : float or None
+        Optional interval boundaries.
+
+    Notes
+    -----
+    Explicit arguments override values derived from ``interval``.
+    """
+    if interval is not None:
+        if row_index is None:
+            row_index = interval.source_row
+
+        if start is None:
+            start = interval.start
+
+        if end is None:
+            end = interval.end
+
+    issues.append(
+        ValidationIssue(
+            code=code,
+            message=message,
+            severity=severity,
+            row_index=row_index,
+            start=start,
+            end=end,
+        )
+    )
+
+
+def validate_interval_question_logic(
+    interval: AnnotationInterval,
+) -> list[ValidationIssue]:
+    """
+    Validate CPR, rhythm, and explanation values for one source interval.
+
+    Parameters
+    ----------
+    interval : AnnotationInterval
+        Source annotation interval to validate.
+
+    Returns
+    -------
+    list[ValidationIssue]
+        Question-logic errors and warnings.
+
+    Validation rules
+    ----------------
+    - CPR must be Yes, No, or Unable to Determine.
+    - CPR No requires a rhythm label.
+    - CPR No with rhythm Other or Unable to Determine requires explanation.
+    - CPR Unable to Determine requires explanation.
+    - CPR Yes normally has no rhythm label. A populated rhythm is retained but
+      reported as a warning.
+    """
+    issues: list[ValidationIssue] = []
+
+    cpr = clean_string(interval.cpr)
+    rhythm = clean_string(interval.rhythm_label)
+    explanation = clean_string(
+        interval.rhythm_expl
+    )
+
+    if cpr not in VALID_CPR_VALUES:
+        append_validation_issue(
+            issues,
+            code="invalid_cpr_value",
+            message=(
+                f"{interval.source_alias} row "
+                f"{interval.source_row} has unsupported CPR value "
+                f"{cpr!r}."
+            ),
+            interval=interval,
+        )
+        return issues
+
+    if cpr == "No":
+        if not rhythm:
+            append_validation_issue(
+                issues,
+                code="missing_rhythm_label",
+                message=(
+                    f"{interval.source_alias} row "
+                    f"{interval.source_row} has CPR No but no rhythm label."
+                ),
+                interval=interval,
+            )
+
+        elif (
+            rhythm in RHYTHMS_REQUIRING_EXPLANATION
+            and not explanation
+        ):
+            append_validation_issue(
+                issues,
+                code="missing_rhythm_explanation",
+                message=(
+                    f"{interval.source_alias} row "
+                    f"{interval.source_row} uses rhythm {rhythm!r} "
+                    "without the required explanation."
+                ),
+                interval=interval,
+            )
+
+    elif cpr == "Unable to Determine":
+        if not explanation:
+            append_validation_issue(
+                issues,
+                code="missing_cpr_explanation",
+                message=(
+                    f"{interval.source_alias} row "
+                    f"{interval.source_row} has CPR Unable to Determine "
+                    "without the required explanation."
+                ),
+                interval=interval,
+            )
+
+        if rhythm:
+            append_validation_issue(
+                issues,
+                code="unexpected_rhythm_label",
+                message=(
+                    f"{interval.source_alias} row "
+                    f"{interval.source_row} has CPR Unable to Determine "
+                    f"but also contains rhythm {rhythm!r}."
+                ),
+                severity="warning",
+                interval=interval,
+            )
+
+    elif cpr == "Yes" and rhythm:
+        append_validation_issue(
+            issues,
+            code="unexpected_rhythm_label",
+            message=(
+                f"{interval.source_alias} row "
+                f"{interval.source_row} has CPR Yes but also contains "
+                f"rhythm {rhythm!r}."
+            ),
+            severity="warning",
+            interval=interval,
+        )
+
+    return issues
+
+
+def validate_source_interval_timeline(
+    intervals: list[AnnotationInterval],
+    source: SourceAnnotationFile,
+    *,
+    continuity_tolerance_sec: float = SOURCE_CONTINUITY_TOLERANCE_SEC,
+) -> ValidationResult:
+    """
+    Validate one source annotator timeline with timing diagnostics.
+
+    Parameters
+    ----------
+    intervals : list[AnnotationInterval]
+        Chronologically normalized source intervals.
+
+    source : SourceAnnotationFile
+        Metadata for the source annotation CSV.
+
+    continuity_tolerance_sec : float
+        Small numerical tolerance used for gap/overlap checks.
+
+    Returns
+    -------
+    ValidationResult
+        Structured validation result containing all detected issues.
+
+    Notes
+    -----
+    This function reports all detectable issues rather than failing after the
+    first one. Use ``require_valid_source_interval_timeline`` when invalid
+    sources should raise an exception.
+    """
+    start_time = perf_counter()
+    result = ValidationResult(valid=False)
+
+    try:
+        result = _validate_source_interval_timeline_impl(
+            intervals=intervals,
+            source=source,
+            continuity_tolerance_sec=(
+                continuity_tolerance_sec
+            ),
+        )
+
+        return result
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "validate_source_interval_timeline failed:",
+            f"alias={source.alias}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "validate_source_interval_timeline",
+            perf_counter() - start_time,
+            alias=source.alias,
+            intervals=len(intervals),
+            valid=result.valid,
+            errors=len(result.errors),
+            warnings=len(result.warnings),
+        )
+
+
+def _validate_source_interval_timeline_impl(
+    intervals: list[AnnotationInterval],
+    source: SourceAnnotationFile,
+    *,
+    continuity_tolerance_sec: float,
+) -> ValidationResult:
+    """
+    Validate one source timeline without timing or UI behavior.
+    """
+    issues: list[ValidationIssue] = []
+
+    if not intervals:
+        append_validation_issue(
+            issues,
+            code="empty_timeline",
+            message=(
+                f"{source.alias} contains no annotation intervals."
+            ),
+        )
+
+        return ValidationResult(
+            valid=False,
+            issues=issues,
+        )
+
+    if (
+        not np.isfinite(continuity_tolerance_sec)
+        or continuity_tolerance_sec < 0
+    ):
+        raise ValueError(
+            "continuity_tolerance_sec must be finite and nonnegative."
+        )
+
+    expected_user = clean_string(
+        source.username
+    )
+
+    # Metadata from the first interval becomes the expected record identity.
+    first_interval = intervals[0]
+
+    expected_subject = clean_string(
+        first_interval.subject
+    )
+    expected_encounter = clean_string(
+        first_interval.encounter
+    )
+    expected_namespace = clean_string(
+        first_interval.namespace
+    )
+    expected_file_tag = clean_string(
+        first_interval.file_tag
+    )
+
+    if not expected_subject:
+        append_validation_issue(
+            issues,
+            code="missing_subject",
+            message=(
+                f"{source.alias} does not contain a subject identifier."
+            ),
+            interval=first_interval,
+        )
+
+    if not expected_encounter:
+        append_validation_issue(
+            issues,
+            code="missing_encounter",
+            message=(
+                f"{source.alias} does not contain an encounter identifier."
+            ),
+            interval=first_interval,
+        )
+
+    if not expected_file_tag:
+        append_validation_issue(
+            issues,
+            code="missing_file_tag",
+            message=(
+                f"{source.alias} does not contain a waveform file tag."
+            ),
+            interval=first_interval,
+        )
+
+    previous_interval: Optional[
+        AnnotationInterval
+    ] = None
+
+    for interval_index, interval in enumerate(
+        intervals
+    ):
+        # --------------------------------------------------------------
+        # Validate finite, positive-duration boundaries.
+        # --------------------------------------------------------------
+        if (
+            not np.isfinite(interval.start)
+            or not np.isfinite(interval.end)
+        ):
+            append_validation_issue(
+                issues,
+                code="invalid_timestamp",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "contains a non-finite boundary."
+                ),
+                interval=interval,
+            )
+
+        elif (
+            interval.end - interval.start
+            < MINIMUM_VALID_INTERVAL_SEC
+        ):
+            append_validation_issue(
+                issues,
+                code="invalid_duration",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "has end less than or equal to start."
+                ),
+                interval=interval,
+            )
+
+        # --------------------------------------------------------------
+        # Validate row identity and record consistency.
+        # --------------------------------------------------------------
+        if clean_string(interval.user) != expected_user:
+            append_validation_issue(
+                issues,
+                code="source_user_mismatch",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    f"contains user {interval.user!r}; expected "
+                    f"{expected_user!r}."
+                ),
+                interval=interval,
+            )
+
+        if (
+            clean_string(interval.subject)
+            != expected_subject
+        ):
+            append_validation_issue(
+                issues,
+                code="inconsistent_subject",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "contains a different subject identifier."
+                ),
+                interval=interval,
+            )
+
+        if (
+            clean_string(interval.encounter)
+            != expected_encounter
+        ):
+            append_validation_issue(
+                issues,
+                code="inconsistent_encounter",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "contains a different encounter identifier."
+                ),
+                interval=interval,
+            )
+
+        if (
+            clean_string(interval.namespace)
+            != expected_namespace
+        ):
+            append_validation_issue(
+                issues,
+                code="inconsistent_namespace",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "contains a different namespace."
+                ),
+                interval=interval,
+            )
+
+        if (
+            clean_string(interval.file_tag)
+            != expected_file_tag
+        ):
+            append_validation_issue(
+                issues,
+                code="inconsistent_file_tag",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "contains a different waveform file tag."
+                ),
+                interval=interval,
+            )
+
+        # --------------------------------------------------------------
+        # Apply the same CPR/rhythm requirements used by annotation mode.
+        # --------------------------------------------------------------
+        issues.extend(
+            validate_interval_question_logic(
+                interval
+            )
+        )
+
+        # --------------------------------------------------------------
+        # Validate timeline ordering, gaps, and overlaps.
+        # --------------------------------------------------------------
+        if previous_interval is not None:
+            boundary_delta = (
+                interval.start
+                - previous_interval.end
+            )
+
+            if (
+                boundary_delta
+                > continuity_tolerance_sec
+            ):
+                append_validation_issue(
+                    issues,
+                    code=(
+                        DisagreementReason
+                        .INVALID_GAP
+                        .value
+                    ),
+                    message=(
+                        f"{source.alias} has a gap of "
+                        f"{boundary_delta:.9f} seconds between "
+                        f"source rows {previous_interval.source_row} "
+                        f"and {interval.source_row}."
+                    ),
+                    row_index=interval.source_row,
+                    start=previous_interval.end,
+                    end=interval.start,
+                )
+
+            elif (
+                boundary_delta
+                < -continuity_tolerance_sec
+            ):
+                append_validation_issue(
+                    issues,
+                    code=(
+                        DisagreementReason
+                        .INVALID_OVERLAP
+                        .value
+                    ),
+                    message=(
+                        f"{source.alias} has an overlap of "
+                        f"{abs(boundary_delta):.9f} seconds between "
+                        f"source rows {previous_interval.source_row} "
+                        f"and {interval.source_row}."
+                    ),
+                    row_index=interval.source_row,
+                    start=interval.start,
+                    end=previous_interval.end,
+                )
+
+            elif interval.start < previous_interval.start:
+                append_validation_issue(
+                    issues,
+                    code="out_of_order_interval",
+                    message=(
+                        f"{source.alias} row {interval.source_row} "
+                        "is not in chronological order."
+                    ),
+                    interval=interval,
+                )
+
+        previous_interval = interval
+
+    # ------------------------------------------------------------------
+    # Validate completion metadata.
+    #
+    # Earlier rows should not be marked complete. The final row of a completed
+    # source must carry the completion flag.
+    # ------------------------------------------------------------------
+    for interval in intervals[:-1]:
+        if interval.waveform_complete:
+            append_validation_issue(
+                issues,
+                code="early_completion_flag",
+                message=(
+                    f"{source.alias} row {interval.source_row} "
+                    "is marked waveform_complete before the final interval."
+                ),
+                interval=interval,
+            )
+
+    final_interval = intervals[-1]
+
+    if source.complete and not final_interval.waveform_complete:
+        append_validation_issue(
+            issues,
+            code="missing_final_completion_flag",
+            message=(
+                f"{source.alias} uses a COMPLETE filename but its final "
+                "interval is not marked waveform_complete."
+            ),
+            interval=final_interval,
+        )
+
+    final_status = clean_string(
+        final_interval.terminal_event_status
+    )
+
+    if source.complete:
+        if not final_status:
+            append_validation_issue(
+                issues,
+                code="missing_terminal_event_status",
+                message=(
+                    f"{source.alias} is complete but its final interval "
+                    "does not contain terminal_event_status."
+                ),
+                severity="warning",
+                interval=final_interval,
+            )
+
+        elif (
+            final_status
+            not in VALID_TERMINAL_EVENT_STATUSES
+        ):
+            append_validation_issue(
+                issues,
+                code="invalid_terminal_event_status",
+                message=(
+                    f"{source.alias} final interval contains unsupported "
+                    f"terminal_event_status {final_status!r}."
+                ),
+                interval=final_interval,
+            )
+
+    valid = not any(
+        issue.severity == "error"
+        for issue in issues
+    )
+
+    return ValidationResult(
+        valid=valid,
+        issues=issues,
+    )
+
+
+def require_valid_source_interval_timeline(
+    intervals: list[AnnotationInterval],
+    source: SourceAnnotationFile,
+    *,
+    continuity_tolerance_sec: float = SOURCE_CONTINUITY_TOLERANCE_SEC,
+) -> ValidationResult:
+    """
+    Validate one source timeline and raise when errors are present.
+
+    Parameters
+    ----------
+    intervals : list[AnnotationInterval]
+        Source intervals to validate.
+
+    source : SourceAnnotationFile
+        Source annotation metadata.
+
+    continuity_tolerance_sec : float
+        Numerical tolerance for source gap/overlap detection.
+
+    Returns
+    -------
+    ValidationResult
+        Successful validation result, including non-fatal warnings.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If one or more validation errors are present.
+    """
+    start_time = perf_counter()
+    result = ValidationResult(valid=False)
+
+    try:
+        result = validate_source_interval_timeline(
+            intervals=intervals,
+            source=source,
+            continuity_tolerance_sec=(
+                continuity_tolerance_sec
+            ),
+        )
+
+        if not result.valid:
+            source.readiness_status = (
+                InputReadinessStatus.INVALID
+            )
+
+            source.readiness_message = "; ".join(
+                issue.message
+                for issue in result.errors
+            )
+
+            error_summary = "\n".join(
+                f"- [{issue.code}] {issue.message}"
+                for issue in result.errors
+            )
+
+            raise InvalidAnnotationError(
+                f"{source.alias} failed source timeline validation:\n"
+                f"{error_summary}"
+            )
+
+        source.readiness_status = (
+            InputReadinessStatus.READY
+        )
+
+        if result.warnings:
+            source.readiness_message = "; ".join(
+                issue.message
+                for issue in result.warnings
+            )
+        else:
+            source.readiness_message = (
+                "Completed annotation input is valid."
+            )
+
+        return result
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "require_valid_source_interval_timeline failed:",
+            f"alias={source.alias}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "require_valid_source_interval_timeline",
+            perf_counter() - start_time,
+            alias=source.alias,
+            valid=result.valid,
+            errors=len(result.errors),
+            warnings=len(result.warnings),
+        )
+
+
+def validate_source_pair_consistency(
+    intervals_a: list[AnnotationInterval],
+    intervals_b: list[AnnotationInterval],
+    source_a: SourceAnnotationFile,
+    source_b: SourceAnnotationFile,
+) -> ValidationResult:
+    """
+    Validate record identity and coverage consistency across both sources.
+
+    Parameters
+    ----------
+    intervals_a, intervals_b : list[AnnotationInterval]
+        Validated Annotator A and Annotator B timelines.
+
+    source_a, source_b : SourceAnnotationFile
+        Source metadata for diagnostics.
+
+    Returns
+    -------
+    ValidationResult
+        Pair-level errors and warnings.
+
+    Notes
+    -----
+    Different coverage bounds are reported as warnings rather than immediate
+    errors. The comparison engine will convert one-sided coverage into gray
+    review regions.
+    """
+    start_time = perf_counter()
+    result = ValidationResult(valid=False)
+
+    try:
+        result = _validate_source_pair_consistency_impl(
+            intervals_a=intervals_a,
+            intervals_b=intervals_b,
+            source_a=source_a,
+            source_b=source_b,
+        )
+
+        return result
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "validate_source_pair_consistency failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "validate_source_pair_consistency",
+            perf_counter() - start_time,
+            valid=result.valid,
+            errors=len(result.errors),
+            warnings=len(result.warnings),
+        )
+
+
+def _validate_source_pair_consistency_impl(
+    intervals_a: list[AnnotationInterval],
+    intervals_b: list[AnnotationInterval],
+    source_a: SourceAnnotationFile,
+    source_b: SourceAnnotationFile,
+) -> ValidationResult:
+    """
+    Validate both source timelines without timing or UI behavior.
+    """
+    issues: list[ValidationIssue] = []
+
+    if not intervals_a or not intervals_b:
+        append_validation_issue(
+            issues,
+            code="missing_source_timeline",
+            message=(
+                "Both Annotator A and Annotator B must provide "
+                "non-empty timelines."
+            ),
+        )
+
+        return ValidationResult(
+            valid=False,
+            issues=issues,
+        )
+
+    first_a = intervals_a[0]
+    first_b = intervals_b[0]
+
+    identity_fields = [
+        "subject",
+        "encounter",
+        "file_tag",
+    ]
+
+    for field_name in identity_fields:
+        value_a = clean_string(
+            getattr(first_a, field_name)
+        )
+        value_b = clean_string(
+            getattr(first_b, field_name)
+        )
+
+        if value_a != value_b:
+            append_validation_issue(
+                issues,
+                code=f"{field_name}_mismatch",
+                message=(
+                    f"Annotator A and Annotator B have different "
+                    f"{field_name} values: {value_a!r} versus "
+                    f"{value_b!r}."
+                ),
+            )
+
+    namespace_a = clean_string(
+        first_a.namespace
+    )
+    namespace_b = clean_string(
+        first_b.namespace
+    )
+
+    if namespace_a != namespace_b:
+        append_validation_issue(
+            issues,
+            code="namespace_mismatch",
+            message=(
+                "Annotator A and Annotator B have different namespace "
+                f"values: {namespace_a!r} versus {namespace_b!r}."
+            ),
+            severity="warning",
+        )
+
+    start_a = float(intervals_a[0].start)
+    end_a = float(intervals_a[-1].end)
+    start_b = float(intervals_b[0].start)
+    end_b = float(intervals_b[-1].end)
+
+    start_difference = abs(
+        start_a - start_b
+    )
+    end_difference = abs(
+        end_a - end_b
+    )
+
+    if start_difference > SOURCE_CONTINUITY_TOLERANCE_SEC:
+        append_validation_issue(
+            issues,
+            code="source_start_coverage_mismatch",
+            message=(
+                "Annotator source timelines begin at different times: "
+                f"{source_a.alias}={start_a:.9f}, "
+                f"{source_b.alias}={start_b:.9f}, "
+                f"difference={start_difference:.9f} seconds."
+            ),
+            severity="warning",
+            start=min(start_a, start_b),
+            end=max(start_a, start_b),
+        )
+
+    if end_difference > SOURCE_CONTINUITY_TOLERANCE_SEC:
+        append_validation_issue(
+            issues,
+            code="source_end_coverage_mismatch",
+            message=(
+                "Annotator source timelines end at different times: "
+                f"{source_a.alias}={end_a:.9f}, "
+                f"{source_b.alias}={end_b:.9f}, "
+                f"difference={end_difference:.9f} seconds."
+            ),
+            severity="warning",
+            start=min(end_a, end_b),
+            end=max(end_a, end_b),
+        )
+
+    overlap_start = max(
+        start_a,
+        start_b,
+    )
+    overlap_end = min(
+        end_a,
+        end_b,
+    )
+
+    if overlap_end <= overlap_start:
+        append_validation_issue(
+            issues,
+            code="no_shared_coverage",
+            message=(
+                "Annotator A and Annotator B timelines do not overlap "
+                "in time."
+            ),
+        )
+
+    valid = not any(
+        issue.severity == "error"
+        for issue in issues
+    )
+
+    return ValidationResult(
+        valid=valid,
+        issues=issues,
+    )
+
+
+def load_and_validate_source_pair(
+    source_a: SourceAnnotationFile,
+    source_b: SourceAnnotationFile,
+) -> tuple[
+    list[AnnotationInterval],
+    list[AnnotationInterval],
+    list[ValidationIssue],
+]:
+    """
+    Load and fully validate both source annotator timelines.
+
+    Parameters
+    ----------
+    source_a, source_b : SourceAnnotationFile
+        Ready source annotation files assigned to Annotator A and B.
+
+    Returns
+    -------
+    tuple
+        ``(
+            annotator_a_intervals,
+            annotator_b_intervals,
+            validation_warnings
+        )``
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If either source timeline or the source pair has validation errors.
+    """
+    start_time = perf_counter()
+
+    intervals_a: list[AnnotationInterval] = []
+    intervals_b: list[AnnotationInterval] = []
+    warnings: list[ValidationIssue] = []
+
+    try:
+        (
+            intervals_a,
+            intervals_b,
+            warnings,
+        ) = _load_and_validate_source_pair_impl(
+            source_a=source_a,
+            source_b=source_b,
+        )
+
+        return (
+            intervals_a,
+            intervals_b,
+            warnings,
+        )
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "load_and_validate_source_pair failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "load_and_validate_source_pair",
+            perf_counter() - start_time,
+            intervals_a=len(intervals_a),
+            intervals_b=len(intervals_b),
+            warnings=len(warnings),
+        )
+
+
+def _load_and_validate_source_pair_impl(
+    source_a: SourceAnnotationFile,
+    source_b: SourceAnnotationFile,
+) -> tuple[
+    list[AnnotationInterval],
+    list[AnnotationInterval],
+    list[ValidationIssue],
+]:
+    """
+    Load and validate both sources without timing or UI behavior.
+    """
+    (
+        intervals_a,
+        intervals_b,
+    ) = load_source_annotation_pair(
+        source_a=source_a,
+        source_b=source_b,
+    )
+
+    validation_a = require_valid_source_interval_timeline(
+        intervals=intervals_a,
+        source=source_a,
+    )
+
+    validation_b = require_valid_source_interval_timeline(
+        intervals=intervals_b,
+        source=source_b,
+    )
+
+    pair_validation = validate_source_pair_consistency(
+        intervals_a=intervals_a,
+        intervals_b=intervals_b,
+        source_a=source_a,
+        source_b=source_b,
+    )
+
+    if not pair_validation.valid:
+        error_summary = "\n".join(
+            f"- [{issue.code}] {issue.message}"
+            for issue in pair_validation.errors
+        )
+
+        raise InvalidAnnotationError(
+            "Source annotation pair failed validation:\n"
+            f"{error_summary}"
+        )
+
+    warnings = (
+        validation_a.warnings
+        + validation_b.warnings
+        + pair_validation.warnings
+    )
+
+    return (
+        intervals_a,
+        intervals_b,
+        warnings,
+    )
 
 
 # =============================================================================
 # Boundary extraction and matching
 # =============================================================================
 
-# Functions for:
-#
-# - extracting internal boundaries from each timeline
-# - finding candidate A/B boundary matches
-# - enforcing one-to-one matching
-# - applying configurable tolerance
-# - checking labels before each boundary
-# - checking labels after each boundary
-# - calculating midpoint boundaries
-# - identifying unmatched/extra boundaries
+VALID_BOUNDARY_TYPES: frozenset[str] = frozenset(
+    {
+        "start",
+        "internal",
+        "end",
+    }
+)
+
+
+def append_unique_reason(
+    reasons: list[str],
+    reason: str | DisagreementReason,
+) -> None:
+    """
+    Add one disagreement reason without introducing duplicates.
+
+    Parameters
+    ----------
+    reasons : list[str]
+        Mutable reason list.
+
+    reason : str or DisagreementReason
+        Reason value to append.
+
+    Notes
+    -----
+    Reason order is retained so output remains deterministic and easy to
+    inspect.
+    """
+    reason_value = (
+        reason.value
+        if isinstance(reason, DisagreementReason)
+        else clean_string(reason)
+    )
+
+    if reason_value and reason_value not in reasons:
+        reasons.append(reason_value)
+
+
+def interval_labels_equal(
+    interval_a: Optional[AnnotationInterval],
+    interval_b: Optional[AnnotationInterval],
+) -> bool:
+    """
+    Compare CPR and rhythm labels for two adjacent intervals.
+
+    Parameters
+    ----------
+    interval_a, interval_b : AnnotationInterval or None
+        Adjacent intervals from Annotator A and Annotator B.
+
+    Returns
+    -------
+    bool
+        True when both intervals are absent or both contain matching CPR and
+        rhythm labels.
+
+    Notes
+    -----
+    Explanations are not used for agreement classification. They remain
+    available for reviewer context.
+    """
+    if interval_a is None and interval_b is None:
+        return True
+
+    if interval_a is None or interval_b is None:
+        return False
+
+    return (
+        clean_string(interval_a.cpr)
+        == clean_string(interval_b.cpr)
+        and clean_string(interval_a.rhythm_label)
+        == clean_string(interval_b.rhythm_label)
+    )
+
+
+def get_interval_label_mismatch_reasons(
+    interval_a: Optional[AnnotationInterval],
+    interval_b: Optional[AnnotationInterval],
+) -> list[str]:
+    """
+    Return CPR/rhythm disagreement reasons for two adjacent intervals.
+
+    Parameters
+    ----------
+    interval_a, interval_b : AnnotationInterval or None
+        Intervals being compared.
+
+    Returns
+    -------
+    list[str]
+        Unique machine-readable disagreement reasons.
+    """
+    reasons: list[str] = []
+
+    if interval_a is None and interval_b is None:
+        return reasons
+
+    if interval_a is None:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ANNOTATOR_B_ONLY,
+        )
+        append_unique_reason(
+            reasons,
+            DisagreementReason.MISSING_COVERAGE,
+        )
+        return reasons
+
+    if interval_b is None:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ANNOTATOR_A_ONLY,
+        )
+        append_unique_reason(
+            reasons,
+            DisagreementReason.MISSING_COVERAGE,
+        )
+        return reasons
+
+    if (
+        clean_string(interval_a.cpr)
+        != clean_string(interval_b.cpr)
+    ):
+        append_unique_reason(
+            reasons,
+            DisagreementReason.CPR_MISMATCH,
+        )
+
+    if (
+        clean_string(interval_a.rhythm_label)
+        != clean_string(interval_b.rhythm_label)
+    ):
+        append_unique_reason(
+            reasons,
+            DisagreementReason.RHYTHM_MISMATCH,
+        )
+
+    return reasons
+
+
+def compare_adjacent_boundary_labels(
+    boundary_a: TimelineBoundary,
+    boundary_b: TimelineBoundary,
+) -> tuple[bool, list[str]]:
+    """
+    Compare labels immediately before and after two candidate boundaries.
+
+    Parameters
+    ----------
+    boundary_a, boundary_b : TimelineBoundary
+        Candidate source boundaries.
+
+    Returns
+    -------
+    tuple[bool, list[str]]
+        ``(compatible, reasons)``.
+
+    Notes
+    -----
+    A boundary is label-compatible only when all applicable CPR and rhythm
+    labels agree on both sides.
+
+    For start boundaries, only the interval after the boundary is applicable.
+
+    For end boundaries, only the interval before the boundary is applicable.
+    """
+    reasons: list[str] = []
+
+    if boundary_a.boundary_type != boundary_b.boundary_type:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ADJACENT_LABEL_MISMATCH,
+        )
+        return False, reasons
+
+    before_reasons = get_interval_label_mismatch_reasons(
+        boundary_a.interval_before,
+        boundary_b.interval_before,
+    )
+
+    after_reasons = get_interval_label_mismatch_reasons(
+        boundary_a.interval_after,
+        boundary_b.interval_after,
+    )
+
+    for reason in before_reasons + after_reasons:
+        append_unique_reason(
+            reasons,
+            reason,
+        )
+
+    compatible = (
+        interval_labels_equal(
+            boundary_a.interval_before,
+            boundary_b.interval_before,
+        )
+        and interval_labels_equal(
+            boundary_a.interval_after,
+            boundary_b.interval_after,
+        )
+    )
+
+    if not compatible:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ADJACENT_LABEL_MISMATCH,
+        )
+
+    return compatible, reasons
+
+
+def extract_timeline_boundaries(
+    intervals: list[AnnotationInterval],
+    source_alias: str,
+) -> list[TimelineBoundary]:
+    """
+    Extract ordered source boundaries with timing and error diagnostics.
+
+    Parameters
+    ----------
+    intervals : list[AnnotationInterval]
+        Validated chronological source intervals.
+
+    source_alias : str
+        Reviewer-facing alias for the source timeline.
+
+    Returns
+    -------
+    list[TimelineBoundary]
+        Start, internal, and end boundaries in chronological order.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If no intervals exist or a boundary cannot be represented.
+    """
+    start_time = perf_counter()
+    boundaries: list[TimelineBoundary] = []
+
+    try:
+        boundaries = _extract_timeline_boundaries_impl(
+            intervals=intervals,
+            source_alias=source_alias,
+        )
+
+        return boundaries
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "extract_timeline_boundaries failed:",
+            f"source_alias={source_alias}",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "extract_timeline_boundaries",
+            perf_counter() - start_time,
+            source_alias=source_alias,
+            intervals=len(intervals),
+            boundaries=len(boundaries),
+        )
+
+
+def _extract_timeline_boundaries_impl(
+    intervals: list[AnnotationInterval],
+    source_alias: str,
+) -> list[TimelineBoundary]:
+    """
+    Extract source boundaries without timing or UI behavior.
+    """
+    if not intervals:
+        raise InvalidAnnotationError(
+            f"{source_alias} contains no intervals for boundary extraction."
+        )
+
+    boundaries: list[TimelineBoundary] = []
+
+    # The first boundary has no interval before it.
+    boundaries.append(
+        TimelineBoundary(
+            boundary_id=stable_numbered_id(
+                f"{source_alias.replace(' ', '_').lower()}_boundary",
+                0,
+            ),
+            source_alias=source_alias,
+            boundary_index=0,
+            boundary_type="start",
+            time=float(intervals[0].start),
+            interval_before=None,
+            interval_after=intervals[0],
+        )
+    )
+
+    # Each internal boundary sits between two sequential annotation intervals.
+    for interval_index in range(
+        1,
+        len(intervals),
+    ):
+        interval_before = intervals[
+            interval_index - 1
+        ]
+        interval_after = intervals[
+            interval_index
+        ]
+
+        # Source validation permits only tiny numerical continuity differences.
+        # Averaging the two source-side values creates one stable representation
+        # without rounding away waveform precision.
+        internal_boundary_time = (
+            float(interval_before.end)
+            + float(interval_after.start)
+        ) / 2.0
+
+        boundaries.append(
+            TimelineBoundary(
+                boundary_id=stable_numbered_id(
+                    (
+                        f"{source_alias.replace(' ', '_').lower()}"
+                        "_boundary"
+                    ),
+                    interval_index,
+                ),
+                source_alias=source_alias,
+                boundary_index=interval_index,
+                boundary_type="internal",
+                time=internal_boundary_time,
+                interval_before=interval_before,
+                interval_after=interval_after,
+            )
+        )
+
+    # The final boundary has no interval after it.
+    final_boundary_index = len(intervals)
+
+    boundaries.append(
+        TimelineBoundary(
+            boundary_id=stable_numbered_id(
+                f"{source_alias.replace(' ', '_').lower()}_boundary",
+                final_boundary_index,
+            ),
+            source_alias=source_alias,
+            boundary_index=final_boundary_index,
+            boundary_type="end",
+            time=float(intervals[-1].end),
+            interval_before=intervals[-1],
+            interval_after=None,
+        )
+    )
+
+    for boundary in boundaries:
+        if boundary.boundary_type not in VALID_BOUNDARY_TYPES:
+            raise InvalidAnnotationError(
+                f"Unsupported boundary type: {boundary.boundary_type!r}"
+            )
+
+        if not np.isfinite(boundary.time):
+            raise InvalidAnnotationError(
+                f"Boundary {boundary.boundary_id} has a non-finite time."
+            )
+
+    return boundaries
+
+
+def boundaries_can_match(
+    boundary_a: TimelineBoundary,
+    boundary_b: TimelineBoundary,
+    tolerance_sec: float,
+) -> tuple[bool, float, bool, list[str]]:
+    """
+    Evaluate whether two candidate boundaries may be reconciled.
+
+    Parameters
+    ----------
+    boundary_a, boundary_b : TimelineBoundary
+        Candidate source boundaries.
+
+    tolerance_sec : float
+        Maximum permitted absolute time difference.
+
+    Returns
+    -------
+    tuple
+        ``(
+            can_match,
+            difference_seconds,
+            labels_compatible,
+            reasons
+        )``.
+    """
+    difference_seconds = abs(
+        float(boundary_a.time)
+        - float(boundary_b.time)
+    )
+
+    within_tolerance = (
+        difference_seconds <= tolerance_sec
+    )
+
+    labels_compatible, reasons = (
+        compare_adjacent_boundary_labels(
+            boundary_a,
+            boundary_b,
+        )
+    )
+
+    if not within_tolerance:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.BOUNDARY_OUTSIDE_TOLERANCE,
+        )
+
+    can_match = (
+        boundary_a.boundary_type
+        == boundary_b.boundary_type
+        and within_tolerance
+        and labels_compatible
+    )
+
+    return (
+        can_match,
+        float(difference_seconds),
+        labels_compatible,
+        reasons,
+    )
+
+
+def _candidate_score_is_better(
+    candidate_matches: int,
+    candidate_cost: float,
+    candidate_priority: int,
+    current_matches: int,
+    current_cost: float,
+    current_priority: int,
+) -> bool:
+    """
+    Compare two dynamic-programming boundary alignment candidates.
+
+    Higher match count is preferred. For equal counts, lower total boundary
+    distance is preferred. Priority resolves otherwise identical candidates.
+    """
+    if candidate_matches != current_matches:
+        return candidate_matches > current_matches
+
+    if not np.isclose(
+        candidate_cost,
+        current_cost,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        return candidate_cost < current_cost
+
+    return candidate_priority > current_priority
+
+
+def _find_optimal_boundary_pairs(
+    boundaries_a: list[TimelineBoundary],
+    boundaries_b: list[TimelineBoundary],
+    tolerance_sec: float,
+) -> list[tuple[int, int]]:
+    """
+    Find ordered one-to-one compatible boundary matches.
+
+    Dynamic programming maximizes the number of accepted matches and then
+    minimizes total boundary offset. This avoids unstable nearest-neighbor
+    pairings when one annotator has an extra boundary.
+    """
+    count_a = len(boundaries_a)
+    count_b = len(boundaries_b)
+
+    match_counts = np.zeros(
+        (count_a + 1, count_b + 1),
+        dtype=int,
+    )
+
+    total_costs = np.zeros(
+        (count_a + 1, count_b + 1),
+        dtype=float,
+    )
+
+    actions: list[list[str]] = [
+        [""] * (count_b + 1)
+        for _ in range(count_a + 1)
+    ]
+
+    for index_a in range(1, count_a + 1):
+        actions[index_a][0] = "skip_a"
+
+    for index_b in range(1, count_b + 1):
+        actions[0][index_b] = "skip_b"
+
+    for index_a in range(1, count_a + 1):
+        for index_b in range(1, count_b + 1):
+            # Begin with skipping the current A boundary.
+            best_matches = int(
+                match_counts[index_a - 1, index_b]
+            )
+            best_cost = float(
+                total_costs[index_a - 1, index_b]
+            )
+            best_action = "skip_a"
+            best_priority = 1
+
+            # Consider skipping the current B boundary.
+            candidate_matches = int(
+                match_counts[index_a, index_b - 1]
+            )
+            candidate_cost = float(
+                total_costs[index_a, index_b - 1]
+            )
+
+            if _candidate_score_is_better(
+                candidate_matches,
+                candidate_cost,
+                0,
+                best_matches,
+                best_cost,
+                best_priority,
+            ):
+                best_matches = candidate_matches
+                best_cost = candidate_cost
+                best_action = "skip_b"
+                best_priority = 0
+
+            # Consider accepting a compatible ordered match.
+            (
+                can_match,
+                difference_seconds,
+                _labels_compatible,
+                _reasons,
+            ) = boundaries_can_match(
+                boundaries_a[index_a - 1],
+                boundaries_b[index_b - 1],
+                tolerance_sec,
+            )
+
+            if can_match:
+                candidate_matches = (
+                    int(
+                        match_counts[
+                            index_a - 1,
+                            index_b - 1,
+                        ]
+                    )
+                    + 1
+                )
+
+                candidate_cost = (
+                    float(
+                        total_costs[
+                            index_a - 1,
+                            index_b - 1,
+                        ]
+                    )
+                    + difference_seconds
+                )
+
+                if _candidate_score_is_better(
+                    candidate_matches,
+                    candidate_cost,
+                    2,
+                    best_matches,
+                    best_cost,
+                    best_priority,
+                ):
+                    best_matches = candidate_matches
+                    best_cost = candidate_cost
+                    best_action = "match"
+                    best_priority = 2
+
+            match_counts[index_a, index_b] = (
+                best_matches
+            )
+            total_costs[index_a, index_b] = (
+                best_cost
+            )
+            actions[index_a][index_b] = (
+                best_action
+            )
+
+    # Reconstruct ordered accepted pairs.
+    matched_pairs: list[tuple[int, int]] = []
+
+    index_a = count_a
+    index_b = count_b
+
+    while index_a > 0 or index_b > 0:
+        action = actions[index_a][index_b]
+
+        if action == "match":
+            matched_pairs.append(
+                (
+                    index_a - 1,
+                    index_b - 1,
+                )
+            )
+            index_a -= 1
+            index_b -= 1
+
+        elif action == "skip_a":
+            index_a -= 1
+
+        elif action == "skip_b":
+            index_b -= 1
+
+        else:
+            break
+
+    matched_pairs.reverse()
+
+    return matched_pairs
+
+
+def _get_nearest_boundary(
+    boundary: TimelineBoundary,
+    opposite_boundaries: list[TimelineBoundary],
+) -> tuple[
+    Optional[TimelineBoundary],
+    Optional[float],
+]:
+    """
+    Return the nearest opposite-source boundary of the same type.
+    """
+    compatible_type_candidates = [
+        candidate
+        for candidate in opposite_boundaries
+        if (
+            candidate.boundary_type
+            == boundary.boundary_type
+        )
+    ]
+
+    if not compatible_type_candidates:
+        return None, None
+
+    nearest = min(
+        compatible_type_candidates,
+        key=lambda candidate: abs(
+            float(candidate.time)
+            - float(boundary.time)
+        ),
+    )
+
+    difference = abs(
+        float(nearest.time)
+        - float(boundary.time)
+    )
+
+    return nearest, float(difference)
+
+
+def match_timeline_boundaries(
+    boundaries_a: list[TimelineBoundary],
+    boundaries_b: list[TimelineBoundary],
+    *,
+    tolerance_sec: float = ADJUDICATION_BOUNDARY_TOLERANCE_SEC,
+) -> list[BoundaryMatch]:
+    """
+    Match Annotator A and B boundaries with timing and diagnostics.
+
+    Parameters
+    ----------
+    boundaries_a, boundaries_b : list[TimelineBoundary]
+        Ordered source boundary lists.
+
+    tolerance_sec : float
+        Maximum accepted A/B boundary difference.
+
+    Returns
+    -------
+    list[BoundaryMatch]
+        Accepted matches and unmatched source boundaries.
+
+    Raises
+    ------
+    ValueError
+        If tolerance is invalid.
+
+    InvalidAnnotationError
+        If either boundary list is empty.
+    """
+    start_time = perf_counter()
+    matches: list[BoundaryMatch] = []
+
+    try:
+        matches = _match_timeline_boundaries_impl(
+            boundaries_a=boundaries_a,
+            boundaries_b=boundaries_b,
+            tolerance_sec=tolerance_sec,
+        )
+
+        return matches
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "match_timeline_boundaries failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "match_timeline_boundaries",
+            perf_counter() - start_time,
+            boundaries_a=len(boundaries_a),
+            boundaries_b=len(boundaries_b),
+            results=len(matches),
+            matched=sum(
+                result.matched
+                for result in matches
+            ),
+            tolerance_sec=tolerance_sec,
+        )
+
+
+def _match_timeline_boundaries_impl(
+    boundaries_a: list[TimelineBoundary],
+    boundaries_b: list[TimelineBoundary],
+    *,
+    tolerance_sec: float,
+) -> list[BoundaryMatch]:
+    """
+    Match source boundaries without timing or UI behavior.
+    """
+    if not boundaries_a or not boundaries_b:
+        raise InvalidAnnotationError(
+            "Both source timelines require boundaries for comparison."
+        )
+
+    if (
+        not np.isfinite(tolerance_sec)
+        or tolerance_sec < 0
+    ):
+        raise ValueError(
+            "tolerance_sec must be finite and nonnegative."
+        )
+
+    accepted_pairs = _find_optimal_boundary_pairs(
+        boundaries_a=boundaries_a,
+        boundaries_b=boundaries_b,
+        tolerance_sec=tolerance_sec,
+    )
+
+    accepted_a_indices = {
+        index_a
+        for index_a, _index_b in accepted_pairs
+    }
+
+    accepted_b_indices = {
+        index_b
+        for _index_a, index_b in accepted_pairs
+    }
+
+    results: list[BoundaryMatch] = []
+    result_index = 1
+
+    # Add accepted midpoint-reconciled boundary matches.
+    for index_a, index_b in accepted_pairs:
+        boundary_a = boundaries_a[index_a]
+        boundary_b = boundaries_b[index_b]
+
+        (
+            can_match,
+            difference_seconds,
+            labels_compatible,
+            reasons,
+        ) = boundaries_can_match(
+            boundary_a,
+            boundary_b,
+            tolerance_sec,
+        )
+
+        if not can_match:
+            raise AdjudicationError(
+                "Dynamic boundary alignment returned an incompatible match."
+            )
+
+        midpoint = (
+            float(boundary_a.time)
+            + float(boundary_b.time)
+        ) / 2.0
+
+        results.append(
+            BoundaryMatch(
+                boundary_id=stable_numbered_id(
+                    "boundary_match",
+                    result_index,
+                ),
+                boundary_type=boundary_a.boundary_type,
+                boundary_index_a=(
+                    boundary_a.boundary_index
+                ),
+                boundary_index_b=(
+                    boundary_b.boundary_index
+                ),
+                boundary_a=float(boundary_a.time),
+                boundary_b=float(boundary_b.time),
+                difference_seconds=(
+                    difference_seconds
+                ),
+                midpoint=float(midpoint),
+                within_tolerance=True,
+                adjacent_labels_compatible=(
+                    labels_compatible
+                ),
+                matched=True,
+                reasons=reasons,
+            )
+        )
+
+        result_index += 1
+
+    # Retain unmatched Annotator A boundaries for disagreement generation.
+    for index_a, boundary_a in enumerate(
+        boundaries_a
+    ):
+        if index_a in accepted_a_indices:
+            continue
+
+        nearest_b, nearest_difference = (
+            _get_nearest_boundary(
+                boundary_a,
+                boundaries_b,
+            )
+        )
+
+        reasons: list[str] = []
+
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ANNOTATOR_A_ONLY,
+        )
+
+        labels_compatible = False
+        within_tolerance = False
+
+        if nearest_b is not None:
+            within_tolerance = bool(
+                nearest_difference is not None
+                and nearest_difference
+                <= tolerance_sec
+            )
+
+            (
+                labels_compatible,
+                label_reasons,
+            ) = compare_adjacent_boundary_labels(
+                boundary_a,
+                nearest_b,
+            )
+
+            for reason in label_reasons:
+                append_unique_reason(
+                    reasons,
+                    reason,
+                )
+
+        if not within_tolerance:
+            append_unique_reason(
+                reasons,
+                DisagreementReason.BOUNDARY_OUTSIDE_TOLERANCE,
+            )
+
+        results.append(
+            BoundaryMatch(
+                boundary_id=stable_numbered_id(
+                    "boundary_match",
+                    result_index,
+                ),
+                boundary_type=boundary_a.boundary_type,
+                boundary_index_a=(
+                    boundary_a.boundary_index
+                ),
+                boundary_index_b=None,
+                boundary_a=float(boundary_a.time),
+                boundary_b=None,
+                difference_seconds=None,
+                midpoint=None,
+                within_tolerance=within_tolerance,
+                adjacent_labels_compatible=(
+                    labels_compatible
+                ),
+                matched=False,
+                nearest_other_boundary=(
+                    float(nearest_b.time)
+                    if nearest_b is not None
+                    else None
+                ),
+                nearest_difference_seconds=(
+                    nearest_difference
+                ),
+                reasons=reasons,
+            )
+        )
+
+        result_index += 1
+
+    # Retain unmatched Annotator B boundaries for disagreement generation.
+    for index_b, boundary_b in enumerate(
+        boundaries_b
+    ):
+        if index_b in accepted_b_indices:
+            continue
+
+        nearest_a, nearest_difference = (
+            _get_nearest_boundary(
+                boundary_b,
+                boundaries_a,
+            )
+        )
+
+        reasons = []
+
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ANNOTATOR_B_ONLY,
+        )
+
+        labels_compatible = False
+        within_tolerance = False
+
+        if nearest_a is not None:
+            within_tolerance = bool(
+                nearest_difference is not None
+                and nearest_difference
+                <= tolerance_sec
+            )
+
+            (
+                labels_compatible,
+                label_reasons,
+            ) = compare_adjacent_boundary_labels(
+                nearest_a,
+                boundary_b,
+            )
+
+            for reason in label_reasons:
+                append_unique_reason(
+                    reasons,
+                    reason,
+                )
+
+        if not within_tolerance:
+            append_unique_reason(
+                reasons,
+                DisagreementReason.BOUNDARY_OUTSIDE_TOLERANCE,
+            )
+
+        results.append(
+            BoundaryMatch(
+                boundary_id=stable_numbered_id(
+                    "boundary_match",
+                    result_index,
+                ),
+                boundary_type=boundary_b.boundary_type,
+                boundary_index_a=None,
+                boundary_index_b=(
+                    boundary_b.boundary_index
+                ),
+                boundary_a=None,
+                boundary_b=float(boundary_b.time),
+                difference_seconds=None,
+                midpoint=None,
+                within_tolerance=within_tolerance,
+                adjacent_labels_compatible=(
+                    labels_compatible
+                ),
+                matched=False,
+                nearest_other_boundary=(
+                    float(nearest_a.time)
+                    if nearest_a is not None
+                    else None
+                ),
+                nearest_difference_seconds=(
+                    nearest_difference
+                ),
+                reasons=reasons,
+            )
+        )
+
+        result_index += 1
+
+    # Keep result ordering deterministic for plotting and JSON persistence.
+    results.sort(
+        key=lambda result: (
+            (
+                result.midpoint
+                if result.midpoint is not None
+                else (
+                    result.boundary_a
+                    if result.boundary_a is not None
+                    else result.boundary_b
+                )
+            ),
+            0 if result.matched else 1,
+            result.boundary_id,
+        )
+    )
+
+    return results
+
+
+def extract_and_match_source_boundaries(
+    intervals_a: list[AnnotationInterval],
+    intervals_b: list[AnnotationInterval],
+    *,
+    tolerance_sec: float = ADJUDICATION_BOUNDARY_TOLERANCE_SEC,
+) -> tuple[
+    list[TimelineBoundary],
+    list[TimelineBoundary],
+    list[BoundaryMatch],
+]:
+    """
+    Extract and compare both source boundary sets.
+
+    Parameters
+    ----------
+    intervals_a, intervals_b : list[AnnotationInterval]
+        Validated source timelines.
+
+    tolerance_sec : float
+        Maximum accepted source boundary difference.
+
+    Returns
+    -------
+    tuple
+        ``(
+            boundaries_a,
+            boundaries_b,
+            boundary_matches
+        )``.
+    """
+    start_time = perf_counter()
+
+    boundaries_a: list[TimelineBoundary] = []
+    boundaries_b: list[TimelineBoundary] = []
+    matches: list[BoundaryMatch] = []
+
+    try:
+        boundaries_a = extract_timeline_boundaries(
+            intervals=intervals_a,
+            source_alias=ANNOTATOR_ALIASES[0],
+        )
+
+        boundaries_b = extract_timeline_boundaries(
+            intervals=intervals_b,
+            source_alias=ANNOTATOR_ALIASES[1],
+        )
+
+        matches = match_timeline_boundaries(
+            boundaries_a=boundaries_a,
+            boundaries_b=boundaries_b,
+            tolerance_sec=tolerance_sec,
+        )
+
+        return (
+            boundaries_a,
+            boundaries_b,
+            matches,
+        )
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "extract_and_match_source_boundaries failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "extract_and_match_source_boundaries",
+            perf_counter() - start_time,
+            boundaries_a=len(boundaries_a),
+            boundaries_b=len(boundaries_b),
+            matched=sum(
+                result.matched
+                for result in matches
+            ),
+            unmatched=sum(
+                not result.matched
+                for result in matches
+            ),
+        )
 
 
 # =============================================================================
