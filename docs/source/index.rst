@@ -61,3 +61,4 @@ If you are installing, extending, packaging, or maintaining the app, start here:
    API Reference <developer_manual/api_reference>
    Contributing <developer_manual/contributing>
    Maintenance Notes <developer_manual/technical_debt>
+   Adjudication Data Model and File Contract <developer_manual/adjudication_contract>
