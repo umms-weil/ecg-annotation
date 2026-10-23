@@ -307,6 +307,90 @@ class BoundaryMatch:
         """
         return asdict(self)
 
+
+@dataclass
+class TimelineSegment:
+    """
+    Represent one atomic segment in the combined annotator timeline.
+
+    A segment is created between consecutive reconciled boundaries from either
+    source timeline. Agreement classification is applied later.
+
+    Parameters
+    ----------
+    segment_id : str
+        Stable identifier such as ``segment_0001``.
+
+    start, end : float
+        Absolute floating-point UTC epoch seconds.
+
+    annotation_a : AnnotationInterval or None
+        Annotator A interval active within this segment.
+
+    annotation_b : AnnotationInterval or None
+        Annotator B interval active within this segment.
+    """
+
+    segment_id: str
+    start: float
+    end: float
+
+    annotation_a: Optional[AnnotationInterval] = None
+    annotation_b: Optional[AnnotationInterval] = None
+
+    @property
+    def duration(self) -> float:
+        """
+        Return segment duration in seconds.
+
+        Returns
+        -------
+        float
+            ``end - start`` without deliberate rounding.
+        """
+        return float(self.end - self.start)
+
+    @property
+    def has_both_annotators(self) -> bool:
+        """
+        Return whether both annotators cover this segment.
+        """
+        return (
+            self.annotation_a is not None
+            and self.annotation_b is not None
+        )
+
+    @property
+    def has_any_coverage(self) -> bool:
+        """
+        Return whether at least one annotator covers this segment.
+        """
+        return (
+            self.annotation_a is not None
+            or self.annotation_b is not None
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Return a JSON-safe segment representation.
+        """
+        return {
+            "segment_id": self.segment_id,
+            "start": float(self.start),
+            "end": float(self.end),
+            "annotation_a": (
+                self.annotation_a.to_dict()
+                if self.annotation_a is not None
+                else None
+            ),
+            "annotation_b": (
+                self.annotation_b.to_dict()
+                if self.annotation_b is not None
+                else None
+            ),
+        }
+
+
 @dataclass
 class ComparisonRegion:
     """

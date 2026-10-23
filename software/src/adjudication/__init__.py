@@ -30,6 +30,7 @@ from .models import (
     ComparisonRegion,
     SourceAnnotationFile,
     TimelineBoundary,
+    TimelineSegment,
     ValidationIssue,
     ValidationResult,
 )
@@ -60,4 +61,5 @@ __all__ = [
     "TimelineBoundary",
     "ValidationIssue",
     "ValidationResult",
+    "TimelineSegment",
 ]
