@@ -10,10 +10,15 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .boundaries import extract_and_match_source_boundaries
+from .boundaries import (
+    append_unique_reason,
+    extract_and_match_source_boundaries,
+)
 from .config import (
     ADJUDICATION_BOUNDARY_TOLERANCE_SEC,
     ANNOTATION_USERS,
+    ANNOTATOR_ALIASES,
+    BOUNDARY_COORDINATE_EPSILON_SEC,
     ComparisonStatus,
     DisagreementReason,
 )
@@ -644,15 +649,575 @@ def _build_combined_timeline_segments_impl(
 # Agreement classification
 # =============================================================================
 
-# Functions for:
-#
-# - comparing CPR values
-# - comparing rhythm labels
-# - checking adjacent-label compatibility
-# - assigning agreement/disagreement/missing status
-# - attaching machine-readable disagreement reasons
-# - creating stable disagreement IDs
+def get_segment_label_disagreement_reasons(
+    segment: TimelineSegment,
+) -> list[str]:
+    """
+    Compare CPR and rhythm labels active within one atomic segment.
 
+    Parameters
+    ----------
+    segment : TimelineSegment
+        Atomic region containing zero, one, or two source annotations.
+
+    Returns
+    -------
+    list[str]
+        Unique machine-readable disagreement reasons.
+
+    Notes
+    -----
+    Explanations are not used to determine annotator agreement. Required
+    explanations are validated separately when loading source timelines.
+    """
+    reasons: list[str] = []
+
+    annotation_a = segment.annotation_a
+    annotation_b = segment.annotation_b
+
+    if annotation_a is None and annotation_b is None:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.MISSING_COVERAGE,
+        )
+        return reasons
+
+    if annotation_a is None:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ANNOTATOR_B_ONLY,
+        )
+        append_unique_reason(
+            reasons,
+            DisagreementReason.MISSING_COVERAGE,
+        )
+        return reasons
+
+    if annotation_b is None:
+        append_unique_reason(
+            reasons,
+            DisagreementReason.ANNOTATOR_A_ONLY,
+        )
+        append_unique_reason(
+            reasons,
+            DisagreementReason.MISSING_COVERAGE,
+        )
+        return reasons
+
+    if (
+        clean_string(annotation_a.cpr)
+        != clean_string(annotation_b.cpr)
+    ):
+        append_unique_reason(
+            reasons,
+            DisagreementReason.CPR_MISMATCH,
+        )
+
+    if (
+        clean_string(annotation_a.rhythm_label)
+        != clean_string(annotation_b.rhythm_label)
+    ):
+        append_unique_reason(
+            reasons,
+            DisagreementReason.RHYTHM_MISMATCH,
+        )
+
+    return reasons
+
+
+def segment_touches_time(
+    segment: TimelineSegment,
+    boundary_time: float,
+    *,
+    epsilon_sec: float = BOUNDARY_COORDINATE_EPSILON_SEC,
+) -> bool:
+    """
+    Return whether a segment begins or ends at one boundary coordinate.
+
+    Parameters
+    ----------
+    segment : TimelineSegment
+        Atomic comparison segment.
+
+    boundary_time : float
+        Absolute epoch timestamp.
+
+    epsilon_sec : float
+        Numerical comparison tolerance.
+
+    Returns
+    -------
+    bool
+        True when the segment start or end matches the boundary coordinate.
+    """
+    if not np.isfinite(boundary_time):
+        return False
+
+    return bool(
+        np.isclose(
+            segment.start,
+            boundary_time,
+            rtol=0.0,
+            atol=epsilon_sec,
+        )
+        or np.isclose(
+            segment.end,
+            boundary_time,
+            rtol=0.0,
+            atol=epsilon_sec,
+        )
+    )
+
+
+def segment_overlaps_boundary_conflict_span(
+    segment: TimelineSegment,
+    first_time: float,
+    second_time: float,
+    *,
+    epsilon_sec: float = BOUNDARY_COORDINATE_EPSILON_SEC,
+) -> bool:
+    """
+    Return whether a segment overlaps the span between conflicting boundaries.
+
+    Parameters
+    ----------
+    segment : TimelineSegment
+        Atomic comparison segment.
+
+    first_time, second_time : float
+        Conflicting source boundary coordinates.
+
+    epsilon_sec : float
+        Numerical coordinate tolerance.
+
+    Returns
+    -------
+    bool
+        True when the segment overlaps the positive-width conflict span.
+
+    Notes
+    -----
+    When source boundaries differ, the region between them is the primary
+    boundary-disagreement area.
+    """
+    if (
+        not np.isfinite(first_time)
+        or not np.isfinite(second_time)
+    ):
+        return False
+
+    conflict_start = min(
+        float(first_time),
+        float(second_time),
+    )
+    conflict_end = max(
+        float(first_time),
+        float(second_time),
+    )
+
+    if conflict_end - conflict_start <= epsilon_sec:
+        return False
+
+    overlap_start = max(
+        float(segment.start),
+        conflict_start,
+    )
+    overlap_end = min(
+        float(segment.end),
+        conflict_end,
+    )
+
+    return bool(
+        overlap_end - overlap_start > epsilon_sec
+    )
+
+
+def get_segment_boundary_disagreement_reasons(
+    segment: TimelineSegment,
+    boundary_matches: list[BoundaryMatch],
+) -> list[str]:
+    """
+    Return boundary-related disagreement reasons affecting one segment.
+
+    Parameters
+    ----------
+    segment : TimelineSegment
+        Atomic comparison segment.
+
+    boundary_matches : list[BoundaryMatch]
+        Accepted and unmatched A/B boundary results.
+
+    Returns
+    -------
+    list[str]
+        Unique boundary disagreement reasons.
+
+    Behavior
+    --------
+    For source boundaries at different times, the segment between those times
+    receives the boundary disagreement reasons.
+
+    For an unmatched boundary without a distinct opposite-source coordinate,
+    segments touching that boundary receive the disagreement reasons.
+    """
+    reasons: list[str] = []
+
+    for boundary_result in boundary_matches:
+        if boundary_result.matched:
+            continue
+
+        own_boundary_time = (
+            boundary_result.boundary_a
+            if boundary_result.boundary_a is not None
+            else boundary_result.boundary_b
+        )
+
+        nearest_boundary_time = (
+            boundary_result.nearest_other_boundary
+        )
+
+        affected = False
+
+        if (
+            own_boundary_time is not None
+            and nearest_boundary_time is not None
+        ):
+            affected = (
+                segment_overlaps_boundary_conflict_span(
+                    segment=segment,
+                    first_time=float(
+                        own_boundary_time
+                    ),
+                    second_time=float(
+                        nearest_boundary_time
+                    ),
+                )
+            )
+
+            # Exact or nearly exact unmatched boundaries generally indicate
+            # adjacent-label incompatibility rather than positional mismatch.
+            if (
+                not affected
+                and np.isclose(
+                    float(own_boundary_time),
+                    float(nearest_boundary_time),
+                    rtol=0.0,
+                    atol=(
+                        BOUNDARY_COORDINATE_EPSILON_SEC
+                    ),
+                )
+            ):
+                affected = segment_touches_time(
+                    segment=segment,
+                    boundary_time=float(
+                        own_boundary_time
+                    ),
+                )
+
+        elif own_boundary_time is not None:
+            # An extra boundary with no same-type counterpart affects the
+            # segments immediately adjacent to that boundary.
+            affected = segment_touches_time(
+                segment=segment,
+                boundary_time=float(
+                    own_boundary_time
+                ),
+            )
+
+        if not affected:
+            continue
+
+        for reason in boundary_result.reasons:
+            append_unique_reason(
+                reasons,
+                reason,
+            )
+
+    return reasons
+
+
+def classify_timeline_segment(
+    segment: TimelineSegment,
+    boundary_matches: list[BoundaryMatch],
+) -> ComparisonRegion:
+    """
+    Classify one atomic timeline segment.
+
+    Parameters
+    ----------
+    segment : TimelineSegment
+        Atomic A/B timeline segment.
+
+    boundary_matches : list[BoundaryMatch]
+        Boundary results used to attach positional and adjacency conflicts.
+
+    Returns
+    -------
+    ComparisonRegion
+        Green agreement, red unresolved disagreement, or gray missing coverage.
+
+    Classification rules
+    --------------------
+    Missing one or both annotations
+        ``MISSING_COVERAGE``.
+
+    Both annotations present with any label or boundary reason
+        ``UNRESOLVED_DISAGREEMENT``.
+
+    Both annotations present with no disagreement reason
+        ``AGREEMENT``.
+    """
+    reasons = get_segment_label_disagreement_reasons(
+        segment
+    )
+
+    boundary_reasons = (
+        get_segment_boundary_disagreement_reasons(
+            segment=segment,
+            boundary_matches=boundary_matches,
+        )
+    )
+
+    for reason in boundary_reasons:
+        append_unique_reason(
+            reasons,
+            reason,
+        )
+
+    if not segment.has_both_annotators:
+        status = ComparisonStatus.MISSING_COVERAGE
+
+    elif reasons:
+        status = (
+            ComparisonStatus
+            .UNRESOLVED_DISAGREEMENT
+        )
+
+    else:
+        status = ComparisonStatus.AGREEMENT
+
+    return ComparisonRegion(
+        region_id=segment.segment_id.replace(
+            "segment_",
+            "region_",
+            1,
+        ),
+        start=float(segment.start),
+        end=float(segment.end),
+        status=status,
+        reasons=reasons,
+        annotation_a=segment.annotation_a,
+        annotation_b=segment.annotation_b,
+        resolved=False,
+        resolved_at=None,
+    )
+
+
+def classify_comparison_regions(
+    segments: list[TimelineSegment],
+    boundary_matches: list[BoundaryMatch],
+) -> list[ComparisonRegion]:
+    """
+    Classify all atomic timeline segments with timing and diagnostics.
+
+    Parameters
+    ----------
+    segments : list[TimelineSegment]
+        Combined timeline segments.
+
+    boundary_matches : list[BoundaryMatch]
+        Accepted and unmatched source-boundary results.
+
+    Returns
+    -------
+    list[ComparisonRegion]
+        Chronological comparison regions.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If no segments are available or classification creates an invalid
+        region.
+    """
+    start_time = perf_counter()
+    regions: list[ComparisonRegion] = []
+
+    try:
+        regions = _classify_comparison_regions_impl(
+            segments=segments,
+            boundary_matches=boundary_matches,
+        )
+
+        return regions
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "classify_comparison_regions failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        status_counts = {
+            status.value: sum(
+                region.status == status
+                for region in regions
+            )
+            for status in ComparisonStatus
+        }
+
+        _perf_log(
+            "classify_comparison_regions",
+            perf_counter() - start_time,
+            segments=len(segments),
+            regions=len(regions),
+            statuses=status_counts,
+        )
+
+
+def _classify_comparison_regions_impl(
+    segments: list[TimelineSegment],
+    boundary_matches: list[BoundaryMatch],
+) -> list[ComparisonRegion]:
+    """
+    Classify all atomic segments without timing or UI behavior.
+    """
+    if not segments:
+        raise InvalidAnnotationError(
+            "No combined timeline segments are available for "
+            "agreement classification."
+        )
+
+    regions: list[ComparisonRegion] = []
+
+    previous_end: Optional[float] = None
+
+    for segment in segments:
+        if (
+            not np.isfinite(segment.start)
+            or not np.isfinite(segment.end)
+            or segment.end <= segment.start
+        ):
+            raise InvalidAnnotationError(
+                f"Segment {segment.segment_id} has invalid boundaries."
+            )
+
+        if (
+            previous_end is not None
+            and segment.start
+            < previous_end
+            - BOUNDARY_COORDINATE_EPSILON_SEC
+        ):
+            raise InvalidAnnotationError(
+                f"Segment {segment.segment_id} overlaps the previous segment."
+            )
+
+        region = classify_timeline_segment(
+            segment=segment,
+            boundary_matches=boundary_matches,
+        )
+
+        regions.append(region)
+        previous_end = float(segment.end)
+
+    return regions
+
+
+def summarize_comparison_regions(
+    regions: list[ComparisonRegion],
+) -> dict[str, Any]:
+    """
+    Return summary counts and durations for comparison regions.
+
+    Parameters
+    ----------
+    regions : list[ComparisonRegion]
+        Classified chronological regions.
+
+    Returns
+    -------
+    dict[str, Any]
+        Region counts, durations, and unresolved totals.
+    """
+    summary: dict[str, Any] = {
+        "total_regions": len(regions),
+        "total_duration_sec": 0.0,
+        "agreement_regions": 0,
+        "agreement_duration_sec": 0.0,
+        "unresolved_regions": 0,
+        "unresolved_duration_sec": 0.0,
+        "resolved_regions": 0,
+        "resolved_duration_sec": 0.0,
+        "missing_coverage_regions": 0,
+        "missing_coverage_duration_sec": 0.0,
+    }
+
+    for region in regions:
+        duration = float(region.duration)
+
+        summary["total_duration_sec"] += duration
+
+        if region.status == ComparisonStatus.AGREEMENT:
+            summary["agreement_regions"] += 1
+            summary[
+                "agreement_duration_sec"
+            ] += duration
+
+        elif (
+            region.status
+            == ComparisonStatus.UNRESOLVED_DISAGREEMENT
+        ):
+            summary["unresolved_regions"] += 1
+            summary[
+                "unresolved_duration_sec"
+            ] += duration
+
+        elif (
+            region.status
+            == ComparisonStatus.RESOLVED_DISAGREEMENT
+        ):
+            summary["resolved_regions"] += 1
+            summary[
+                "resolved_duration_sec"
+            ] += duration
+
+        elif (
+            region.status
+            == ComparisonStatus.MISSING_COVERAGE
+        ):
+            summary[
+                "missing_coverage_regions"
+            ] += 1
+            summary[
+                "missing_coverage_duration_sec"
+            ] += duration
+
+            if not region.resolved:
+                summary["unresolved_regions"] += 1
+                summary[
+                    "unresolved_duration_sec"
+                ] += duration
+
+    comparable_duration = (
+        summary["agreement_duration_sec"]
+        + summary["unresolved_duration_sec"]
+        + summary["resolved_duration_sec"]
+    )
+
+    if comparable_duration > 0:
+        summary["agreement_percent"] = (
+            100.0
+            * summary["agreement_duration_sec"]
+            / comparable_duration
+        )
+    else:
+        summary["agreement_percent"] = float(
+            "nan"
+        )
+
+    return summary
 
 # =============================================================================
 # Prefilled final timeline generation

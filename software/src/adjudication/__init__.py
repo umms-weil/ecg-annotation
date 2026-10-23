@@ -12,6 +12,7 @@ from .config import (
     DisagreementReason,
     InputReadinessStatus,
 )
+from .comparison import summarize_comparison_regions
 from .exceptions import (
     AdjudicationError,
     AdjudicationPathError,
@@ -62,4 +63,5 @@ __all__ = [
     "ValidationIssue",
     "ValidationResult",
     "TimelineSegment",
+    "summarize_comparison_regions",
 ]

@@ -18,6 +18,9 @@ ADJUDICATION_SCHEMA_VERSION: int = 1
 ADJUDICATION_RECORD_TYPE: str = "adjudication"
 ADJUDICATION_STATE_RECORD_TYPE: str = "adjudication_state"
 
+# Numerical tolerance used only when comparing already-derived floating-point
+# boundary coordinates. This is not the clinical adjudication tolerance.
+BOUNDARY_COORDINATE_EPSILON_SEC: float = 1e-9
 
 # ---------------------------------------------------------------------------
 # Configured participants
