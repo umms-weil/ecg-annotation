@@ -6,7 +6,7 @@ prefilling, and the primary adjudication comparison API.
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import numpy as np
 
@@ -48,6 +48,7 @@ from .utilities import (
     utc_now_iso,
 )
 from .validation import load_and_validate_source_pair
+from .paths import validate_adjudicator
 
 # =============================================================================
 # Combined timeline segmentation
@@ -1223,33 +1224,881 @@ def summarize_comparison_regions(
 # Prefilled final timeline generation
 # =============================================================================
 
-# Functions for:
-#
-# - pre-filling green agreement regions
-# - using midpoint-reconciled boundaries
-# - leaving red/gray regions unresolved
-# - optionally merging adjacent identical green intervals
-# - preventing gaps and overlaps introduced by reconciliation
-# - generating AdjudicationInterval objects
+def get_prefilled_explanation(
+    annotation_a: AnnotationInterval,
+    annotation_b: AnnotationInterval,
+) -> str:
+    """
+    Select a safe explanation for an agreed comparison region.
+
+    Parameters
+    ----------
+    annotation_a, annotation_b : AnnotationInterval
+        Source intervals covering a green agreement region.
+
+    Returns
+    -------
+    str
+        Shared explanation when both annotators entered the same value.
+        Otherwise, an empty string.
+
+    Notes
+    -----
+    CPR and rhythm agreement does not require identical explanation text.
+    Conflicting explanation text is not silently copied from one annotator.
+    The adjudicator may provide the final explanation when needed.
+    """
+    explanation_a = clean_string(
+        annotation_a.rhythm_expl
+    )
+    explanation_b = clean_string(
+        annotation_b.rhythm_expl
+    )
+
+    if explanation_a == explanation_b:
+        return explanation_a
+
+    return ""
+
+
+def get_prefilled_source_path(
+    annotation_a: Optional[AnnotationInterval],
+    annotation_b: Optional[AnnotationInterval],
+) -> str:
+    """
+    Select waveform source-path metadata for a prefilled interval.
+
+    Parameters
+    ----------
+    annotation_a, annotation_b : AnnotationInterval or None
+        Source annotations covering the comparison region.
+
+    Returns
+    -------
+    str
+        Shared source path when available, otherwise the first nonblank path.
+
+    Notes
+    -----
+    This field describes the waveform source, not the source annotation CSV.
+    """
+    source_path_a = (
+        clean_string(annotation_a.source_path)
+        if annotation_a is not None
+        else ""
+    )
+
+    source_path_b = (
+        clean_string(annotation_b.source_path)
+        if annotation_b is not None
+        else ""
+    )
+
+    if (
+        source_path_a
+        and source_path_a == source_path_b
+    ):
+        return source_path_a
+
+    return source_path_a or source_path_b
+
+
+def build_prefilled_interval_from_region(
+    region: ComparisonRegion,
+    adjudicator: str,
+    created_at: str,
+) -> AdjudicationInterval:
+    """
+    Create one provisional final interval from a comparison region.
+
+    Parameters
+    ----------
+    region : ComparisonRegion
+        Classified green, red, or gray comparison region.
+
+    adjudicator : str
+        Validated adjudicator username.
+
+    created_at : str
+        ISO-8601 UTC creation timestamp shared by the initial timeline.
+
+    Returns
+    -------
+    AdjudicationInterval
+        Prefilled editable final interval.
+
+    Behavior
+    --------
+    Green agreement regions
+        Receive the agreed CPR and rhythm values.
+
+    Red or gray regions
+        Remain unlabeled and require reviewer action.
+
+    Notes
+    -----
+    The original source annotations are not modified.
+    """
+    annotation_a = region.annotation_a
+    annotation_b = region.annotation_b
+
+    # Use whichever source interval is available for waveform-record metadata.
+    metadata_source = (
+        annotation_a
+        if annotation_a is not None
+        else annotation_b
+    )
+
+    if metadata_source is None:
+        raise InvalidAnnotationError(
+            f"Comparison region {region.region_id} has no source metadata."
+        )
+
+    if region.status == ComparisonStatus.AGREEMENT:
+        if annotation_a is None or annotation_b is None:
+            raise InvalidAnnotationError(
+                f"Agreement region {region.region_id} does not contain "
+                "both source annotations."
+            )
+
+        cpr = clean_string(annotation_a.cpr)
+        rhythm_label = clean_string(
+            annotation_a.rhythm_label
+        )
+
+        # Preserve explanation only when both users entered the same text.
+        rhythm_expl = get_prefilled_explanation(
+            annotation_a=annotation_a,
+            annotation_b=annotation_b,
+        )
+
+    else:
+        # Disagreement and missing-coverage regions are intentionally left
+        # unlabeled to avoid silently favoring either source annotator.
+        cpr = ""
+        rhythm_label = ""
+        rhythm_expl = ""
+
+    return AdjudicationInterval(
+        # Retain backward compatibility with the annotation CSV schema.
+        user=adjudicator,
+        adjudicator=adjudicator,
+        subject=clean_string(
+            metadata_source.subject
+        ),
+        encounter=clean_string(
+            metadata_source.encounter
+        ),
+        namespace=clean_string(
+            metadata_source.namespace
+        ),
+        file_tag=clean_string(
+            metadata_source.file_tag
+        ),
+        source_path=get_prefilled_source_path(
+            annotation_a=annotation_a,
+            annotation_b=annotation_b,
+        ),
+        cpr=cpr,
+        rhythm_label=rhythm_label,
+        rhythm_expl=rhythm_expl,
+        start=float(region.start),
+        end=float(region.end),
+        waveform_complete=False,
+        terminal_event_status="",
+        terminal_event_comment="",
+        adjudication_created_at=created_at,
+        adjudication_updated_at=created_at,
+    )
+
+
+def prefilled_intervals_can_merge(
+    previous_interval: AdjudicationInterval,
+    current_interval: AdjudicationInterval,
+    previous_region: ComparisonRegion,
+    current_region: ComparisonRegion,
+    *,
+    epsilon_sec: float = BOUNDARY_COORDINATE_EPSILON_SEC,
+) -> bool:
+    """
+    Return whether two adjacent prefilled agreement intervals may be merged.
+
+    Parameters
+    ----------
+    previous_interval, current_interval : AdjudicationInterval
+        Adjacent provisional final intervals.
+
+    previous_region, current_region : ComparisonRegion
+        Comparison regions that produced the intervals.
+
+    epsilon_sec : float
+        Numerical tolerance for boundary continuity.
+
+    Returns
+    -------
+    bool
+        True when both regions are green agreement regions, are contiguous,
+        and contain identical final label values.
+
+    Notes
+    -----
+    Red and gray regions are never merged automatically because their region
+    boundaries and explicit resolution states must remain identifiable.
+    """
+    if (
+        previous_region.status
+        != ComparisonStatus.AGREEMENT
+        or current_region.status
+        != ComparisonStatus.AGREEMENT
+    ):
+        return False
+
+    if not np.isclose(
+        previous_interval.end,
+        current_interval.start,
+        rtol=0.0,
+        atol=epsilon_sec,
+    ):
+        return False
+
+    return bool(
+        clean_string(previous_interval.cpr)
+        == clean_string(current_interval.cpr)
+        and clean_string(
+            previous_interval.rhythm_label
+        )
+        == clean_string(
+            current_interval.rhythm_label
+        )
+        and clean_string(
+            previous_interval.rhythm_expl
+        )
+        == clean_string(
+            current_interval.rhythm_expl
+        )
+        and clean_string(
+            previous_interval.subject
+        )
+        == clean_string(current_interval.subject)
+        and clean_string(
+            previous_interval.encounter
+        )
+        == clean_string(current_interval.encounter)
+        and clean_string(
+            previous_interval.file_tag
+        )
+        == clean_string(current_interval.file_tag)
+    )
+
+
+def generate_prefilled_adjudication_timeline(
+    regions: list[ComparisonRegion],
+    adjudicator: str,
+    *,
+    allowed_adjudicators: Optional[list[str]] = None,
+    merge_adjacent_agreement: bool = True,
+) -> list[AdjudicationInterval]:
+    """
+    Generate a provisional final timeline with timing and diagnostics.
+
+    Parameters
+    ----------
+    regions : list[ComparisonRegion]
+        Chronological classified comparison regions.
+
+    adjudicator : str
+        Reviewer producing the final timeline.
+
+    allowed_adjudicators : list[str] or None
+        Optional adjudicator allowlist override.
+
+    merge_adjacent_agreement : bool
+        Merge adjacent green regions when all final label values match.
+
+    Returns
+    -------
+    list[AdjudicationInterval]
+        Editable provisional adjudication intervals.
+
+    Raises
+    ------
+    AdjudicationPathError
+        If the adjudicator is not configured.
+
+    InvalidAnnotationError
+        If regions are missing, invalid, overlapping, or produce an invalid
+        provisional timeline.
+    """
+    start_time = perf_counter()
+    intervals: list[AdjudicationInterval] = []
+
+    try:
+        intervals = (
+            _generate_prefilled_adjudication_timeline_impl(
+                regions=regions,
+                adjudicator=adjudicator,
+                allowed_adjudicators=(
+                    allowed_adjudicators
+                ),
+                merge_adjacent_agreement=(
+                    merge_adjacent_agreement
+                ),
+            )
+        )
+
+        return intervals
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "generate_prefilled_adjudication_timeline failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "generate_prefilled_adjudication_timeline",
+            perf_counter() - start_time,
+            regions=len(regions),
+            intervals=len(intervals),
+            merge_adjacent_agreement=(
+                merge_adjacent_agreement
+            ),
+        )
+
+
+def _generate_prefilled_adjudication_timeline_impl(
+    regions: list[ComparisonRegion],
+    adjudicator: str,
+    *,
+    allowed_adjudicators: Optional[list[str]],
+    merge_adjacent_agreement: bool,
+) -> list[AdjudicationInterval]:
+    """
+    Generate the provisional final timeline without UI behavior.
+    """
+    if not regions:
+        raise InvalidAnnotationError(
+            "No comparison regions are available for prefilled "
+            "adjudication generation."
+        )
+
+    adjudicator_name = validate_adjudicator(
+        adjudicator,
+        allowed_adjudicators=allowed_adjudicators,
+    )
+
+    created_at = utc_now_iso()
+
+    prefilled_intervals: list[
+        AdjudicationInterval
+    ] = []
+
+    # Retain the source region associated with the most recently appended
+    # interval so green-only merge decisions remain explicit.
+    output_regions: list[ComparisonRegion] = []
+
+    previous_region_end: Optional[float] = None
+
+    for region in regions:
+        if (
+            not np.isfinite(region.start)
+            or not np.isfinite(region.end)
+        ):
+            raise InvalidAnnotationError(
+                f"Comparison region {region.region_id} contains "
+                "non-finite boundaries."
+            )
+
+        if region.end <= region.start:
+            raise InvalidAnnotationError(
+                f"Comparison region {region.region_id} has "
+                "non-positive duration."
+            )
+
+        if previous_region_end is not None:
+            if (
+                region.start
+                < previous_region_end
+                - BOUNDARY_COORDINATE_EPSILON_SEC
+            ):
+                raise InvalidAnnotationError(
+                    f"Comparison region {region.region_id} overlaps "
+                    "the previous region."
+                )
+
+            if not np.isclose(
+                region.start,
+                previous_region_end,
+                rtol=0.0,
+                atol=BOUNDARY_COORDINATE_EPSILON_SEC,
+            ):
+                raise InvalidAnnotationError(
+                    f"Gap detected before comparison region "
+                    f"{region.region_id}: previous end "
+                    f"{previous_region_end:.9f}, current start "
+                    f"{region.start:.9f}."
+                )
+
+        candidate_interval = (
+            build_prefilled_interval_from_region(
+                region=region,
+                adjudicator=adjudicator_name,
+                created_at=created_at,
+            )
+        )
+
+        if (
+            merge_adjacent_agreement
+            and prefilled_intervals
+            and prefilled_intervals_can_merge(
+                previous_interval=(
+                    prefilled_intervals[-1]
+                ),
+                current_interval=candidate_interval,
+                previous_region=output_regions[-1],
+                current_region=region,
+            )
+        ):
+            # Extend the previous green interval without changing its start,
+            # labels, creation timestamp, or floating-point precision.
+            prefilled_intervals[-1].end = float(
+                candidate_interval.end
+            )
+            prefilled_intervals[
+                -1
+            ].adjudication_updated_at = created_at
+
+        else:
+            prefilled_intervals.append(
+                candidate_interval
+            )
+            output_regions.append(region)
+
+        previous_region_end = float(
+            region.end
+        )
+
+    if not prefilled_intervals:
+        raise InvalidAnnotationError(
+            "Prefilled adjudication generation produced no intervals."
+        )
+
+    # Final defensive validation of chronological continuity.
+    for interval_index, interval in enumerate(
+        prefilled_intervals
+    ):
+        if interval.end <= interval.start:
+            raise InvalidAnnotationError(
+                f"Prefilled interval {interval_index} has "
+                "non-positive duration."
+            )
+
+        if interval_index == 0:
+            continue
+
+        previous_interval = prefilled_intervals[
+            interval_index - 1
+        ]
+
+        if not np.isclose(
+            previous_interval.end,
+            interval.start,
+            rtol=0.0,
+            atol=BOUNDARY_COORDINATE_EPSILON_SEC,
+        ):
+            raise InvalidAnnotationError(
+                f"Prefilled intervals {interval_index - 1} and "
+                f"{interval_index} are not contiguous."
+            )
+
+    return prefilled_intervals
 
 
 # =============================================================================
 # Main comparison API
 # =============================================================================
 
-def build_adjudication_comparison(
-    record,
-    adjudicator,
+def get_required_record_value(
+    record: Mapping[str, Any],
+    key: str,
+) -> str:
+    """
+    Return one required waveform-record value.
+
+    Parameters
+    ----------
+    record : Mapping[str, Any]
+        Waveform record returned by subject discovery.
+
+    key : str
+        Required dictionary key.
+
+    Returns
+    -------
+    str
+        Stripped record value.
+
+    Raises
+    ------
+    AdjudicationError
+        If the key is missing or blank.
+    """
+    value = clean_string(
+        record.get(key, "")
+    )
+
+    if not value:
+        raise AdjudicationError(
+            f"Selected waveform record is missing required field "
+            f"{key!r}."
+        )
+
+    return value
+
+
+def validate_sources_match_selected_record(
+    intervals_a: list[AnnotationInterval],
+    intervals_b: list[AnnotationInterval],
     *,
-    annotators=None,
-    boundary_tolerance_sec=ADJUDICATION_BOUNDARY_TOLERANCE_SEC,
-):
+    subject: str,
+    encounter: str,
+    file_tag: str,
+) -> None:
     """
-    Discover, validate, and compare the two source annotation files.
+    Confirm both source timelines belong to the selected waveform record.
 
-    Returns an AdjudicationComparisonResult.
+    Parameters
+    ----------
+    intervals_a, intervals_b : list[AnnotationInterval]
+        Validated source annotation timelines.
 
-    This should be the primary function called by adjudication callbacks.
+    subject : str
+        Subject identifier from the selected waveform record.
+
+    encounter : str
+        Encounter identifier from the selected waveform record.
+
+    file_tag : str
+        Waveform file tag from the selected record.
+
+    Raises
+    ------
+    InvalidAnnotationError
+        If a source timeline belongs to a different waveform record.
     """
-    raise NotImplementedError
+    expected_values = {
+        "subject": clean_string(subject),
+        "encounter": clean_string(encounter),
+        "file_tag": clean_string(file_tag),
+    }
+
+    for alias, intervals in (
+        (ANNOTATOR_ALIASES[0], intervals_a),
+        (ANNOTATOR_ALIASES[1], intervals_b),
+    ):
+        if not intervals:
+            raise InvalidAnnotationError(
+                f"{alias} contains no intervals."
+            )
+
+        first_interval = intervals[0]
+
+        actual_values = {
+            "subject": clean_string(
+                first_interval.subject
+            ),
+            "encounter": clean_string(
+                first_interval.encounter
+            ),
+            "file_tag": clean_string(
+                first_interval.file_tag
+            ),
+        }
+
+        for field_name, expected_value in expected_values.items():
+            actual_value = actual_values[field_name]
+
+            if actual_value != expected_value:
+                raise InvalidAnnotationError(
+                    f"{alias} does not match the selected waveform "
+                    f"record for {field_name}. Expected "
+                    f"{expected_value!r}; found {actual_value!r}."
+                )
+
+
+def build_adjudication_comparison(
+    record: Mapping[str, Any],
+    adjudicator: str,
+    *,
+    annotators: Optional[list[str]] = None,
+    allowed_adjudicators: Optional[list[str]] = None,
+    boundary_tolerance_sec: float = (
+        ADJUDICATION_BOUNDARY_TOLERANCE_SEC
+    ),
+    merge_adjacent_agreement: bool = True,
+) -> AdjudicationComparisonResult:
+    """
+    Build the complete initial adjudication comparison.
+
+    Parameters
+    ----------
+    record : Mapping[str, Any]
+        Selected waveform record returned by subject discovery. It must include
+        ``output_path``, ``subject``, ``encounter``, and ``file_tag``.
+
+    adjudicator : str
+        Reviewer creating the adjudication.
+
+    annotators : list[str] or None
+        Optional ordered source-annotator override. The first user is assigned
+        to Annotator A and the second to Annotator B.
+
+    allowed_adjudicators : list[str] or None
+        Optional adjudicator allowlist override.
+
+    boundary_tolerance_sec : float
+        Maximum accepted difference between corresponding A/B boundaries.
+
+    merge_adjacent_agreement : bool
+        Merge adjacent green regions with identical final labels.
+
+    Returns
+    -------
+    AdjudicationComparisonResult
+        Source metadata, normalized intervals, boundary matches, classified
+        comparison regions, and the prefilled final adjudication timeline.
+
+    Raises
+    ------
+    AdjudicationError
+        If record metadata or participant configuration is invalid.
+
+    MissingInputError
+        If either completed source annotation is unavailable.
+
+    InvalidAnnotationError
+        If source files or generated comparison structures are invalid.
+    """
+    start_time = perf_counter()
+
+    result: Optional[
+        AdjudicationComparisonResult
+    ] = None
+
+    try:
+        result = _build_adjudication_comparison_impl(
+            record=record,
+            adjudicator=adjudicator,
+            annotators=annotators,
+            allowed_adjudicators=(
+                allowed_adjudicators
+            ),
+            boundary_tolerance_sec=(
+                boundary_tolerance_sec
+            ),
+            merge_adjacent_agreement=(
+                merge_adjacent_agreement
+            ),
+        )
+
+        return result
+
+    except Exception as exc:
+        print(
+            "[ADJUDICATION] "
+            "build_adjudication_comparison failed:",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    finally:
+        _perf_log(
+            "build_adjudication_comparison",
+            perf_counter() - start_time,
+            subject=clean_string(
+                record.get("subject", "")
+            ),
+            file_tag=clean_string(
+                record.get("file_tag", "")
+            ),
+            regions=(
+                len(result.comparison_regions)
+                if result is not None
+                else 0
+            ),
+            prefilled_intervals=(
+                len(result.prefilled_intervals)
+                if result is not None
+                else 0
+            ),
+            unresolved=(
+                len(result.unresolved_regions)
+                if result is not None
+                else 0
+            ),
+        )
+
+
+def _build_adjudication_comparison_impl(
+    record: Mapping[str, Any],
+    adjudicator: str,
+    *,
+    annotators: Optional[list[str]],
+    allowed_adjudicators: Optional[list[str]],
+    boundary_tolerance_sec: float,
+    merge_adjacent_agreement: bool,
+) -> AdjudicationComparisonResult:
+    """
+    Build the initial adjudication comparison without UI behavior.
+    """
+    if (
+        not np.isfinite(boundary_tolerance_sec)
+        or boundary_tolerance_sec < 0
+    ):
+        raise ValueError(
+            "boundary_tolerance_sec must be finite and nonnegative."
+        )
+
+    # Validate required selected-record metadata.
+    record_output_path = get_required_record_value(
+        record,
+        "output_path",
+    )
+    subject = get_required_record_value(
+        record,
+        "subject",
+    )
+    encounter = get_required_record_value(
+        record,
+        "encounter",
+    )
+    file_tag = get_required_record_value(
+        record,
+        "file_tag",
+    )
+
+    namespace = clean_string(
+        record.get("namespace", "")
+    )
+
+    adjudicator_name = validate_adjudicator(
+        adjudicator,
+        allowed_adjudicators=allowed_adjudicators,
+    )
+
+    # ------------------------------------------------------------------
+    # Discover exactly two configured completed source annotations.
+    # ------------------------------------------------------------------
+    discovered_sources = (
+        discover_source_annotation_files(
+            record_output_path=record_output_path,
+            subject=subject,
+            file_tag=file_tag,
+            annotators=annotators,
+        )
+    )
+
+    source_a, source_b = (
+        require_ready_source_annotation_files(
+            discovered_sources
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Load and validate both complete source timelines.
+    # ------------------------------------------------------------------
+    (
+        intervals_a,
+        intervals_b,
+        validation_warnings,
+    ) = load_and_validate_source_pair(
+        source_a=source_a,
+        source_b=source_b,
+    )
+
+    validate_sources_match_selected_record(
+        intervals_a=intervals_a,
+        intervals_b=intervals_b,
+        subject=subject,
+        encounter=encounter,
+        file_tag=file_tag,
+    )
+
+    # ------------------------------------------------------------------
+    # Extract and reconcile compatible A/B boundaries.
+    # ------------------------------------------------------------------
+    (
+        boundaries_a,
+        boundaries_b,
+        boundary_matches,
+    ) = extract_and_match_source_boundaries(
+        intervals_a=intervals_a,
+        intervals_b=intervals_b,
+        tolerance_sec=boundary_tolerance_sec,
+    )
+
+    # ------------------------------------------------------------------
+    # Build the atomic combined timeline.
+    # ------------------------------------------------------------------
+    timeline_segments = (
+        build_combined_timeline_segments(
+            intervals_a=intervals_a,
+            intervals_b=intervals_b,
+            boundaries_a=boundaries_a,
+            boundaries_b=boundaries_b,
+            boundary_matches=boundary_matches,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Classify regions as agreement, disagreement, or missing coverage.
+    # ------------------------------------------------------------------
+    comparison_regions = (
+        classify_comparison_regions(
+            segments=timeline_segments,
+            boundary_matches=boundary_matches,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Prefill green intervals and leave red/gray intervals unlabeled.
+    # ------------------------------------------------------------------
+    prefilled_intervals = (
+        generate_prefilled_adjudication_timeline(
+            regions=comparison_regions,
+            adjudicator=adjudicator_name,
+            allowed_adjudicators=(
+                allowed_adjudicators
+            ),
+            merge_adjacent_agreement=(
+                merge_adjacent_agreement
+            ),
+        )
+    )
+
+    created_at = utc_now_iso()
+
+    return AdjudicationComparisonResult(
+        adjudicator=adjudicator_name,
+        subject=subject,
+        encounter=encounter,
+        namespace=namespace,
+        file_tag=file_tag,
+        source_a=source_a,
+        source_b=source_b,
+        annotator_a_intervals=intervals_a,
+        annotator_b_intervals=intervals_b,
+        boundary_matches=boundary_matches,
+        comparison_regions=comparison_regions,
+        prefilled_intervals=prefilled_intervals,
+        validation_issues=validation_warnings,
+        boundary_tolerance_sec=float(
+            boundary_tolerance_sec
+        ),
+        created_at=created_at,
+    )
 
