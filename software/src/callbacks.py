@@ -6580,38 +6580,29 @@ class AnnotationAppCallbacks:
             self.rhythm_explanation.setDisabled(False)
 
         elif cpr == "No":
-            # Enable rhythm dropdown & visually restore label
+            # Enable rhythm selection.
             self.rhythm_dropdown.setDisabled(False)
-            self.rhythm_dropdown.blockSignals(False)
 
             if hasattr(self, "rhythm_label"):
                 self.rhythm_label.setText("Rhythm Type")
-                self.rhythm_label.setStyleSheet("font-size:13px; color: #00274C;")
+                self.rhythm_label.setStyleSheet(
+                    "font-size:13px; color:#00274C;"
+                )
 
             rhythm = self.rhythm_dropdown.currentText()
 
-            # Explanation is required/editable only for these rhythm labels
-            if rhythm in ["Unable to Determine", "Other"]:
-                self.rhythm_explanation.setDisabled(False)
-            else:
-                self.rhythm_explanation.blockSignals(True)
-                self.rhythm_explanation.setPlainText("")
-                self.rhythm_explanation.setDisabled(True)
-                self.rhythm_explanation.blockSignals(False)
-        else:
-            # No CPR selection yet; everything disabled, visually gray
-            self.rhythm_dropdown.blockSignals(True)
-            self.rhythm_dropdown.setCurrentIndex(-1)
-            self.rhythm_dropdown.setDisabled(True)
-            self.rhythm_dropdown.blockSignals(False)
-            if hasattr(self, "rhythm_label"):
-                self.rhythm_label.setText("<span style='text-decoration:line-through; color:#888;'>Rhythm Type</span>")
-                self.rhythm_label.setStyleSheet("font-size:13px;")
-            self.rhythm_explanation.blockSignals(True)
-            self.rhythm_explanation.setPlainText("")
-            self.rhythm_explanation.setDisabled(True)
-            self.rhythm_explanation.blockSignals(False)
+            # Allow explanations/comments for every rhythm.
+            # Do not clear existing text when the rhythm selection changes.
+            self.rhythm_explanation.setDisabled(False)
 
+            if rhythm in ["Unable to Determine", "Other"]:
+                self.rhythm_explanation.setPlaceholderText(
+                    "Required: explain the selected rhythm."
+                )
+            else:
+                self.rhythm_explanation.setPlaceholderText(
+                    "Optional: add a comment about this interval."
+                )
         # --- Warnings & mark button logic ---
         warnings = []
 
