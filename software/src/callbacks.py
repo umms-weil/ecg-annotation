@@ -5734,6 +5734,23 @@ class AnnotationAppCallbacks:
             self.delete_annotation_files_for_current_user()
 
 
+    def get_annotation_text(
+        self,
+        annotation: dict,
+        field_name: str,
+    ) -> str:
+        """
+        Return a scalar annotation field as text.
+
+        Missing values become empty strings rather than the literal text 'nan'.
+        """
+        value = annotation.get(field_name, "")
+
+        if value is None or pd.isna(value):
+            return ""
+
+        return str(value).strip()
+
     def handle_load_annotation(self):
         """
         Timed wrapper around annotation file loading and graphics reconstruction.
@@ -5807,7 +5824,25 @@ class AnnotationAppCallbacks:
 
         # --- Load the annotation file ---
         try:
-            df = pd.read_csv(fullpath)
+            # Preserve identifiers as strings and blank text fields as empty strings.
+            df = pd.read_csv(
+                fullpath,
+                dtype={
+                    "user": str,
+                    "subject": str,
+                    "encounter": str,
+                    "namespace": str,
+                    "file_tag": str,
+                    "source_path": str,
+                    "cpr": str,
+                    "rhythm_label": str,
+                    "rhythm_expl": str,
+                    "terminal_event_status": str,
+                    "terminal_event_comment": str,
+                },
+                keep_default_na=False,
+            )
+
             self.annotations = df.to_dict(orient="records")
         except Exception as e:
             self.mark_warning.setText(f"Failed to load annotations: {e}")
@@ -7027,10 +7062,31 @@ class AnnotationAppCallbacks:
         for ann in annotations:
             start = ann.get("start", None)
             end = ann.get("end", None)
-            rhythm = ann.get("rhythm_label", "")
+
+            rhythm = self.get_annotation_text(
+                ann,
+                "rhythm_label",
+            )
+            cpr = self.get_annotation_text(
+                ann,
+                "cpr",
+            )
+
+            # CPR intervals legitimately have no rhythm label.
+            # Give them a meaningful display label without changing saved annotations.
+            if cpr == "Yes":
+                overlay_label = "CPR: Yes"
+            elif cpr == "Unable to Determine":
+                overlay_label = "CPR: Unable to Determine"
+            elif rhythm:
+                overlay_label = rhythm
+            else:
+                overlay_label = "Unlabeled"
+
             print(f'start: {start}')
             print(f'end: {end}')
             print(f'rhythm: {rhythm}')
+
             ann_color = LABEL_COLORS.get(rhythm, (180, 180, 180, 60))
             if isinstance(ann_color, tuple) and len(ann_color) == 3:
                 ann_color = (*ann_color, 60)  # Add alpha channel if missing
@@ -7042,7 +7098,11 @@ class AnnotationAppCallbacks:
                     # Add region end label (use same color, but RGB only)
                     y_max = plot.viewRange()[1][1]
                     text_color = ann_color[:3] if len(ann_color) >= 3 else (0, 0, 0)
-                    label_item = pg.TextItem(rhythm, color=text_color, anchor=(1, 1))
+                    label_item = pg.TextItem(
+                        overlay_label,
+                        color=text_color,
+                        anchor=(1, 1),
+                    )
                     rect = label_item.boundingRect()
                     vb = plot.getViewBox()
                     y_max = plot.viewRange()[1][1]
