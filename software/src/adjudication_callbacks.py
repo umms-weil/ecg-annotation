@@ -18,13 +18,18 @@ from time import perf_counter
 from typing import Any, Optional
 
 import numpy as np
+import pandas as pd
 import pyqtgraph as pg
 from copy import deepcopy
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog
 from PyQt5.QtCore import Qt
 
-from processing import list_subjects, load_waveforms_for_subject
+from processing import (
+    get_events_for_window,
+    list_subjects,
+    load_waveforms_for_subject,
+)
 from adjudication import build_adjudication_comparison
 from adjudication.config import ComparisonStatus
 from adjudication.models import AdjudicationComparisonResult, AdjudicationInterval
@@ -42,6 +47,10 @@ from adjudication.config import (
     VALID_TERMINAL_EVENT_STATUSES,
 )
 from adjudication.utilities import utc_now_iso
+import json
+from adjudication.config import ANNOTATION_USERS
+from adjudication.discovery import build_source_annotation_filenames
+from adjudication.paths import get_adjudication_paths
 
 UM_MAIZE: str = "#FFCB05"
 UM_BLUE: str = "#00274C"
@@ -108,6 +117,15 @@ ADJUDICATION_OVERLAY_SPANS: dict[str, tuple[float, float]] = {
     "Final": (0.0, 1.0),
 }
 
+# =============================================================================
+# Encounter event marker configuration
+# =============================================================================
+
+ADJUDICATION_EVENT_COLOR: tuple[int, int, int] = (0, 128, 0)
+ADJUDICATION_EVENT_LINE_WIDTH: float = 2.0
+ADJUDICATION_EVENT_LABEL_FONT_SIZE: int = 8
+ADJUDICATION_EVENT_LABEL_HEIGHT_FRACTION: float = 0.65
+
 class AdjudicationRelativeAxis(pg.AxisItem):
     """Display relative seconds while retaining absolute epoch coordinates."""
 
@@ -169,6 +187,7 @@ class AdjudicationAppCallbacks:
                 perf_counter() - started,
             )
 
+
     def _browse_adjudication_base_folder_impl(self) -> None:
         """Select a batch folder and pass it to the shared folder-loading method."""
         current = self.adjudication_folder_input.text().strip()
@@ -209,6 +228,7 @@ class AdjudicationAppCallbacks:
 
         self.adjudication_load_btn.setEnabled(available)
         self.adjudication_resume_btn.setEnabled(available)    
+
 
     def set_adjudication_base_folder(self) -> None:
         """
@@ -274,6 +294,8 @@ class AdjudicationAppCallbacks:
 
         self.adjudication_base_folder = str(folder)
         self.adjudication_folder_input.setText(str(folder))
+        # Selecting Set Folder is an explicit refresh of this batch.
+        self.adjudication_record_status_cache.clear()
         self.adjudication_records = [
             dict(record)
             for record in records
@@ -300,7 +322,690 @@ class AdjudicationAppCallbacks:
             "Select an adjudicator and record, then load."
         )
 
+        self.refresh_adjudication_record_statuses(force=True)
+
+
+    # =========================================================================
+    # Record readiness and adjudication status
+    # =========================================================================
+
+    def _adjudication_record_key(
+        self,
+        record: dict[str, Any],
+    ) -> str:
+        """
+        Return the known output path as a stable waveform-record key.
+
+        Avoid resolving network paths during dropdown updates.
+        """
+        return str(record.get("output_path", "")).rstrip("/\\")
+
+
+    def inspect_adjudication_record_status(
+        self,
+        record: dict[str, Any],
+        reviewer: str,
+    ) -> dict[str, str]:
+        """
+        Inspect input readiness and saved state for one waveform record.
+
+        Checks only expected files under known output paths. This does not
+        rediscover waveform files, read source CSV contents, or hash saved files.
+
+        Full validation still occurs when loading or resuming.
+        """
+        output_value = record.get("output_path")
+
+        if not output_value:
+            return {
+                "status": "Check Files",
+                "details": "The record has no output_path.",
+            }
+
+        output = Path(str(output_value))
+        missing_users: list[str] = []
+
+        try:
+            # Check the exact source filenames required by the file contract.
+            for username in ANNOTATION_USERS:
+                _, complete_name = build_source_annotation_filenames(
+                    subject=record["subject"],
+                    file_tag=record["file_tag"],
+                    username=username,
+                )
+
+                if not (output / username / complete_name).is_file():
+                    missing_users.append(username)
+
+            input_detail = (
+                "Completed inputs available."
+                if not missing_users
+                else "Missing completed input(s): " + ", ".join(missing_users)
+            )
+
+            if not reviewer:
+                return {
+                    "status": "Not Ready" if missing_users else "Ready",
+                    "details": input_detail + " Select an adjudicator.",
+                }
+
+            paths = get_adjudication_paths(
+                record_output_path=output,
+                subject=record["subject"],
+                file_tag=record["file_tag"],
+                adjudicator=reviewer,
+            )
+
+            draft_exists = paths.draft_csv.is_file()
+            complete_exists = paths.complete_csv.is_file()
+            state_exists = paths.state_json.is_file()
+
+            if state_exists:
+                state = json.loads(
+                    paths.state_json.read_text(encoding="utf-8")
+                )
+
+                # The state identifies the active CSV, even if an old completed
+                # file remains after a cleanup failure.
+                status = state.get("status")
+
+                identity_matches = (
+                    str(state.get("adjudicator", "")) == reviewer
+                    and str(state.get("subject", "")) == str(record["subject"])
+                    and str(state.get("encounter", "")) == str(record["encounter"])
+                    and str(state.get("file_tag", "")) == str(record["file_tag"])
+                )
+
+                if not identity_matches:
+                    return {
+                        "status": "Check Files",
+                        "details": "Saved state identity does not match this record.",
+                    }
+
+                if status == "draft" and draft_exists:
+                    return {
+                        "status": "Draft",
+                        "details": "Saved draft available. " + input_detail,
+                    }
+
+                if status == "complete" and complete_exists:
+                    return {
+                        "status": "Complete",
+                        "details": "Completed adjudication available. " + input_detail,
+                    }
+
+                return {
+                    "status": "Check Files",
+                    "details": (
+                        "State JSON references a missing CSV or unsupported status."
+                    ),
+                }
+
+            if draft_exists or complete_exists:
+                return {
+                    "status": "Check Files",
+                    "details": "An adjudication CSV exists without its state JSON.",
+                }
+
+            return {
+                "status": "Not Ready" if missing_users else "Ready",
+                "details": input_detail,
+            }
+
+        except Exception as exc:
+            print(
+                "[ADJ-UI] Record status inspection failed:",
+                type(exc).__name__,
+                exc,
+            )
+            return {
+                "status": "Check Files",
+                "details": f"Status could not be checked: {exc}",
+            }
+
+
+    def _apply_adjudication_record_status(
+        self,
+        index: int,
+        record: dict[str, Any],
+        status: dict[str, str],
+    ) -> None:
+        """
+        Update one dropdown item's text and tooltip without changing its data.
+        """
+        name = str(record.get("name", "Waveform record"))
+
+        self.adjudication_subject_dropdown.setItemText(
+            index,
+            f"[{status['status']}] {name}",
+        )
+        self.adjudication_subject_dropdown.setItemData(
+            index,
+            status["details"],
+            Qt.ToolTipRole,
+        )
+
+
+    def refresh_adjudication_record_statuses(
+        self,
+        force: bool = False,
+    ) -> None:
+        """
+        Refresh dropdown statuses for the currently selected adjudicator.
+
+        Existing cached values are reused unless force=True. Reviewer changes
+        do not reload waveforms or discard an active reviewer session.
+        """
+        started = perf_counter()
+
+        try:
+            self._refresh_adjudication_record_statuses_impl(force)
+        except Exception as exc:
+            print("[ADJ-UI] Status refresh failed:", repr(exc))
+            self.show_adjudication_error(
+                "Status Refresh Failed",
+                str(exc),
+            )
+        finally:
+            self._adjudication_perf_log(
+                "refresh_adjudication_record_statuses",
+                perf_counter() - started,
+            )
+
+
+    def _refresh_adjudication_record_statuses_impl(
+        self,
+        force: bool,
+    ) -> None:
+        """
+        Check known records and update labels without rebuilding the dropdown.
+        """
+        reviewer = str(self.adjudicator_dropdown.currentData() or "")
+        dropdown = self.adjudication_subject_dropdown
+
+        for index in range(dropdown.count()):
+            record = dropdown.itemData(index)
+
+            if not isinstance(record, dict):
+                continue
+
+            cache_key = (
+                self._adjudication_record_key(record),
+                reviewer,
+            )
+
+            if force or cache_key not in self.adjudication_record_status_cache:
+                self.adjudication_record_status_cache[cache_key] = (
+                    self.inspect_adjudication_record_status(
+                        record,
+                        reviewer,
+                    )
+                )
+
+            self._apply_adjudication_record_status(
+                index,
+                record,
+                self.adjudication_record_status_cache[cache_key],
+            )
+
         self.update_adjudication_load_availability()
+
+
+    def handle_adjudication_reviewer_changed(
+        self,
+        *args: Any,
+    ) -> None:
+        """
+        Display statuses for the selected reviewer.
+
+        The currently loaded session retains its original reviewer identity;
+        saving continues to use adjudication_loaded_record and comparison data.
+        """
+        self.refresh_adjudication_record_statuses()
+
+
+    def refresh_loaded_adjudication_record_status(
+        self,
+        status_override: Optional[str] = None,
+    ) -> None:
+        """
+        Update only the loaded waveform's status after a workflow action.
+
+        Parameters
+        ----------
+        status_override : str or None
+            Use an in-memory status without filesystem checks. For example,
+            reopening a completed session shows Draft although its previous
+            completed files remain on disk until the first successful draft save.
+        """
+        started = perf_counter()
+
+        try:
+            self._refresh_loaded_adjudication_record_status_impl(
+                status_override
+            )
+        finally:
+            self._adjudication_perf_log(
+                "refresh_loaded_adjudication_record_status",
+                perf_counter() - started,
+            )
+
+
+    def _refresh_loaded_adjudication_record_status_impl(
+        self,
+        status_override: Optional[str],
+    ) -> None:
+        """Refresh the loaded record without scanning other records."""
+        record = getattr(self, "adjudication_loaded_record", None)
+        comparison = self.adjudication_comparison
+
+        if not isinstance(record, dict) or comparison is None:
+            return
+
+        reviewer = comparison.adjudicator
+        record_key = self._adjudication_record_key(record)
+
+        if status_override is not None:
+            status = {
+                "status": status_override,
+                "details": (
+                    "Unsaved editable session. Existing completed output "
+                    "is preserved until a draft is saved."
+                ),
+            }
+        else:
+            status = self.inspect_adjudication_record_status(
+                record,
+                reviewer,
+            )
+
+        self.adjudication_record_status_cache[
+            (record_key, reviewer)
+        ] = status
+
+        # Do not show one reviewer's state under another reviewer selection.
+        selected_reviewer = str(
+            self.adjudicator_dropdown.currentData() or ""
+        )
+
+        if selected_reviewer != reviewer:
+            return
+
+        dropdown = self.adjudication_subject_dropdown
+
+        for index in range(dropdown.count()):
+            item_record = dropdown.itemData(index)
+
+            if (
+                isinstance(item_record, dict)
+                and self._adjudication_record_key(item_record) == record_key
+            ):
+                self._apply_adjudication_record_status(
+                    index,
+                    item_record,
+                    status,
+                )
+                break
+
+
+    # =========================================================================
+    # Encounter event loading and graphics
+    # =========================================================================
+
+    def load_adjudication_events(
+        self,
+        record: dict[str, Any],
+    ) -> None:
+        """
+        Load encounter events using the existing manifest parser.
+
+        Event loading is optional. A missing or invalid manifest must not prevent
+        waveform viewing, comparison, or adjudication saving.
+
+        Parameters
+        ----------
+        record : dict[str, Any]
+            Selected waveform record containing manifest_path or encounter_path.
+
+        Notes
+        -----
+        The shared parser interprets naive event times as America/New_York and
+        returns absolute UTC epoch seconds.
+
+        Events are retained even when outside the loaded waveform window.
+        """
+        started = perf_counter()
+
+        try:
+            self._load_adjudication_events_impl(record)
+        except Exception as exc:
+            self.adjudication_events = []
+            self.adjudication_event_labels_btn.setEnabled(False)
+
+            print(
+                "[ADJ-UI] Optional event loading failed:",
+                type(exc).__name__,
+                exc,
+            )
+
+            self.show_adjudication_error(
+                "Event Metadata Could Not Be Loaded",
+                f"Waveform review can continue without event markers.\n\n{exc}",
+            )
+        finally:
+            self._adjudication_perf_log(
+                "load_adjudication_events",
+                perf_counter() - started,
+            )
+
+
+    def _load_adjudication_events_impl(
+        self,
+        record: dict[str, Any],
+    ) -> None:
+        """
+        Resolve the encounter manifest and normalize its event display records.
+        """
+        self.adjudication_events = []
+
+        configured_path = record.get("manifest_path")
+
+        if configured_path:
+            manifest_path = Path(str(configured_path)).expanduser()
+        else:
+            encounter_path = record.get("encounter_path")
+
+            if not encounter_path:
+                print(
+                    "[ADJ-UI] No encounter path available for event loading."
+                )
+                self.adjudication_event_labels_btn.setEnabled(False)
+                return
+
+            manifest_path = (
+                Path(str(encounter_path)).expanduser()
+                / "waveform_manifest.csv"
+            )
+
+        self.adjudication_manifest_path = str(manifest_path)
+
+        if not manifest_path.is_file():
+            print(
+                "[ADJ-UI] Optional manifest not found:",
+                manifest_path,
+            )
+            self.adjudication_event_labels_btn.setEnabled(False)
+            return
+
+        events = get_events_for_window(
+            manifest_path=str(manifest_path),
+            subject=str(record.get("subject", "")),
+            encounter=str(record.get("encounter", "")),
+            window_start=None,
+            window_end=None,
+        )
+
+        required_columns = {
+            "event_sec",
+            "FLO_MEAS_NAME",
+            "FLOWSHEET_VALUE",
+        }
+
+        if not required_columns.issubset(events.columns):
+            raise ValueError(
+                "The event parser did not return the required columns: "
+                + ", ".join(sorted(required_columns))
+            )
+
+        for _, row in events.iterrows():
+            try:
+                event_time = float(row["event_sec"])
+            except (TypeError, ValueError):
+                continue
+
+            if not np.isfinite(event_time):
+                continue
+
+            name_value = row["FLO_MEAS_NAME"]
+            value_value = row["FLOWSHEET_VALUE"]
+
+            event_name = (
+                ""
+                if pd.isna(name_value)
+                else str(name_value).strip()
+            )
+            event_value = (
+                ""
+                if pd.isna(value_value)
+                else str(value_value).strip()
+            )
+
+            self.adjudication_events.append(
+                {
+                    "time": event_time,
+                    "name": event_name or "Clinical Event",
+                    "value": event_value,
+                }
+            )
+
+        self.adjudication_event_labels_btn.setEnabled(
+            bool(self.adjudication_events)
+        )
+
+        print(
+            "[ADJ-UI] Encounter events loaded:",
+            len(self.adjudication_events),
+            "| manifest:",
+            manifest_path,
+        )
+
+
+    def clear_adjudication_event_graphics(
+        self,
+        plot: Optional[pg.PlotWidget] = None,
+    ) -> None:
+        """
+        Remove event graphics from one waveform plot or all waveform plots.
+
+        Waveform curves, annotation overlays, and selection highlights are retained.
+        """
+        retained: list[tuple[pg.PlotWidget, Any]] = []
+
+        for owner_plot, item in self.adjudication_event_graphics:
+            if plot is not None and owner_plot is not plot:
+                retained.append((owner_plot, item))
+                continue
+
+            # Lead switching may already have removed the item with plot.clear().
+            if item.scene() is not None:
+                owner_plot.removeItem(item)
+
+        self.adjudication_event_graphics = retained
+
+
+    def draw_adjudication_events(
+        self,
+        row_index: Optional[int] = None,
+    ) -> None:
+        """
+        Render encounter event lines and labels with timing diagnostics.
+
+        Parameters
+        ----------
+        row_index : int or None
+            One waveform row to refresh, or all waveform rows when omitted.
+        """
+        started = perf_counter()
+
+        try:
+            self._draw_adjudication_events_impl(row_index)
+        except Exception as exc:
+            print(
+                "[ADJ-UI] Event rendering failed:",
+                type(exc).__name__,
+                exc,
+            )
+            raise
+        finally:
+            self._adjudication_perf_log(
+                "draw_adjudication_events",
+                perf_counter() - started,
+            )
+
+
+    def _draw_adjudication_events_impl(
+        self,
+        row_index: Optional[int],
+    ) -> None:
+        """
+        Add event lines without expanding waveform or Auto-Y bounds.
+        """
+        if row_index is None:
+            rows = range(len(self.adjudication_waveform_plots))
+            self.clear_adjudication_event_graphics()
+        else:
+            if not 0 <= row_index < len(self.adjudication_waveform_plots):
+                raise ValueError("Invalid event-rendering waveform row.")
+
+            rows = [row_index]
+            self.clear_adjudication_event_graphics(
+                self.adjudication_waveform_plots[row_index]
+            )
+
+        event_pen = pg.mkPen(
+            ADJUDICATION_EVENT_COLOR,
+            width=ADJUDICATION_EVENT_LINE_WIDTH,
+            style=Qt.DashLine,
+        )
+
+        for row in rows:
+            plot = self.adjudication_waveform_plots[row]
+
+            if self.adjudication_lead_selectors[row].currentData() is None:
+                continue
+
+            for event in self.adjudication_events:
+                event_time = float(event["time"])
+                event_name = str(event["name"])
+                event_value = str(event["value"])
+
+                utc_time = pd.to_datetime(
+                    event_time,
+                    unit="s",
+                    utc=True,
+                )
+                eastern_time = utc_time.tz_convert("America/New_York")
+
+                tooltip = (
+                    f"{event_name}\n"
+                    f"Value: {event_value or 'None'}\n"
+                    f"UTC: {utc_time.isoformat()}\n"
+                    f"Eastern: {eastern_time.isoformat()}"
+                )
+
+                line = pg.InfiniteLine(
+                    pos=event_time,
+                    angle=90,
+                    movable=False,
+                    pen=event_pen,
+                )
+                line.setZValue(100)
+                line.setToolTip(tooltip)
+
+                plot.addItem(line, ignoreBounds=True)
+                self.adjudication_event_graphics.append((plot, line))
+
+                label = pg.TextItem(
+                    text=event_name,
+                    color=ADJUDICATION_EVENT_COLOR,
+                    anchor=(0, 0.5),
+                    fill=pg.mkBrush(255, 255, 255, 215),
+                    border=pg.mkPen(ADJUDICATION_EVENT_COLOR),
+                )
+
+                font = label.textItem.font()
+                font.setPointSize(ADJUDICATION_EVENT_LABEL_FONT_SIZE)
+                label.setFont(font)
+
+                label.setZValue(200)
+                label.setToolTip(tooltip)
+                label.setVisible(self.adjudication_event_labels_visible)
+
+                # Keep the timestamp available for repositioning after Y changes.
+                label.adjudication_event_time = event_time
+
+                plot.addItem(label, ignoreBounds=True)
+                self.adjudication_event_graphics.append((plot, label))
+
+            self.update_adjudication_event_label_positions(row)
+
+
+    def update_adjudication_event_label_positions(
+        self,
+        row_index: int,
+    ) -> None:
+        """
+        Keep event labels inside the plot after Y-axis changes.
+
+        Positions change only in Y; the event's absolute epoch X coordinate stays
+        fixed. This does not rebuild graphics or reread the manifest.
+        """
+        plot = self.adjudication_waveform_plots[row_index]
+        y_min, y_max = plot.viewRange()[1]
+
+        if (
+            not np.isfinite(y_min)
+            or not np.isfinite(y_max)
+            or y_max <= y_min
+        ):
+            return
+
+        label_y = (
+            y_min
+            + (y_max - y_min)
+            * ADJUDICATION_EVENT_LABEL_HEIGHT_FRACTION
+        )
+
+        for owner_plot, item in self.adjudication_event_graphics:
+            if owner_plot is plot and isinstance(item, pg.TextItem):
+                item.setPos(
+                    float(item.adjudication_event_time),
+                    float(label_y),
+                )
+
+
+    def toggle_adjudication_event_labels(self) -> None:
+        """
+        Toggle event text visibility while retaining vertical event lines.
+        """
+        started = perf_counter()
+
+        try:
+            self._toggle_adjudication_event_labels_impl()
+        finally:
+            self._adjudication_perf_log(
+                "toggle_adjudication_event_labels",
+                perf_counter() - started,
+            )
+
+
+    def _toggle_adjudication_event_labels_impl(self) -> None:
+        """Change existing label visibility without rebuilding event graphics."""
+        self.adjudication_event_labels_visible = (
+            not self.adjudication_event_labels_visible
+        )
+
+        for _, item in self.adjudication_event_graphics:
+            if isinstance(item, pg.TextItem):
+                item.setVisible(
+                    self.adjudication_event_labels_visible
+                )
+
+        self.adjudication_event_labels_btn.setText(
+            "Hide Event Labels"
+            if self.adjudication_event_labels_visible
+            else "Show Event Labels"
+        )
 
 
     # =========================================================================
@@ -634,6 +1339,13 @@ class AdjudicationAppCallbacks:
             padding=0,
         )
 
+        # Events remain available even if source annotation comparison later fails.
+        self.load_adjudication_events(record)
+        self.draw_adjudication_events()
+
+        # Calipers are available even if annotation comparison cannot be loaded.
+        self.adjudication_calipers.refresh_sources()
+
         self.adjudication_status_label.setText("Loading annotation comparison…")
 
         # Missing/invalid source files leave waveform viewing available.
@@ -674,7 +1386,15 @@ class AdjudicationAppCallbacks:
     def _clear_adjudication_display(self) -> None:
         """Remove stale displayed data without modifying any files."""
 
+        self.adjudication_calipers.clear()
+        self.adjudication_calipers.toggle_button.setEnabled(False)
+        self.adjudication_calipers.source_dropdown.setEnabled(False)
+
         self.clear_adjudication_waveform_overlays()
+
+        self.clear_adjudication_event_graphics()
+        self.adjudication_events = []
+        self.adjudication_event_labels_btn.setEnabled(False)
 
         for checkbox in self.adjudication_overlay_checks.values():
             checkbox.setEnabled(False)
@@ -698,6 +1418,21 @@ class AdjudicationAppCallbacks:
 
         self.adjudication_previous_btn.setEnabled(False)
         self.adjudication_next_btn.setEnabled(False)
+
+        loaded_record = getattr(self, "adjudication_loaded_record", None)
+        loaded_comparison = self.adjudication_comparison
+
+        if isinstance(loaded_record, dict) and loaded_comparison is not None:
+            cache_key = (
+                self._adjudication_record_key(loaded_record),
+                loaded_comparison.adjudicator,
+            )
+
+            # Discard cached in-memory overrides. The next check reflects disk state.
+            self.adjudication_record_status_cache.pop(cache_key, None)
+
+        self.adjudication_loaded_record = None
+        self.adjudication_loaded_reviewer = ""
 
         self.adjudication_selection_label.setText(
             "No interval selected.\nStart: —   End: —\nDuration: —"
@@ -865,6 +1600,9 @@ class AdjudicationAppCallbacks:
 
         # plot.clear() removed this row's overlays; recreate them for the new lead.
         self.draw_adjudication_waveform_overlays(row_index)
+        self.draw_adjudication_events(row_index)
+        # Lead changes clear plot items, so restore the retained caliper positions.
+        self.adjudication_calipers.redraw()
 
     def adjust_adjudication_y(
         self,
@@ -1306,6 +2044,9 @@ class AdjudicationAppCallbacks:
         Source and comparison tracks remain read-only.
         """
         if mouse_event.button() != Qt.LeftButton:
+            return
+
+        if getattr(self, "adjudication_caliper_adjust_active", False):
             return
 
         comparison = self.adjudication_comparison
@@ -1864,6 +2605,7 @@ class AdjudicationAppCallbacks:
             "Completed adjudication saved."
         )
         self.adjudication_save_status.setToolTip(str(path))
+        self.refresh_loaded_adjudication_record_status()
 
 
     def apply_adjudication_read_only_state(self) -> None:
@@ -2071,6 +2813,11 @@ class AdjudicationAppCallbacks:
         """
         Enable boundary controls according to selection and placement mode.
         """
+        if getattr(self, "adjudication_caliper_adjust_active", False):
+            self.adjudication_add_boundary_btn.setEnabled(False)
+            self.adjudication_remove_boundary_btn.setEnabled(False)
+            return
+
         if getattr(self, "adjudication_complete", False):
             self.apply_adjudication_read_only_state()
             return
@@ -2142,6 +2889,11 @@ class AdjudicationAppCallbacks:
 
     def _add_adjudication_boundary_impl(self) -> None:
         """Arm boundary placement without changing final interval data."""
+        if getattr(self, "adjudication_caliper_adjust_active", False):
+            raise ValueError(
+                "Turn caliper Adjust off before adding an adjudication boundary."
+            )
+
         if self.adjudication_pending_split_index is not None:
             self.cancel_adjudication_boundary_placement()
             return
@@ -2336,11 +3088,22 @@ class AdjudicationAppCallbacks:
         mouse_event: Any,
     ) -> None:
         """
-        Place a pending boundary from a waveform click.
+        Route manual caliper dots before final-boundary placement.
 
-        Ordinary waveform clicks are otherwise left unchanged.
+        Temporary caliper interactions never modify final adjudication data.
         """
         if mouse_event.button() != Qt.LeftButton:
+            return
+
+        # Manual labeling consumes the click before the shared editing guard.
+        if self.adjudication_calipers.handle_waveform_click(
+            row_index,
+            mouse_event,
+        ):
+            return
+
+        # Both marker adjustment and manual labeling suppress adjudication clicks.
+        if getattr(self, "adjudication_caliper_adjust_active", False):
             return
 
         if self.adjudication_pending_split_index is None:
@@ -2353,11 +3116,7 @@ class AdjudicationAppCallbacks:
             return
 
         point = view_box.mapSceneToView(mouse_event.scenePos())
-
-        # Scene-to-view conversion returns absolute epoch coordinates, not the
-        # relative seconds displayed by the axis.
         self.place_adjudication_boundary(float(point.x()))
-
 
     def _remove_adjudication_boundary_impl(self) -> None:
         """
@@ -2531,6 +3290,7 @@ class AdjudicationAppCallbacks:
                 movable=(
                     upper_bound > lower_bound
                     and not getattr(self, "adjudication_complete", False)
+                    and not getattr(self, "adjudication_caliper_adjust_active", False)
                 ),
                 bounds=[float(lower_bound), float(upper_bound)],
                 pen=pg.mkPen("#00274C", width=2),
@@ -2851,6 +3611,7 @@ class AdjudicationAppCallbacks:
 
         self.adjudication_save_status.setText("Draft saved successfully.")
         self.adjudication_save_status.setToolTip(str(path))
+        self.refresh_loaded_adjudication_record_status()
 
 
     def resume_current_adjudication(self) -> None:
@@ -2945,6 +3706,7 @@ class AdjudicationAppCallbacks:
             self.adjudication_save_status.setText("Saved draft loaded.")
 
         self.update_adjudication_navigation_controls()
+        self.refresh_loaded_adjudication_record_status()
 
 
     # =========================================================================
@@ -3007,6 +3769,10 @@ class AdjudicationAppCallbacks:
         )
         self.adjudication_save_status.setText(
             "Reopened session has not been saved."
+        )
+        # The previous completed files remain on disk until draft saving succeeds.
+        self.refresh_loaded_adjudication_record_status(
+            status_override="Draft"
         )
 
 

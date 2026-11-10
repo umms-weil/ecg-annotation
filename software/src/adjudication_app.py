@@ -47,7 +47,7 @@ from adjudication.config import (
 from adjudication.config import ADJUDICATORS
 from adjudication.models import AdjudicationComparisonResult
 from adjudication_callbacks import AdjudicationAppCallbacks
-
+from adjudication_calipers import AdjudicationCalipers
 
 # =============================================================================
 # UI configuration
@@ -80,6 +80,9 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         super().__init__(parent)
 
         self.setWindowTitle("Waveform Adjudication App")
+
+        self.adjudication_caliper_adjust_active: bool = False
+        self.adjudication_calipers = AdjudicationCalipers(self)
 
         # Independent reviewer session state.
         self.adjudication_base_folder: str = ""
@@ -116,6 +119,22 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         # Temporary waveform-overlay graphics, separate from selection highlights.
         self.adjudication_waveform_overlay_graphics: list[
             tuple[pg.PlotWidget, pg.LinearRegionItem]
+        ] = []
+
+        self.adjudication_events: list[dict[str, object]] = []
+        self.adjudication_event_labels_visible: bool = True
+
+        # Statuses are reviewer-specific and keyed by the waveform output path.
+        self.adjudication_record_status_cache: dict[
+            tuple[str, str], dict[str, str]
+        ] = {}
+
+        self.adjudication_loaded_record = None
+        self.adjudication_loaded_reviewer = ""
+
+        # Store ownership explicitly so lead changes can remove only their own items.
+        self.adjudication_event_graphics: list[
+            tuple[pg.PlotWidget, object]
         ] = []
 
         self._apply_styles()
@@ -599,11 +618,14 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
 
         tools_row = QHBoxLayout()
 
-        self.adjudication_caliper_btn = self._pending_button("Calipers")
-        tools_row.addWidget(self.adjudication_caliper_btn)
-
-        self.adjudication_caliper_result = QLabel("Calipers: Off")
-        tools_row.addWidget(self.adjudication_caliper_result)
+        self.adjudication_event_labels_btn = QPushButton(
+            "Hide Event Labels"
+        )
+        self.adjudication_event_labels_btn.setEnabled(False)
+        self.adjudication_event_labels_btn.setToolTip(
+            "Show or hide encounter event text. Event lines remain visible."
+        )
+        tools_row.addWidget(self.adjudication_event_labels_btn)
 
         tools_row.addStretch(1)
 
@@ -629,6 +651,11 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
             tools_row.addWidget(checkbox)
 
         layout.addLayout(tools_row)
+
+        # Separate row avoids compressing the folder path and overlay controls.
+        layout.addWidget(
+            self.adjudication_calipers.build_controls()
+        )
 
         self.adjudication_visual_splitter = QSplitter(Qt.Vertical)
 
@@ -857,7 +884,7 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         )
 
         self.adjudicator_dropdown.currentIndexChanged.connect(
-            self.update_adjudication_load_availability
+            self.handle_adjudication_reviewer_changed
         )
 
         self.adjudication_subject_dropdown.currentIndexChanged.connect(
@@ -925,6 +952,22 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         self.adjudication_reopen_btn.clicked.connect(
             self.reopen_current_adjudication
         )
+
+        # Panning/zooming updates projection graphics only—not peak detection.
+        self.adjudication_waveform_plots[0].getViewBox().sigXRangeChanged.connect(
+            self.adjudication_calipers.schedule_projection
+        )
+
+        self.adjudication_event_labels_btn.clicked.connect(
+            self.toggle_adjudication_event_labels
+        )
+
+        # Connect once during construction. Y changes reposition labels only.
+        for row_index, plot in enumerate(self.adjudication_waveform_plots):
+            plot.getViewBox().sigYRangeChanged.connect(
+                lambda _view_box, _range, row=row_index:
+                    self.update_adjudication_event_label_positions(row)
+            )
 
         for checkbox in self.adjudication_overlay_checks.values():
             checkbox.toggled.connect(
