@@ -1,14 +1,20 @@
 .. _user-manual:
 
-User Manual
-===========
+The ECG Waveform Annotation App supports two distinct workflows.
 
-This section is for annotators using the ECG Waveform Annotation App.
+Annotation
+==========
+
+For annotators creating the original waveform labels.
+
+The Annotation Guide covers loading waveforms, marking sequential intervals,
+answering CPR and rhythm questions, saving work, and completing an annotation
+session.
 
 Start with **Getting Started** if this is your first time using the app. Use **Walkthrough Videos** for visual step-by-step guidance.
 
-Recommended Reading Order
--------------------------
+Recommended Annotation Reading Order
+------------------------------------
 
 0. :ref:`connect-to-network`
 1. :ref:`getting-started`
@@ -33,17 +39,49 @@ Quick Start
 10. When the final interval reaches the end of the waveform, click **Finalize Waveform**.
 
 .. toctree::
-   :maxdepth: 1
-   :caption: User Manual Pages
+   :maxdepth: 2
+   :caption: Annotation
 
-   Connect to Network <connect_to_network>
-   Getting Started <getting_started>
-   Annotation Workflow <annotation_workflow>
-   Interface Guide <interface_guide>
-   Waveform Calipers <calipers>
-   Saving and Resuming <saving_and_resuming>
-   Completion and Finalization <completion_and_finalization>
-   Walkthrough Videos <walkthrough_videos>
-   Troubleshooting <troubleshooting>
-   Frequently Asked Questions <faq>
+   Annotation Guide <annotation/index>
+
+Adjudication
+============
+
+For reviewers comparing two annotators and producing the final waveform
+labels.
+
+The Adjudication Guide covers interpreting agreement, reviewing discrepancies,
+editing final labels and boundaries, resolving disagreements, saving drafts,
+and finalizing adjudications.
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Adjudication
+
+   Adjudication Guide <adjudication/index>
+
+
+Recommended Adjudication Reading Order
+-------------------------------------
+
+For your first adjudication session:
+
+1. To connect to the network, review :ref:`connect-to-network`.
+2. Read :ref:`adjudication-getting-started`.
+3. Follow :ref:`adjudication-review-workflow`.
+4. Review :ref:`adjudication-comparison-agreement` to understand the timeline colors.
+5. Use :ref:`adjudication-editing-labels-boundaries` when making final decisions.
+6. Follow :ref:`adjudication-resolving-disagreements` for explicit review confirmation.
+7. Read :ref:`adjudication-saving-resuming` before leaving the application.
+8. Follow :ref:`adjudication-completion-reopening` when review is finished.
+
+General Support
+===============
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Network and Support
+
+   Connecting to VPN and Turbo <connect_to_network>
    Contact and Support <support>
+

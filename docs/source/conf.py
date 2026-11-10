@@ -3,18 +3,14 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-import os
+from pathlib import Path
 import sys
-sys.path.insert(0, os.path.abspath('../../software/src'))
 
-extensions = [
-    'sphinx.ext.autodoc',
-    'sphinx.ext.napoleon',
-    'sphinx_autodoc_typehints',
-]
+# conf.py is at <repository>/docs/source/conf.py.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_DIRECTORY = REPOSITORY_ROOT / "software" / "src"
 
-
-autodoc_mock_imports = ["PyQt5", "pyqtgraph", "numpy", "pandas"]
+sys.path.insert(0, str(SOURCE_DIRECTORY))
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -26,7 +22,19 @@ author = 'Peter Walczyk'
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-extensions = []
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx_autodoc_typehints",
+]
+
+autodoc_mock_imports = ["PyQt5", "pyqtgraph", "numpy", "pandas", "pyqtgraph",]
+
+autodoc_member_order = "bysource"
+autodoc_typehints = "description"
+
+napoleon_numpy_docstring = True
+napoleon_google_docstring = True
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -36,14 +44,13 @@ exclude_patterns = []
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'sphinx_rtd_theme'
+html_theme = 'furo'
 html_theme_options = {
     "collapse_navigation": False,
-    "navigation_depth": 3,
+    "navigation_depth": 5,
     "titles_only": False,
-    "sticky_navigation": True,
+    "sticky_navigation": False,
 }
 html_static_path = ['_static']
-
 html_static_path = ['_static']
 html_css_files = ['custom.css']
