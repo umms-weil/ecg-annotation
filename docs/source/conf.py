@@ -15,9 +15,11 @@ sys.path.insert(0, str(SOURCE_DIRECTORY))
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'ECG Annotation Tool'
+project = 'ECG Annotation and Adjudication Tool'
 copyright = '2026, Peter Walczyk'
 author = 'Peter Walczyk'
+# html_title = "UCONN-CPR Waveform Annotation and Adjudication"
+html_title = "UCONN-CPR Waveform Tools"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

@@ -16,6 +16,12 @@ If you are using the app to annotate waveforms, start here:
 - :ref:`walkthrough-videos`
 - :ref:`troubleshooting`
 
+.. toctree::
+   :maxdepth: 3
+   :caption: User Documentation
+
+   User Guides Home <user_manual/index>
+
 For Developers and Maintainers
 ------------------------------
 
@@ -26,12 +32,6 @@ If you are installing, extending, packaging, or maintaining the app, start here:
 - :ref:`developer-data-layout`
 - :ref:`developer-waveform-loading`
 - :ref:`developer-annotation-lifecycle`
-
-.. toctree::
-   :maxdepth: 3
-   :caption: User Documentation
-
-   User Guides Home <user_manual/index>
 
 .. toctree::
    :maxdepth: 1
