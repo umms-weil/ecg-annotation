@@ -9,3 +9,9 @@ data/
 wheelhouse_win
 *.pyc
 __pycache__/
+data/*
+data/
+utils/
+utils/*
+output/
+output/*
