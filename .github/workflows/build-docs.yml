@@ -34,7 +34,7 @@ jobs:
       - name: Install documentation dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install sphinx sphinx-rtd-theme sphinx-autodoc-typehints
+          python -m pip install sphinx sphinx-rtd-theme sphinx-autodoc-typehints furo
 
           if [ -f software/requirements.txt ]; then
             python -m pip install -r requirements.txt
