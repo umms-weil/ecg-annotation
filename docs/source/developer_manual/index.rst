@@ -35,3 +35,6 @@ Recommended Reading Order
    API Reference <api_reference>
    Contributing <contributing>
    Maintenance Notes <technical_debt>
+   Adjudication Data Model and File Contract <adjudication_contract>
+   Adjudication Implementation <adjudication_implementation>
+   Adjudication API <adjudication_api>

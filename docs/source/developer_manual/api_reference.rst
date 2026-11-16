@@ -1,34 +1,24 @@
 .. _developer-api-reference:
 
-API Reference
-=============
+Annotation API Reference
+========================
 
-This page uses Sphinx autodoc to generate API documentation from source modules.
-
-.. note::
-
-   If autodoc fails, check ``docs/conf.py`` and ensure the project source directory is on ``sys.path``.
-
-Application UI Module
----------------------
+Application Window
+------------------
 
 .. automodule:: app
    :members:
-   :undoc-members:
    :show-inheritance:
 
-Callbacks Module
-----------------
+Annotation Callbacks
+--------------------
 
 .. automodule:: callbacks
    :members:
-   :undoc-members:
    :show-inheritance:
 
-Processing Module
------------------
+Waveform Processing
+-------------------
 
 .. automodule:: processing
    :members:
-   :undoc-members:
-   :show-inheritance:

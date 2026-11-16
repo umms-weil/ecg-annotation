@@ -16,6 +16,12 @@ If you are using the app to annotate waveforms, start here:
 - :ref:`walkthrough-videos`
 - :ref:`troubleshooting`
 
+.. toctree::
+   :maxdepth: 3
+   :caption: User Documentation
+
+   User Guides Home <user_manual/index>
+
 For Developers and Maintainers
 ------------------------------
 
@@ -28,36 +34,7 @@ If you are installing, extending, packaging, or maintaining the app, start here:
 - :ref:`developer-annotation-lifecycle`
 
 .. toctree::
-   :maxdepth: 2
-   :caption: User Documentation
-
-   User Manual Home <user_manual/index>
-   Getting Started <user_manual/getting_started>
-   Annotation Workflow <user_manual/annotation_workflow>
-   Interface Guide <user_manual/interface_guide>
-   Waveform Calipers <user_manual/calipers>
-   Saving and Resuming <user_manual/saving_and_resuming>
-   Completion and Finalization <user_manual/completion_and_finalization>
-   Walkthrough Videos <user_manual/walkthrough_videos>
-   Troubleshooting <user_manual/troubleshooting>
-   Frequently Asked Questions <user_manual/faq>
-   Contact and Support <user_manual/support>
-
-.. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Developer Documentation
 
    Developer Manual Home <developer_manual/index>
-   Architecture <developer_manual/architecture>
-   Installation and Development Setup <developer_manual/installation>
-   Data Layout <developer_manual/data_layout>
-   Waveform Loading <developer_manual/waveform_loading>
-   Annotation Lifecycle <developer_manual/annotation_lifecycle>
-   UI and Callback Reference <developer_manual/ui_callbacks>
-   Caliper Implementation <developer_manual/caliper_implementation>
-   Packaging and Distribution <developer_manual/packaging>
-   Testing and Validation <developer_manual/testing_validation>
-   Debugging Guide <developer_manual/debugging>
-   API Reference <developer_manual/api_reference>
-   Contributing <developer_manual/contributing>
-   Maintenance Notes <developer_manual/technical_debt>

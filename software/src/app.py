@@ -1372,7 +1372,44 @@ class MainApp(QMainWindow, AnnotationAppCallbacks):
 
 if __name__ == "__main__":
     import pyqtgraph.exporters
-    app = QApplication(sys.argv)
-    mw = MainApp()
-    mw.show()
-    sys.exit(app.exec_())
+
+    from PyQt5.QtWidgets import QMessageBox
+
+    application = QApplication(sys.argv)
+
+    mode_dialog = QMessageBox()
+    mode_dialog.setWindowTitle("Choose Application Mode")
+    mode_dialog.setText("Select a workflow.")
+    mode_dialog.setInformativeText(
+        "Annotation opens the existing annotation software.\n\n"
+        "Adjudication opens the separate reviewer interface."
+    )
+
+    annotation_button = mode_dialog.addButton(
+        "Annotation",
+        QMessageBox.AcceptRole,
+    )
+    adjudication_button = mode_dialog.addButton(
+        "Adjudication",
+        QMessageBox.ActionRole,
+    )
+    mode_dialog.addButton(QMessageBox.Cancel)
+
+    mode_dialog.exec_()
+    selected_button = mode_dialog.clickedButton()
+
+    if selected_button is annotation_button:
+        # Existing annotation window and callbacks remain unchanged.
+        main_window = MainApp()
+
+    elif selected_button is adjudication_button:
+        # Import only when adjudication mode is selected.
+        from adjudication_app import AdjudicationWindow
+
+        main_window = AdjudicationWindow()
+
+    else:
+        sys.exit(0)
+
+    main_window.show()
+    sys.exit(application.exec_())
