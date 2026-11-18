@@ -65,7 +65,13 @@ RESOLVED_COLOR: str = "#2878B5"
 
 VISIBLE_WAVEFORM_COUNT: int = 3
 SIDEBAR_WIDTH: int = 300
-TIMELINE_HEIGHT: int = 64
+# Compact read-only source/comparison tracks; larger editable final track.
+TIMELINE_HEIGHTS: dict[str, int] = {
+    "Annotator A": 42,
+    "Annotator B": 42,
+    "Agreement / Review": 42,
+    "Final Adjudication": 90,
+}
 
 
 class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
@@ -135,6 +141,14 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         # Store ownership explicitly so lead changes can remove only their own items.
         self.adjudication_event_graphics: list[
             tuple[pg.PlotWidget, object]
+        ] = []
+
+        # The selected boundary is identified by the interval immediately to its left.
+        self.adjudication_selected_boundary_index: Optional[int] = None
+
+        # Temporary guides exist only while dragging a final boundary.
+        self.adjudication_boundary_drag_guides: list[
+            tuple[pg.PlotWidget, pg.InfiniteLine]
         ] = []
 
         self._apply_styles()
@@ -781,22 +795,56 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         return row_widget
 
     def _build_timeline_row(self, name: str) -> QWidget:
-        """Create a compact, read-only timeline placeholder."""
+        """
+        Create a timeline row with additional space for final adjudication.
+
+        Source and comparison tracks remain compact. The final track receives
+        a larger height and a clearly emphasized row label.
+        """
         row_widget = QWidget()
         row = QHBoxLayout(row_widget)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
 
-        label = QLabel(name)
+        is_final = name == "Final Adjudication"
+
+        label = QLabel(
+            "FINAL\nADJUDICATION"
+            if is_final
+            else name
+        )
         label.setFixedWidth(115)
         label.setWordWrap(True)
-        label.setStyleSheet("font-weight:bold;")
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        if is_final:
+            label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {UM_BLUE};
+                    background-color: {UM_MAIZE};
+                    border: 2px solid {UM_BLUE};
+                    border-radius: 3px;
+                    padding: 4px;
+                    font-size: 13px;
+                    font-weight: bold;
+                }}
+                """
+            )
+        else:
+            label.setStyleSheet("font-weight:bold;")
+
         row.addWidget(label)
 
         plot = self._make_plot()
-        plot.setFixedHeight(TIMELINE_HEIGHT)
+        plot.setFixedHeight(TIMELINE_HEIGHTS[name])
         plot.hideAxis("left")
         plot.setYRange(0, 1, padding=0)
+
+        if is_final:
+            plot.setStyleSheet(
+                f"border: 2px solid {UM_BLUE};"
+            )
 
         self.adjudication_timeline_plots[name] = plot
         row.addWidget(plot, stretch=1)
