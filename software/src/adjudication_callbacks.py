@@ -61,6 +61,7 @@ ADJUDICATION_UI_PERF_ENABLED: bool = True
 
 ADJUDICATION_WAVEFORM_ORDER: list[str] = [
     "I",
+    "ABP",
     "II",
     "III",
     "V",
@@ -151,6 +152,16 @@ ADJUDICATION_TIMELINE_EDGE_WIDTH = 2.5
 # Temporary guide showing a final boundary's position while dragging.
 ADJUDICATION_DRAG_GUIDE_COLOR = "#00274C"
 ADJUDICATION_DRAG_GUIDE_WIDTH = 2.5
+
+# =============================================================================
+# Automatic Y scaling
+# =============================================================================
+
+ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC: float = 300.0
+ADJUDICATION_AUTO_Y_DEBOUNCE_MS: int = 200
+ADJUDICATION_AUTO_Y_BUFFER_SEC: float = 2.0
+ADJUDICATION_AUTO_Y_MARGIN_FRACTION: float = 0.10
+ADJUDICATION_AUTO_Y_MIN_SPAN: float = 0.25
 
 
 class SelectableAdjudicationBoundary(pg.InfiniteLine):
@@ -1443,6 +1454,15 @@ class AdjudicationAppCallbacks:
 
         self.clear_adjudication_boundary_drag_guides()
 
+        # Stop pending scaling before clearing the old waveform arrays and plots.
+        self.adjudication_auto_y_timer.stop()
+
+        # Each newly loaded record starts with automatic scaling requested.
+        self.adjudication_auto_y_enabled = [
+            True
+            for _ in self.adjudication_waveform_plots
+        ]
+
         self.adjudication_calipers.clear()
         self.adjudication_calipers.toggle_button.setEnabled(False)
         self.adjudication_calipers.source_dropdown.setEnabled(False)
@@ -1578,7 +1598,34 @@ class AdjudicationAppCallbacks:
         self,
         available_indices: list[int],
     ) -> None:
-        """Populate three independent selectors from loaded usable signals."""
+        """
+        Populate waveform selectors and initially display ABP in the second row.
+
+        Only loaded signals with usable data are supplied in available_indices.
+        All available signals remain selectable in every row.
+        """
+        display_order = list(available_indices)
+
+        abp_index = next(
+            (
+                index
+                for index in display_order
+                if str(
+                    self.adjudication_lead_names[index]
+                ).strip().upper() == "ABP"
+            ),
+            None,
+        )
+
+        if abp_index is not None:
+            display_order.remove(abp_index)
+
+            # Keep the first available non-ABP signal first, followed by ABP.
+            display_order.insert(
+                min(1, len(display_order)),
+                abp_index,
+            )
+
         for row_index, selector in enumerate(
             self.adjudication_lead_selectors
         ):
@@ -1588,13 +1635,21 @@ class AdjudicationAppCallbacks:
                 selector.clear()
 
                 for signal_index in available_indices:
-                    name = self.adjudication_lead_names[signal_index]
-                    selector.addItem(str(name), signal_index)
+                    selector.addItem(
+                        str(self.adjudication_lead_names[signal_index]),
+                        signal_index,
+                    )
 
-                selector.setCurrentIndex(
-                    min(row_index, len(available_indices) - 1)
-                )
-                selector.setEnabled(True)
+                if display_order:
+                    initial_signal_index = display_order[
+                        min(row_index, len(display_order) - 1)
+                    ]
+
+                    selector.setCurrentIndex(
+                        selector.findData(initial_signal_index)
+                    )
+
+                selector.setEnabled(bool(available_indices))
             finally:
                 selector.blockSignals(blocked)
 
@@ -1650,10 +1705,18 @@ class AdjudicationAppCallbacks:
         )
 
         plot.setLabel("left", name, units=unit or None)
-        self.adjust_adjudication_y(row_index, "auto")
+
+        # Fit a newly displayed signal once without changing the row's Auto-Y
+        # preference. Its button then reflects ON, OFF, or PAUSED.
+        self.autoscale_adjudication_row(
+            row_index,
+            respect_window_limit=False,
+        )
 
         for button in self.adjudication_y_controls[row_index].values():
             button.setEnabled(True)
+
+        self.update_adjudication_auto_y_buttons()
 
         # plot.clear() removed this row's overlays; recreate them for the new lead.
         self.draw_adjudication_waveform_overlays(row_index)
@@ -1661,60 +1724,277 @@ class AdjudicationAppCallbacks:
         # Lead changes clear plot items, so restore the retained caliper positions.
         self.adjudication_calipers.redraw()
 
+
     def adjust_adjudication_y(
         self,
         row_index: int,
         action: str,
     ) -> None:
-        """Apply a manual Y-axis adjustment or autoscale the visible segment."""
+        """
+        Apply manual Y adjustment or explicitly fit the visible signal.
+
+        Manual zooming/shifting disables Auto-Y for that row.
+        The 'auto' action fits the current window without changing preference.
+        """
+        started = perf_counter()
+
+        try:
+            self._adjust_adjudication_y_impl(row_index, action)
+        except Exception as exc:
+            print("[ADJ-UI] Y adjustment failed:", repr(exc))
+            self.show_adjudication_error(
+                "Y Adjustment Failed",
+                str(exc),
+            )
+        finally:
+            self._adjudication_perf_log(
+                "adjust_adjudication_y",
+                perf_counter() - started,
+            )
+
+
+    def _adjust_adjudication_y_impl(
+        self,
+        row_index: int,
+        action: str,
+    ) -> None:
+        """Adjust one row without modifying waveform data."""
+        if action == "auto":
+            self.autoscale_adjudication_row(
+                row_index,
+                respect_window_limit=False,
+            )
+            self.update_adjudication_auto_y_buttons()
+            return
+
+        if action not in {"in", "out", "up", "down"}:
+            raise ValueError(f"Unsupported Y adjustment: {action!r}")
+
+        self.adjudication_auto_y_enabled[row_index] = False
+
         plot = self.adjudication_waveform_plots[row_index]
         low, high = plot.viewRange()[1]
+
         center = (low + high) / 2.0
-        span = max(high - low, 0.001)
+        span = max(high - low, ADJUDICATION_AUTO_Y_MIN_SPAN)
 
-        if action == "auto":
-            signal_index = (
+        if action == "in":
+            span *= 0.8
+        elif action == "out":
+            span *= 1.25
+        elif action == "up":
+            center += span * 0.2
+        elif action == "down":
+            center -= span * 0.2
+
+        plot.setYRange(
+            center - span / 2.0,
+            center + span / 2.0,
+            padding=0,
+        )
+
+        self.update_adjudication_auto_y_buttons()
+
+
+    # =========================================================================
+    # Automatic Y scaling
+    # =========================================================================
+
+    def update_adjudication_auto_y_buttons(self) -> None:
+        """
+        Display each row's Auto-Y preference and window-limit status.
+
+        Paused means Auto-Y is requested but the visible window is too large.
+        """
+        if not self.adjudication_waveform_plots:
+            return
+
+        x_min, x_max = (
+            self.adjudication_waveform_plots[0].viewRange()[0]
+        )
+        paused = (
+            float(x_max - x_min)
+            > ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC
+        )
+
+        for row_index, controls in enumerate(self.adjudication_y_controls):
+            button = controls["AUTO-Y"]
+            available = (
                 self.adjudication_lead_selectors[row_index].currentData()
+                is not None
+            )
+            button.setEnabled(available)
+
+            if not self.adjudication_auto_y_enabled[row_index]:
+                button.setText("AUTO OFF")
+                button.setToolTip(
+                    "Manual Y scaling. Click to enable automatic scaling."
+                )
+            elif paused:
+                button.setText("PAUSED")
+                button.setToolTip(
+                    "Auto-Y resumes when the visible window is "
+                    f"{ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC:g} seconds or less."
+                )
+            else:
+                button.setText("AUTO ON")
+                button.setToolTip(
+                    "Automatically fit this signal after horizontal navigation. "
+                    "Click to turn off."
+                )
+
+
+    def toggle_adjudication_auto_y(self, row_index: int) -> None:
+        """Toggle a row's automatic scaling preference with timing."""
+        started = perf_counter()
+
+        try:
+            self._toggle_adjudication_auto_y_impl(row_index)
+        finally:
+            self._adjudication_perf_log(
+                "toggle_adjudication_auto_y",
+                perf_counter() - started,
             )
 
-            if signal_index is None:
-                return
 
-            times, values = self._adjudication_signal_arrays(int(signal_index))
-            x_low, x_high = plot.viewRange()[0]
+    def _toggle_adjudication_auto_y_impl(self, row_index: int) -> None:
+        """Enable or disable Auto-Y without changing other rows."""
+        self.adjudication_auto_y_enabled[row_index] = (
+            not self.adjudication_auto_y_enabled[row_index]
+        )
 
-            valid = (
-                np.isfinite(times)
-                & np.isfinite(values)
-                & (times >= x_low)
-                & (times <= x_high)
+        if self.adjudication_auto_y_enabled[row_index]:
+            self.autoscale_adjudication_row(row_index)
+
+        self.update_adjudication_auto_y_buttons()
+
+
+    def schedule_adjudication_auto_y(self, *args: Any) -> None:
+        """
+        Restart the debounce timer after the shared X-range changes.
+
+        Repeated navigation postpones calculation until movement pauses.
+        """
+        self.update_adjudication_auto_y_buttons()
+
+        if any(self.adjudication_auto_y_enabled):
+            self.adjudication_auto_y_timer.start(
+                ADJUDICATION_AUTO_Y_DEBOUNCE_MS
             )
 
-            segment = values[valid]
 
-            if segment.size < 2:
-                segment = values[np.isfinite(values)]
+    def autoscale_adjudication_visible_rows(self) -> None:
+        """Fit enabled rows after navigation, with timing diagnostics."""
+        started = perf_counter()
 
-            if segment.size < 2:
-                return
+        try:
+            self._autoscale_adjudication_visible_rows_impl()
+        except Exception as exc:
+            # Avoid repeated modal dialogs during navigation.
+            print("[ADJ-UI] Automatic Y scaling failed:", repr(exc))
+        finally:
+            self._adjudication_perf_log(
+                "autoscale_adjudication_visible_rows",
+                perf_counter() - started,
+            )
 
-            low, high = np.percentile(segment, [0.5, 99.5])
-            margin = max(float(high - low) * 0.1, 0.05)
-            low, high = float(low - margin), float(high + margin)
 
-        else:
-            if action == "in":
-                span *= 0.8
-            elif action == "out":
-                span *= 1.25
-            elif action == "up":
-                center += span * 0.2
-            elif action == "down":
-                center -= span * 0.2
+    def _autoscale_adjudication_visible_rows_impl(self) -> None:
+        """Scale enabled rows only when the shared window is sufficiently small."""
+        for row_index, enabled in enumerate(
+            self.adjudication_auto_y_enabled
+        ):
+            if enabled:
+                self.autoscale_adjudication_row(row_index)
 
-            low, high = center - span / 2.0, center + span / 2.0
+        self.update_adjudication_auto_y_buttons()
 
-        plot.setYRange(low, high, padding=0)
+
+    def autoscale_adjudication_row(
+        self,
+        row_index: int,
+        *,
+        respect_window_limit: bool = True,
+    ) -> bool:
+        """
+        Fit a row to finite samples in the visible window plus a small buffer.
+
+        Returns
+        -------
+        bool
+            True when a valid Y range was applied.
+
+        Notes
+        -----
+        This uses the row's selected source time axis. It does not interpolate,
+        reread files, or change stored signal values.
+        """
+        signal_index = (
+            self.adjudication_lead_selectors[row_index].currentData()
+        )
+
+        if signal_index is None:
+            return False
+
+        plot = self.adjudication_waveform_plots[row_index]
+        x_min, x_max = plot.viewRange()[0]
+        x_min, x_max = float(x_min), float(x_max)
+
+        if (
+            not np.isfinite(x_min)
+            or not np.isfinite(x_max)
+            or x_max <= x_min
+        ):
+            return False
+
+        if (
+            respect_window_limit
+            and x_max - x_min > ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC
+        ):
+            return False
+
+        times, values = self._adjudication_signal_arrays(
+            int(signal_index)
+        )
+
+        if times.size < 2:
+            return False
+
+        # First select the time window, then inspect only its signal values.
+        # A mask also supports per-lead axes containing non-finite timestamps.
+        in_window = (
+            np.isfinite(times)
+            & (times >= x_min - ADJUDICATION_AUTO_Y_BUFFER_SEC)
+            & (times <= x_max + ADJUDICATION_AUTO_Y_BUFFER_SEC)
+        )
+
+        segment = values[in_window]
+        segment = segment[np.isfinite(segment)]
+
+        if segment.size < 2:
+            return False
+
+        low, high = np.percentile(segment, [0.5, 99.5])
+
+        if not np.isfinite(low) or not np.isfinite(high):
+            return False
+
+        center = float((low + high) / 2.0)
+        span = max(
+            float(high - low),
+            ADJUDICATION_AUTO_Y_MIN_SPAN,
+        )
+        half_span = span * (
+            0.5 + ADJUDICATION_AUTO_Y_MARGIN_FRACTION
+        )
+
+        plot.setYRange(
+            center - half_span,
+            center + half_span,
+            padding=0,
+        )
+
+        return True
 
     # =========================================================================
     # Read-only timelines

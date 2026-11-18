@@ -18,7 +18,7 @@ from typing import Optional
 
 import pyqtgraph as pg
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -151,8 +151,19 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
             tuple[pg.PlotWidget, pg.InfiniteLine]
         ] = []
 
+        # Independent automatic scaling preference for each displayed waveform row.
+        self.adjudication_auto_y_enabled: list[bool] = [
+            True
+            for _ in range(VISIBLE_WAVEFORM_COUNT)
+        ]
+
         self._apply_styles()
         self._build_interface()
+        self.adjudication_auto_y_timer = QTimer(self)
+        self.adjudication_auto_y_timer.setSingleShot(True)
+        self.adjudication_auto_y_timer.timeout.connect(
+            self.autoscale_adjudication_visible_rows
+        )
         self._connect_signals()
         self._size_window()
 
@@ -1044,22 +1055,33 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
                     self.draw_adjudication_waveform(row)
             )
 
+        # Manual Y adjustments disable automatic scaling for that row.
         actions = {
             "Y-IN": "in",
             "Y-OUT": "out",
             "Y+": "up",
             "Y-": "down",
-            "AUTO-Y": "auto",
         }
 
-        for row_index, controls in enumerate(
-            self.adjudication_y_controls
-        ):
+        for row_index, controls in enumerate(self.adjudication_y_controls):
             for button_name, action in actions.items():
                 controls[button_name].clicked.connect(
                     lambda _checked=False, row=row_index, operation=action:
                         self.adjust_adjudication_y(row, operation)
                 )
+
+            # Retain the existing AUTO-Y button.
+            # Clicking AUTO ON or PAUSED turns automatic scaling off.
+            # Clicking AUTO OFF enables it and attempts to fit the visible window.
+            controls["AUTO-Y"].clicked.connect(
+                lambda _checked=False, row=row_index:
+                    self.toggle_adjudication_auto_y(row)
+            )
+
+        # Horizontal navigation schedules scaling after movement pauses.
+        self.adjudication_waveform_plots[0].getViewBox().sigXRangeChanged.connect(
+            self.schedule_adjudication_auto_y
+        )
 
     def _toggle_final_table(self, expanded: bool) -> None:
         """Show or hide the final interval table."""
