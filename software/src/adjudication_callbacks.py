@@ -537,18 +537,15 @@ class AdjudicationAppCallbacks:
         record: dict[str, Any],
         status: dict[str, str],
     ) -> None:
-        """
-        Update one dropdown item's text and tooltip without changing its data.
-        """
+        """Update the label and full-name tooltip without changing record data."""
         name = str(record.get("name", "Waveform record"))
+        display_text = f"[{status['status']}] {name}"
 
-        self.adjudication_subject_dropdown.setItemText(
+        dropdown = self.adjudication_subject_dropdown
+        dropdown.setItemText(index, display_text)
+        dropdown.setItemData(
             index,
-            f"[{status['status']}] {name}",
-        )
-        self.adjudication_subject_dropdown.setItemData(
-            index,
-            status["details"],
+            f"{display_text}\n\n{status['details']}",
             Qt.ToolTipRole,
         )
 
@@ -614,7 +611,9 @@ class AdjudicationAppCallbacks:
                 record,
                 self.adjudication_record_status_cache[cache_key],
             )
+            self.resize_adjudication_record_dropdown()
 
+        self.resize_adjudication_record_dropdown()
         self.update_adjudication_load_availability()
 
 
@@ -714,6 +713,29 @@ class AdjudicationAppCallbacks:
                 )
                 break
 
+
+    def resize_adjudication_record_dropdown(self) -> None:
+        """Widen the popup and expose the full selected record name."""
+        dropdown = self.adjudication_subject_dropdown
+        metrics = dropdown.fontMetrics()
+
+        longest_width = max(
+            (
+                metrics.horizontalAdvance(dropdown.itemText(index))
+                for index in range(dropdown.count())
+            ),
+            default=320,
+        )
+
+        dropdown.view().setMinimumWidth(longest_width + 60)
+
+        index = dropdown.currentIndex()
+        if index >= 0:
+            dropdown.setToolTip(
+                str(dropdown.itemData(index, Qt.ToolTipRole) or "")
+            )
+        else:
+            dropdown.setToolTip("")
 
     # =========================================================================
     # Encounter event loading and graphics
