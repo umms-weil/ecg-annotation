@@ -140,9 +140,7 @@ def test_remove_boundary_merges_identical_labels(
     qtbot,
 ):
     """
-    Removing a boundary between identical labels must preserve their label.
-
-    Identical labels avoid the different-label confirmation dialog.
+    Removing an explicitly selected boundary merges its neighboring intervals.
     """
     window = adjudication_window
     comparison = window.adjudication_comparison
@@ -160,8 +158,15 @@ def test_remove_boundary_merges_identical_labels(
 
     assert len(comparison.prefilled_intervals) == 2
 
+    # Interval selection alone must not enable boundary removal.
     window.select_adjudication_interval(0)
+    assert not window.adjudication_remove_boundary_btn.isEnabled()
 
+    # Exercise the actual boundary-selection signal.
+    boundary = window.adjudication_boundary_lines[0]
+    boundary.boundarySelected.emit(boundary)
+
+    assert window.adjudication_selected_boundary_index == 0
     assert window.adjudication_remove_boundary_btn.isEnabled()
 
     qtbot.mouseClick(
@@ -175,7 +180,6 @@ def test_remove_boundary_merges_identical_labels(
     assert intervals[0].start == original_start
     assert intervals[0].end == original_end
     assert intervals[0].rhythm_label == "Normal Heart Rhythm"
-
 
 # =============================================================================
 # Boundary dragging and resolution

@@ -311,15 +311,76 @@ A stored CSV hash detects mismatched pairs.
 
    Source annotator files must never be overwritten by persistence operations.
 
-Source-Change Detection
------------------------
+Draft Autosave
+--------------
 
-Saved source signatures contain file size and modification time.
+The reviewer window owns one two-minute autosave timer.
 
-Resume checks these signatures before restoring the session.
+Its callback saves only when:
 
-The current implementation blocks resume when a source changed or is missing.
-It does not yet offer an override/rebuild choice in the resume dialog.
+- A comparison is loaded.
+- The session is editable.
+- Dirty state is True.
+- No boundary placement is pending.
+- No unapplied sidebar changes remain.
+- Another autosave is not already active.
+
+Autosave reuses the verified draft persistence implementation.
+
+For reopened completions, the first eligible autosave follows the same
+history-preservation path as manual Save Draft.
+
+Autosave never:
+
+- Produces completed output.
+- Resolves a disagreement.
+- Applies uncommitted sidebar values.
+- Rebuilds the entire batch dropdown.
+
+Failures preserve dirty state and produce a non-blocking status message.
+Successful persistence clears dirty state after verification.
+
+The operation remains synchronous on the GUI thread. Network latency may
+briefly affect responsiveness; existing timing diagnostics measure this
+operation.
+
+Source Verification and Cross-Platform Resume
+---------------------------------------------
+
+Saved absolute source paths are historical references.
+They are not used as the authoritative lookup location during resume.
+
+Resume:
+
+1. Reads the saved source usernames and Annotator A/B mapping.
+2. Discovers their completed annotation files under the selected record's
+   current output_path.
+3. Verifies those files against saved signatures.
+4. Restores source metadata with current-machine paths.
+5. Restores the saved final timeline and resolution state without rebuilding
+   adjudication decisions.
+
+This supports different mount locations, including macOS /Volumes paths,
+Windows UNC paths, and mapped drive paths.
+
+New source signatures include:
+
+- Username and alias.
+- Historical path.
+- File size.
+- Nanosecond modification time.
+- SHA-256 content fingerprint.
+
+New signatures are checked using file size and content hash.
+Modification metadata are also checked around hashing to detect an input
+changing during verification.
+
+Legacy signatures without hashes retain size and modification-time checks.
+A mount-protocol timestamp difference may therefore block a legacy resume
+and requires investigation rather than bypassing verification.
+
+The adjudication CSV/JSON pairing hash remains separate from the source
+annotation hashes.
 
 Finalization
 ------------

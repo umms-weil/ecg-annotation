@@ -23,7 +23,7 @@ import pyqtgraph as pg
 from copy import deepcopy
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 from processing import (
     get_events_for_window,
@@ -61,6 +61,7 @@ ADJUDICATION_UI_PERF_ENABLED: bool = True
 
 ADJUDICATION_WAVEFORM_ORDER: list[str] = [
     "I",
+    "ABP",
     "II",
     "III",
     "V",
@@ -125,6 +126,72 @@ ADJUDICATION_EVENT_COLOR: tuple[int, int, int] = (0, 128, 0)
 ADJUDICATION_EVENT_LINE_WIDTH: float = 2.0
 ADJUDICATION_EVENT_LABEL_FONT_SIZE: int = 8
 ADJUDICATION_EVENT_LABEL_HEIGHT_FRACTION: float = 0.65
+
+# =============================================================================
+# Final boundary appearance
+# =============================================================================
+
+ADJUDICATION_BOUNDARY_COLOR = "#00274C"
+ADJUDICATION_BOUNDARY_WIDTH = 2.0
+
+ADJUDICATION_BOUNDARY_HOVER_COLOR = "#285680"
+ADJUDICATION_BOUNDARY_HOVER_WIDTH = 5.0
+
+ADJUDICATION_BOUNDARY_SELECTED_COLOR = "#D50032"
+ADJUDICATION_BOUNDARY_SELECTED_WIDTH = 6.0
+
+# Selected interval/review-region outline.
+ADJUDICATION_SELECTION_COLOR = "#FFCB05"
+ADJUDICATION_SELECTION_LINE_WIDTH = 4.0
+ADJUDICATION_SELECTION_FILL_ALPHA = 5
+
+# Boundaries of the colored timeline blocks.
+ADJUDICATION_TIMELINE_EDGE_COLOR = "#D49A00"
+ADJUDICATION_TIMELINE_EDGE_WIDTH = 2.5
+
+# Temporary guide showing a final boundary's position while dragging.
+ADJUDICATION_DRAG_GUIDE_COLOR = "#00274C"
+ADJUDICATION_DRAG_GUIDE_WIDTH = 2.5
+
+# =============================================================================
+# Automatic Y scaling
+# =============================================================================
+
+ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC: float = 300.0
+ADJUDICATION_AUTO_Y_DEBOUNCE_MS: int = 200
+ADJUDICATION_AUTO_Y_BUFFER_SEC: float = 2.0
+ADJUDICATION_AUTO_Y_MARGIN_FRACTION: float = 0.10
+ADJUDICATION_AUTO_Y_MIN_SPAN: float = 0.25
+
+
+# Save changed adjudication drafts every two minutes.
+ADJUDICATION_AUTOSAVE_INTERVAL_MS: int = 2 * 60 * 1000
+
+class SelectableAdjudicationBoundary(pg.InfiniteLine):
+    """
+    Draggable final boundary that also supports explicit left-click selection.
+
+    Accepting the click prevents the timeline's scene handler from treating
+    the same click as an ordinary interval selection.
+    """
+
+    boundarySelected = pyqtSignal(object)
+
+    def hoverEvent(self, event: Any) -> None:
+        """Reserve left clicks near the boundary while retaining drag behavior."""
+        super().hoverEvent(event)
+
+        if not event.isExit():
+            event.acceptClicks(Qt.LeftButton)
+
+    def mouseClickEvent(self, event: Any) -> None:
+        """Select this boundary on a left click."""
+        if event.button() == Qt.LeftButton:
+            event.accept()
+            self.boundarySelected.emit(self)
+            return
+
+        super().mouseClickEvent(event)
 
 class AdjudicationRelativeAxis(pg.AxisItem):
     """Display relative seconds while retaining absolute epoch coordinates."""
@@ -1386,6 +1453,19 @@ class AdjudicationAppCallbacks:
     def _clear_adjudication_display(self) -> None:
         """Remove stale displayed data without modifying any files."""
 
+        self.adjudication_selected_boundary_index = None
+
+        self.clear_adjudication_boundary_drag_guides()
+
+        # Stop pending scaling before clearing the old waveform arrays and plots.
+        self.adjudication_auto_y_timer.stop()
+
+        # Each newly loaded record starts with automatic scaling requested.
+        self.adjudication_auto_y_enabled = [
+            True
+            for _ in self.adjudication_waveform_plots
+        ]
+
         self.adjudication_calipers.clear()
         self.adjudication_calipers.toggle_button.setEnabled(False)
         self.adjudication_calipers.source_dropdown.setEnabled(False)
@@ -1521,7 +1601,34 @@ class AdjudicationAppCallbacks:
         self,
         available_indices: list[int],
     ) -> None:
-        """Populate three independent selectors from loaded usable signals."""
+        """
+        Populate waveform selectors and initially display ABP in the second row.
+
+        Only loaded signals with usable data are supplied in available_indices.
+        All available signals remain selectable in every row.
+        """
+        display_order = list(available_indices)
+
+        abp_index = next(
+            (
+                index
+                for index in display_order
+                if str(
+                    self.adjudication_lead_names[index]
+                ).strip().upper() == "ABP"
+            ),
+            None,
+        )
+
+        if abp_index is not None:
+            display_order.remove(abp_index)
+
+            # Keep the first available non-ABP signal first, followed by ABP.
+            display_order.insert(
+                min(1, len(display_order)),
+                abp_index,
+            )
+
         for row_index, selector in enumerate(
             self.adjudication_lead_selectors
         ):
@@ -1531,13 +1638,21 @@ class AdjudicationAppCallbacks:
                 selector.clear()
 
                 for signal_index in available_indices:
-                    name = self.adjudication_lead_names[signal_index]
-                    selector.addItem(str(name), signal_index)
+                    selector.addItem(
+                        str(self.adjudication_lead_names[signal_index]),
+                        signal_index,
+                    )
 
-                selector.setCurrentIndex(
-                    min(row_index, len(available_indices) - 1)
-                )
-                selector.setEnabled(True)
+                if display_order:
+                    initial_signal_index = display_order[
+                        min(row_index, len(display_order) - 1)
+                    ]
+
+                    selector.setCurrentIndex(
+                        selector.findData(initial_signal_index)
+                    )
+
+                selector.setEnabled(bool(available_indices))
             finally:
                 selector.blockSignals(blocked)
 
@@ -1593,10 +1708,18 @@ class AdjudicationAppCallbacks:
         )
 
         plot.setLabel("left", name, units=unit or None)
-        self.adjust_adjudication_y(row_index, "auto")
+
+        # Fit a newly displayed signal once without changing the row's Auto-Y
+        # preference. Its button then reflects ON, OFF, or PAUSED.
+        self.autoscale_adjudication_row(
+            row_index,
+            respect_window_limit=False,
+        )
 
         for button in self.adjudication_y_controls[row_index].values():
             button.setEnabled(True)
+
+        self.update_adjudication_auto_y_buttons()
 
         # plot.clear() removed this row's overlays; recreate them for the new lead.
         self.draw_adjudication_waveform_overlays(row_index)
@@ -1604,60 +1727,277 @@ class AdjudicationAppCallbacks:
         # Lead changes clear plot items, so restore the retained caliper positions.
         self.adjudication_calipers.redraw()
 
+
     def adjust_adjudication_y(
         self,
         row_index: int,
         action: str,
     ) -> None:
-        """Apply a manual Y-axis adjustment or autoscale the visible segment."""
+        """
+        Apply manual Y adjustment or explicitly fit the visible signal.
+
+        Manual zooming/shifting disables Auto-Y for that row.
+        The 'auto' action fits the current window without changing preference.
+        """
+        started = perf_counter()
+
+        try:
+            self._adjust_adjudication_y_impl(row_index, action)
+        except Exception as exc:
+            print("[ADJ-UI] Y adjustment failed:", repr(exc))
+            self.show_adjudication_error(
+                "Y Adjustment Failed",
+                str(exc),
+            )
+        finally:
+            self._adjudication_perf_log(
+                "adjust_adjudication_y",
+                perf_counter() - started,
+            )
+
+
+    def _adjust_adjudication_y_impl(
+        self,
+        row_index: int,
+        action: str,
+    ) -> None:
+        """Adjust one row without modifying waveform data."""
+        if action == "auto":
+            self.autoscale_adjudication_row(
+                row_index,
+                respect_window_limit=False,
+            )
+            self.update_adjudication_auto_y_buttons()
+            return
+
+        if action not in {"in", "out", "up", "down"}:
+            raise ValueError(f"Unsupported Y adjustment: {action!r}")
+
+        self.adjudication_auto_y_enabled[row_index] = False
+
         plot = self.adjudication_waveform_plots[row_index]
         low, high = plot.viewRange()[1]
+
         center = (low + high) / 2.0
-        span = max(high - low, 0.001)
+        span = max(high - low, ADJUDICATION_AUTO_Y_MIN_SPAN)
 
-        if action == "auto":
-            signal_index = (
+        if action == "in":
+            span *= 0.8
+        elif action == "out":
+            span *= 1.25
+        elif action == "up":
+            center += span * 0.2
+        elif action == "down":
+            center -= span * 0.2
+
+        plot.setYRange(
+            center - span / 2.0,
+            center + span / 2.0,
+            padding=0,
+        )
+
+        self.update_adjudication_auto_y_buttons()
+
+
+    # =========================================================================
+    # Automatic Y scaling
+    # =========================================================================
+
+    def update_adjudication_auto_y_buttons(self) -> None:
+        """
+        Display each row's Auto-Y preference and window-limit status.
+
+        Paused means Auto-Y is requested but the visible window is too large.
+        """
+        if not self.adjudication_waveform_plots:
+            return
+
+        x_min, x_max = (
+            self.adjudication_waveform_plots[0].viewRange()[0]
+        )
+        paused = (
+            float(x_max - x_min)
+            > ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC
+        )
+
+        for row_index, controls in enumerate(self.adjudication_y_controls):
+            button = controls["AUTO-Y"]
+            available = (
                 self.adjudication_lead_selectors[row_index].currentData()
+                is not None
+            )
+            button.setEnabled(available)
+
+            if not self.adjudication_auto_y_enabled[row_index]:
+                button.setText("AUTO OFF")
+                button.setToolTip(
+                    "Manual Y scaling. Click to enable automatic scaling."
+                )
+            elif paused:
+                button.setText("PAUSED")
+                button.setToolTip(
+                    "Auto-Y resumes when the visible window is "
+                    f"{ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC:g} seconds or less."
+                )
+            else:
+                button.setText("AUTO ON")
+                button.setToolTip(
+                    "Automatically fit this signal after horizontal navigation. "
+                    "Click to turn off."
+                )
+
+
+    def toggle_adjudication_auto_y(self, row_index: int) -> None:
+        """Toggle a row's automatic scaling preference with timing."""
+        started = perf_counter()
+
+        try:
+            self._toggle_adjudication_auto_y_impl(row_index)
+        finally:
+            self._adjudication_perf_log(
+                "toggle_adjudication_auto_y",
+                perf_counter() - started,
             )
 
-            if signal_index is None:
-                return
 
-            times, values = self._adjudication_signal_arrays(int(signal_index))
-            x_low, x_high = plot.viewRange()[0]
+    def _toggle_adjudication_auto_y_impl(self, row_index: int) -> None:
+        """Enable or disable Auto-Y without changing other rows."""
+        self.adjudication_auto_y_enabled[row_index] = (
+            not self.adjudication_auto_y_enabled[row_index]
+        )
 
-            valid = (
-                np.isfinite(times)
-                & np.isfinite(values)
-                & (times >= x_low)
-                & (times <= x_high)
+        if self.adjudication_auto_y_enabled[row_index]:
+            self.autoscale_adjudication_row(row_index)
+
+        self.update_adjudication_auto_y_buttons()
+
+
+    def schedule_adjudication_auto_y(self, *args: Any) -> None:
+        """
+        Restart the debounce timer after the shared X-range changes.
+
+        Repeated navigation postpones calculation until movement pauses.
+        """
+        self.update_adjudication_auto_y_buttons()
+
+        if any(self.adjudication_auto_y_enabled):
+            self.adjudication_auto_y_timer.start(
+                ADJUDICATION_AUTO_Y_DEBOUNCE_MS
             )
 
-            segment = values[valid]
 
-            if segment.size < 2:
-                segment = values[np.isfinite(values)]
+    def autoscale_adjudication_visible_rows(self) -> None:
+        """Fit enabled rows after navigation, with timing diagnostics."""
+        started = perf_counter()
 
-            if segment.size < 2:
-                return
+        try:
+            self._autoscale_adjudication_visible_rows_impl()
+        except Exception as exc:
+            # Avoid repeated modal dialogs during navigation.
+            print("[ADJ-UI] Automatic Y scaling failed:", repr(exc))
+        finally:
+            self._adjudication_perf_log(
+                "autoscale_adjudication_visible_rows",
+                perf_counter() - started,
+            )
 
-            low, high = np.percentile(segment, [0.5, 99.5])
-            margin = max(float(high - low) * 0.1, 0.05)
-            low, high = float(low - margin), float(high + margin)
 
-        else:
-            if action == "in":
-                span *= 0.8
-            elif action == "out":
-                span *= 1.25
-            elif action == "up":
-                center += span * 0.2
-            elif action == "down":
-                center -= span * 0.2
+    def _autoscale_adjudication_visible_rows_impl(self) -> None:
+        """Scale enabled rows only when the shared window is sufficiently small."""
+        for row_index, enabled in enumerate(
+            self.adjudication_auto_y_enabled
+        ):
+            if enabled:
+                self.autoscale_adjudication_row(row_index)
 
-            low, high = center - span / 2.0, center + span / 2.0
+        self.update_adjudication_auto_y_buttons()
 
-        plot.setYRange(low, high, padding=0)
+
+    def autoscale_adjudication_row(
+        self,
+        row_index: int,
+        *,
+        respect_window_limit: bool = True,
+    ) -> bool:
+        """
+        Fit a row to finite samples in the visible window plus a small buffer.
+
+        Returns
+        -------
+        bool
+            True when a valid Y range was applied.
+
+        Notes
+        -----
+        This uses the row's selected source time axis. It does not interpolate,
+        reread files, or change stored signal values.
+        """
+        signal_index = (
+            self.adjudication_lead_selectors[row_index].currentData()
+        )
+
+        if signal_index is None:
+            return False
+
+        plot = self.adjudication_waveform_plots[row_index]
+        x_min, x_max = plot.viewRange()[0]
+        x_min, x_max = float(x_min), float(x_max)
+
+        if (
+            not np.isfinite(x_min)
+            or not np.isfinite(x_max)
+            or x_max <= x_min
+        ):
+            return False
+
+        if (
+            respect_window_limit
+            and x_max - x_min > ADJUDICATION_AUTO_Y_MAX_WINDOW_SEC
+        ):
+            return False
+
+        times, values = self._adjudication_signal_arrays(
+            int(signal_index)
+        )
+
+        if times.size < 2:
+            return False
+
+        # First select the time window, then inspect only its signal values.
+        # A mask also supports per-lead axes containing non-finite timestamps.
+        in_window = (
+            np.isfinite(times)
+            & (times >= x_min - ADJUDICATION_AUTO_Y_BUFFER_SEC)
+            & (times <= x_max + ADJUDICATION_AUTO_Y_BUFFER_SEC)
+        )
+
+        segment = values[in_window]
+        segment = segment[np.isfinite(segment)]
+
+        if segment.size < 2:
+            return False
+
+        low, high = np.percentile(segment, [0.5, 99.5])
+
+        if not np.isfinite(low) or not np.isfinite(high):
+            return False
+
+        center = float((low + high) / 2.0)
+        span = max(
+            float(high - low),
+            ADJUDICATION_AUTO_Y_MIN_SPAN,
+        )
+        half_span = span * (
+            0.5 + ADJUDICATION_AUTO_Y_MARGIN_FRACTION
+        )
+
+        plot.setYRange(
+            center - half_span,
+            center + half_span,
+            padding=0,
+        )
+
+        return True
 
     # =========================================================================
     # Read-only timelines
@@ -1734,6 +2074,7 @@ class AdjudicationAppCallbacks:
         self.update_adjudication_overlay_controls()
         self.draw_adjudication_waveform_overlays()
 
+
     def _add_adjudication_timeline_region(
         self,
         plot: pg.PlotWidget,
@@ -1742,12 +2083,21 @@ class AdjudicationAppCallbacks:
         label: str,
         color: tuple[int, int, int, int],
     ) -> None:
-        """Add one read-only region and its text without affecting plot bounds."""
+        """
+        Draw a read-only timeline block with explicit, visible boundary lines.
+
+        These block edges are separate from the selectable final boundary handles.
+        """
         region = pg.LinearRegionItem(
             values=[float(start), float(end)],
             movable=False,
             brush=pg.mkBrush(*color),
+            pen=pg.mkPen(
+                ADJUDICATION_TIMELINE_EDGE_COLOR,
+                width=ADJUDICATION_TIMELINE_EDGE_WIDTH,
+            ),
         )
+
         plot.addItem(region, ignoreBounds=True)
 
         text = pg.TextItem(
@@ -1755,7 +2105,11 @@ class AdjudicationAppCallbacks:
             color="#00274C",
             anchor=(0.5, 0.5),
         )
-        text.setPos((float(start) + float(end)) / 2.0, 0.5)
+        text.setPos(
+            float(start) + (float(end) - float(start)) / 2.0,
+            0.5,
+        )
+
         plot.addItem(text, ignoreBounds=True)
 
     # =========================================================================
@@ -1857,9 +2211,10 @@ class AdjudicationAppCallbacks:
         end: float,
     ) -> None:
         """
-        Highlight a selected time range without changing annotation data.
+        Highlight the selected interval or review region with a distinct outline.
 
-        Highlighting appears on waveform plots and the final timeline.
+        These yellow lines indicate selection only. They are not draggable
+        adjudication boundaries or caliper markers.
         """
         self._clear_adjudication_selection_graphics()
 
@@ -1871,9 +2226,19 @@ class AdjudicationAppCallbacks:
             highlight = pg.LinearRegionItem(
                 values=[float(start), float(end)],
                 movable=False,
-                brush=pg.mkBrush(255, 203, 5, 35),
-                pen=pg.mkPen("#FFCB05", width=2),
+                brush=pg.mkBrush(
+                    255,
+                    203,
+                    5,
+                    ADJUDICATION_SELECTION_FILL_ALPHA,
+                ),
+                pen=pg.mkPen(
+                    ADJUDICATION_SELECTION_COLOR,
+                    width=ADJUDICATION_SELECTION_LINE_WIDTH,
+                ),
             )
+
+            # Above interval shading, but below selectable boundary handles.
             highlight.setZValue(500)
 
             plot.addItem(highlight, ignoreBounds=True)
@@ -1955,6 +2320,8 @@ class AdjudicationAppCallbacks:
         interval_index: int,
     ) -> None:
         """Update sidebar and selection graphics for one final interval."""
+        self.clear_adjudication_boundary_selection()
+
         comparison = self.adjudication_comparison
 
         if comparison is None:
@@ -2043,6 +2410,10 @@ class AdjudicationAppCallbacks:
 
         Source and comparison tracks remain read-only.
         """
+        # A selectable boundary already handled this click.
+        if mouse_event.isAccepted():
+            return
+
         if mouse_event.button() != Qt.LeftButton:
             return
 
@@ -2811,15 +3182,18 @@ class AdjudicationAppCallbacks:
 
     def update_adjudication_boundary_controls(self) -> None:
         """
-        Enable boundary controls according to selection and placement mode.
+        Enable insertion by interval selection and removal by boundary selection.
         """
-        if getattr(self, "adjudication_caliper_adjust_active", False):
+        self.adjudication_remove_boundary_btn.setText(
+            "Remove Selected Boundary"
+        )
+
+        if (
+            getattr(self, "adjudication_complete", False)
+            or getattr(self, "adjudication_caliper_adjust_active", False)
+        ):
             self.adjudication_add_boundary_btn.setEnabled(False)
             self.adjudication_remove_boundary_btn.setEnabled(False)
-            return
-
-        if getattr(self, "adjudication_complete", False):
-            self.apply_adjudication_read_only_state()
             return
 
         if self.adjudication_pending_split_index is not None:
@@ -2831,35 +3205,33 @@ class AdjudicationAppCallbacks:
         self.adjudication_add_boundary_btn.setText("Add Boundary")
 
         comparison = self.adjudication_comparison
-        index = self.adjudication_selected_interval_index
+        interval_index = self.adjudication_selected_interval_index
+        boundary_index = self.adjudication_selected_boundary_index
 
-        has_selection = (
+        has_interval = (
             comparison is not None
-            and index is not None
-            and 0 <= index < len(comparison.prefilled_intervals)
+            and interval_index is not None
+            and 0 <= interval_index < len(comparison.prefilled_intervals)
         )
 
-        if not has_selection:
-            self.adjudication_add_boundary_btn.setEnabled(False)
-            self.adjudication_remove_boundary_btn.setEnabled(False)
-            return
-
-        interval = comparison.prefilled_intervals[index]
-
-        self.adjudication_add_boundary_btn.setEnabled(
-            interval.duration >= 2.0 * MINIMUM_VALID_INTERVAL_SEC
-        )
-        self.adjudication_remove_boundary_btn.setEnabled(
-            index < len(comparison.prefilled_intervals) - 1
+        can_add = (
+            has_interval
+            and comparison.prefilled_intervals[interval_index].duration
+            >= 2.0 * MINIMUM_VALID_INTERVAL_SEC
         )
 
-        self.adjudication_add_boundary_btn.setToolTip(
-            "Click this button, then click a waveform or the final timeline "
-            "to split the selected interval."
+        can_remove = (
+            comparison is not None
+            and boundary_index is not None
+            and 0 <= boundary_index < len(comparison.prefilled_intervals) - 1
         )
+
+        self.adjudication_add_boundary_btn.setEnabled(can_add)
+        self.adjudication_remove_boundary_btn.setEnabled(can_remove)
+
         self.adjudication_remove_boundary_btn.setToolTip(
-            "Remove the boundary after the selected interval and merge "
-            "it with the next interval."
+            "Click an internal final-timeline boundary first. "
+            "Only that selected boundary will be removed."
         )
 
 
@@ -3118,37 +3490,44 @@ class AdjudicationAppCallbacks:
         point = view_box.mapSceneToView(mouse_event.scenePos())
         self.place_adjudication_boundary(float(point.x()))
 
+
     def _remove_adjudication_boundary_impl(self) -> None:
         """
-        Remove the boundary after the selected interval.
+        Remove exactly the selected internal boundary.
 
-        Identical labels are retained. Different labels or explanations are
-        cleared after explicit confirmation so neither interval is favored.
+        Identical neighboring labels are retained. Different labels or comments
+        require confirmation and produce an unlabeled merged interval.
         """
         comparison = self.adjudication_comparison
-        index = self.adjudication_selected_interval_index
+        index = self.adjudication_selected_boundary_index
+
+        if self.adjudication_complete:
+            raise ValueError("Reopen the completed adjudication before editing.")
+
+        if self.adjudication_caliper_adjust_active:
+            raise ValueError("Turn caliper interaction modes off first.")
+
+        if self.adjudication_pending_split_index is not None:
+            raise ValueError("Finish or cancel Add Boundary first.")
 
         if comparison is None or index is None:
-            raise ValueError("Select a final interval first.")
+            raise ValueError("Click the boundary you want to remove first.")
 
         intervals = comparison.prefilled_intervals
 
         if not 0 <= index < len(intervals) - 1:
-            raise ValueError(
-                "Select an interval with a following interval. "
-                "The final endpoint cannot be removed."
-            )
+            raise ValueError("The selected internal boundary is unavailable.")
 
         if self.adjudication_sidebar_has_unapplied_changes():
             raise ValueError(
-                "Apply the pending label changes before removing a boundary."
+                "Apply pending label changes before removing a boundary."
             )
 
         left = intervals[index]
         right = intervals[index + 1]
 
         if abs(left.end - right.start) > 1e-6:
-            raise ValueError("The selected intervals are not contiguous.")
+            raise ValueError("The boundary's neighboring intervals are not contiguous.")
 
         labels_match = (
             left.cpr,
@@ -3161,16 +3540,15 @@ class AdjudicationAppCallbacks:
         )
 
         if not labels_match:
-            # Explicit confirmation prevents silent loss of competing final labels.
             dialog = QMessageBox(self)
-            dialog.setWindowTitle("Merge Different Final Labels")
+            dialog.setWindowTitle("Remove Selected Boundary")
             dialog.setIcon(QMessageBox.Question)
             dialog.setText(
-                "These intervals have different labels or comments."
+                "The intervals on either side have different labels or comments."
             )
             dialog.setInformativeText(
-                "Removing the boundary will merge them and clear the final "
-                "CPR, rhythm, and explanation. You must assign a new label."
+                "Removing this boundary will merge those two intervals and clear "
+                "their final CPR, rhythm, and explanation."
             )
             dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
             dialog.setDefaultButton(QMessageBox.Cancel)
@@ -3200,7 +3578,6 @@ class AdjudicationAppCallbacks:
             cpr=left.cpr if labels_match else "",
             rhythm_label=left.rhythm_label if labels_match else "",
             rhythm_expl=left.rhythm_expl if labels_match else "",
-            # Terminal metadata belongs to the last interval in the merged range.
             waveform_complete=right.waveform_complete,
             terminal_event_status=right.terminal_event_status,
             terminal_event_comment=right.terminal_event_comment,
@@ -3214,13 +3591,16 @@ class AdjudicationAppCallbacks:
             merged.end,
         )
 
+        # Interval indices changed; discard the old boundary selection.
+        self.adjudication_selected_boundary_index = None
         self.adjudication_dirty = True
+
         self.refresh_adjudication_after_structure_change(index)
 
         self.adjudication_status_label.setText(
-            "Boundary removed; neighboring intervals merged."
+            "Selected boundary removed. Its neighboring intervals were merged."
             if labels_match
-            else "Boundary removed. Assign a final label to the merged interval."
+            else "Selected boundary removed. Assign a label to the merged interval."
         )
         self.adjudication_save_status.setText("Unsaved boundary changes.")
 
@@ -3246,10 +3626,18 @@ class AdjudicationAppCallbacks:
 
 
     def _draw_adjudication_boundary_handles_impl(self) -> None:
-        """Create one handle for each shared internal final-interval boundary."""
+        """
+        Draw selectable internal final boundaries with minimum-duration limits.
+
+        Dragging must preserve at least MINIMUM_VALID_INTERVAL_SEC in each
+        neighboring interval. Limits use the neighbors' outer endpoints so
+        movement remains reversible.
+
+        Existing invalid short fragments remain selectable for removal, but
+        cannot be dragged until their interval structure is corrected.
+        """
         plot = self.adjudication_timeline_plots["Final Adjudication"]
 
-        # Previous handles may already have been removed by plot.clear().
         for line in getattr(self, "adjudication_boundary_lines", []):
             if line.scene() is not None:
                 plot.removeItem(line)
@@ -3263,42 +3651,99 @@ class AdjudicationAppCallbacks:
 
         intervals = comparison.prefilled_intervals
 
+        editing_available = (
+            not getattr(self, "adjudication_complete", False)
+            and not getattr(self, "adjudication_caliper_adjust_active", False)
+            and self.adjudication_pending_split_index is None
+        )
+
+        minimum_duration = float(MINIMUM_VALID_INTERVAL_SEC)
+
+        if not np.isfinite(minimum_duration) or minimum_duration <= 0:
+            raise ValueError(
+                "MINIMUM_VALID_INTERVAL_SEC must be finite and positive."
+            )
+
         for left_index in range(len(intervals) - 1):
             left = intervals[left_index]
             right = intervals[left_index + 1]
 
-            # Comparison fragments can already be shorter than the final minimum.
-            # Permit those existing fragments, but do not shrink them further.
-            left_minimum = min(
-                MINIMUM_VALID_INTERVAL_SEC,
-                left.duration,
+            current_boundary = float(left.end)
+
+            # Fixed outer endpoints prevent the previous one-way drag restriction.
+            lower_bound = float(left.start + minimum_duration)
+            upper_bound = float(right.end - minimum_duration)
+
+            valid_drag_range = (
+                np.isfinite(current_boundary)
+                and np.isfinite(lower_bound)
+                and np.isfinite(upper_bound)
+                and lower_bound < upper_bound
+                and lower_bound <= current_boundary <= upper_bound
             )
-            right_minimum = min(
-                MINIMUM_VALID_INTERVAL_SEC,
-                right.duration,
+
+            selected = (
+                left_index == self.adjudication_selected_boundary_index
             )
 
-            lower_bound = left.start + left_minimum
-            upper_bound = right.end - right_minimum
-
-            if lower_bound > upper_bound:
-                continue
-
-            line = pg.InfiniteLine(
-                pos=float(left.end),
+            line = SelectableAdjudicationBoundary(
+                pos=current_boundary,
                 angle=90,
-                movable=(
-                    upper_bound > lower_bound
-                    and not getattr(self, "adjudication_complete", False)
-                    and not getattr(self, "adjudication_caliper_adjust_active", False)
+                movable=editing_available and valid_drag_range,
+                bounds=(
+                    [lower_bound, upper_bound]
+                    if valid_drag_range
+                    else [current_boundary, current_boundary]
                 ),
-                bounds=[float(lower_bound), float(upper_bound)],
-                pen=pg.mkPen("#00274C", width=2),
-                hoverPen=pg.mkPen("#FFCB05", width=4),
+                pen=pg.mkPen(
+                    ADJUDICATION_BOUNDARY_SELECTED_COLOR
+                    if selected
+                    else ADJUDICATION_BOUNDARY_COLOR,
+                    width=(
+                        ADJUDICATION_BOUNDARY_SELECTED_WIDTH
+                        if selected
+                        else ADJUDICATION_BOUNDARY_WIDTH
+                    ),
+                ),
+                hoverPen=pg.mkPen(
+                    ADJUDICATION_BOUNDARY_SELECTED_COLOR
+                    if selected
+                    else ADJUDICATION_BOUNDARY_HOVER_COLOR,
+                    width=(
+                        ADJUDICATION_BOUNDARY_SELECTED_WIDTH
+                        if selected
+                        else ADJUDICATION_BOUNDARY_HOVER_WIDTH
+                    ),
+                ),
             )
+
+            line.adjudication_left_interval_index = left_index
             line.setZValue(1000)
 
-            # Capture the index explicitly; do not depend on the loop variable.
+            line.setToolTip(
+                (
+                    "Click to select this boundary. Drag to adjust it, keeping "
+                    f"both intervals at least {minimum_duration:g} second(s). "
+                    "Remove Selected Boundary merges the neighboring intervals."
+                )
+                if valid_drag_range
+                else (
+                    "Click to select this boundary for removal. Dragging is "
+                    "unavailable because the neighboring intervals cannot both "
+                    f"remain at least {minimum_duration:g} second(s). "
+                    "Merge short fragments first."
+                )
+            )
+
+            line.boundarySelected.connect(
+                self.select_adjudication_boundary
+            )
+
+            # sigDragged fires during mouse dragging, not ordinary selection/redrawing.
+            line.sigDragged.connect(
+                self.update_adjudication_boundary_drag_guides
+            )
+
             line.sigPositionChangeFinished.connect(
                 lambda moved_line, index=left_index:
                     self.finish_adjudication_boundary_drag(
@@ -3349,10 +3794,9 @@ class AdjudicationAppCallbacks:
         line: pg.InfiniteLine,
     ) -> None:
         """
-        Commit a dragged internal boundary with timing and visible error handling.
+        Commit a dragged final boundary and remove its temporary waveform guides.
 
-        A drag changes the two neighboring final intervals only. It does not save
-        files or automatically resolve a disagreement.
+        Guides are removed whether the edit succeeds or is rejected.
         """
         started = perf_counter()
 
@@ -3361,17 +3805,21 @@ class AdjudicationAppCallbacks:
                 left_index,
                 line,
             )
+
         except Exception as exc:
             print("[ADJ-UI] Boundary movement failed:", repr(exc))
 
-            # Restore handles to the unchanged interval data after a rejected drag.
+            # Restore handles to the final interval data after a rejected drag.
             self.draw_adjudication_boundary_handles()
 
             self.show_adjudication_error(
                 "Boundary Change Failed",
                 str(exc),
             )
+
         finally:
+            self.clear_adjudication_boundary_drag_guides()
+
             self._adjudication_perf_log(
                 "finish_adjudication_boundary_drag",
                 perf_counter() - started,
@@ -3383,7 +3831,13 @@ class AdjudicationAppCallbacks:
         left_index: int,
         line: pg.InfiniteLine,
     ) -> None:
-        """Validate and commit the shared boundary between two final intervals."""
+        """
+        Commit a shared final boundary while enforcing the interval minimum.
+
+        Both neighboring intervals must remain at least
+        MINIMUM_VALID_INTERVAL_SEC long. Limits depend on their outer endpoints,
+        not their current durations, so dragging remains reversible.
+        """
         comparison = self.adjudication_comparison
 
         if comparison is None:
@@ -3398,11 +3852,22 @@ class AdjudicationAppCallbacks:
         right = intervals[left_index + 1]
         original_time = float(left.end)
 
-        # Do not discard sidebar edits when selecting the affected interval.
+        if self.adjudication_complete:
+            line.setValue(original_time)
+            raise ValueError("Reopen the completed adjudication before editing.")
+
+        if self.adjudication_caliper_adjust_active:
+            line.setValue(original_time)
+            raise ValueError("Turn caliper interaction modes off first.")
+
+        if self.adjudication_pending_split_index is not None:
+            line.setValue(original_time)
+            raise ValueError("Finish or cancel Add Boundary first.")
+
         if self.adjudication_sidebar_has_unapplied_changes():
             line.setValue(original_time)
             raise ValueError(
-                "Apply the pending final-label changes before moving a boundary."
+                "Apply pending final-label changes before moving a boundary."
             )
 
         new_time = float(line.value())
@@ -3411,38 +3876,43 @@ class AdjudicationAppCallbacks:
             line.setValue(original_time)
             raise ValueError("The boundary position is not finite.")
 
-        left_minimum = min(
-            MINIMUM_VALID_INTERVAL_SEC,
-            left.duration,
-        )
-        right_minimum = min(
-            MINIMUM_VALID_INTERVAL_SEC,
-            right.duration,
-        )
+        minimum_duration = float(MINIMUM_VALID_INTERVAL_SEC)
+        lower_bound = float(left.start + minimum_duration)
+        upper_bound = float(right.end - minimum_duration)
 
-        lower_bound = float(left.start + left_minimum)
-        upper_bound = float(right.end - right_minimum)
+        if lower_bound > upper_bound:
+            line.setValue(original_time)
+            raise ValueError(
+                "These neighboring intervals do not have enough combined "
+                "duration to preserve the minimum. Merge short fragments first."
+            )
 
-        # Clamp numerical edge effects to the same limits used by the handle.
+        # Clamp to fixed limits: either neighboring interval may reach exactly
+        # the minimum, but neither may become shorter.
         new_time = max(lower_bound, min(new_time, upper_bound))
 
-        if not left.start < new_time < right.end:
+        if (
+            new_time - left.start < minimum_duration
+            or right.end - new_time < minimum_duration
+        ):
             line.setValue(original_time)
-            raise ValueError("Moving this boundary would collapse an interval.")
+            raise ValueError(
+                f"Both intervals must remain at least "
+                f"{minimum_duration:g} second(s) long."
+            )
 
         if new_time == original_time:
             line.setValue(original_time)
             return
 
-        # Commit both sides together so the final timeline remains contiguous.
         updated_at = utc_now_iso()
 
+        # Commit both endpoints together to preserve continuity.
         left.end = new_time
         right.start = new_time
         left.adjudication_updated_at = updated_at
         right.adjudication_updated_at = updated_at
 
-        # Both neighboring final intervals have changed coverage.
         self.invalidate_adjudication_resolutions_in_range(
             float(left.start),
             float(right.end),
@@ -3454,13 +3924,150 @@ class AdjudicationAppCallbacks:
         self.draw_adjudication_timelines()
         self.populate_adjudication_table()
         self.select_adjudication_interval(left_index)
+
+        # Keep the moved boundary explicitly selected after graphics are rebuilt.
+        self.adjudication_selected_boundary_index = left_index
+        self.draw_adjudication_boundary_handles()
+        self.update_adjudication_boundary_controls()
         self.update_adjudication_navigation_controls()
 
         self.adjudication_status_label.setText(
-            "Final boundary updated. Affected resolved regions require review "
-            "again. Save Draft to preserve the change."
+            "Final boundary updated. Both intervals remain at least "
+            f"{minimum_duration:g} second(s). Save Draft to preserve the change."
         )
         self.adjudication_save_status.setText("Unsaved boundary changes.")
+
+
+    def select_adjudication_boundary(
+        self,
+        line: SelectableAdjudicationBoundary,
+    ) -> None:
+        """
+        Select one exact internal final boundary with timing diagnostics.
+
+        Selection does not modify intervals or resolution state.
+        """
+        started = perf_counter()
+
+        try:
+            self._select_adjudication_boundary_impl(line)
+        except Exception as exc:
+            print("[ADJ-UI] Boundary selection failed:", repr(exc))
+            self.show_adjudication_error(
+                "Boundary Selection Failed",
+                str(exc),
+            )
+        finally:
+            self._adjudication_perf_log(
+                "select_adjudication_boundary",
+                perf_counter() - started,
+            )
+
+
+    def _select_adjudication_boundary_impl(
+        self,
+        line: SelectableAdjudicationBoundary,
+    ) -> None:
+        """Select the boundary and display its left neighboring interval."""
+        if (
+            self.adjudication_complete
+            or self.adjudication_caliper_adjust_active
+            or self.adjudication_pending_split_index is not None
+        ):
+            return
+
+        if self.adjudication_sidebar_has_unapplied_changes():
+            raise ValueError(
+                "Apply pending label changes before selecting a boundary."
+            )
+
+        index = int(line.adjudication_left_interval_index)
+        comparison = self.adjudication_comparison
+
+        if comparison is None or not (
+            0 <= index < len(comparison.prefilled_intervals) - 1
+        ):
+            return
+
+        # Selecting the left interval gives useful sidebar context.
+        self.select_adjudication_interval(index)
+
+        self.adjudication_selected_boundary_index = index
+        self.draw_adjudication_boundary_handles()
+        self.update_adjudication_boundary_controls()
+
+        boundary_time = comparison.prefilled_intervals[index].end
+        relative_time = boundary_time - self.adjudication_waveform_start
+
+        self.adjudication_status_label.setText(
+            f"Boundary selected at {relative_time:.3f} seconds. "
+            "Remove Selected Boundary will merge its two neighboring intervals."
+        )
+
+
+    def clear_adjudication_boundary_selection(self) -> None:
+        """Clear persistent boundary selection without changing timeline data."""
+        if self.adjudication_selected_boundary_index is None:
+            return
+
+        self.adjudication_selected_boundary_index = None
+        self.draw_adjudication_boundary_handles()
+        self.update_adjudication_boundary_controls()
+
+
+    def update_adjudication_boundary_drag_guides(
+        self,
+        moved_line: pg.InfiniteLine,
+    ) -> None:
+        """
+        Show the dragged boundary's current time across every waveform plot.
+
+        Existing guides are repositioned rather than recreated for each movement.
+        No final data or resolution state is modified here.
+        """
+        position = float(moved_line.value())
+
+        if not np.isfinite(position):
+            return
+
+        if not self.adjudication_boundary_drag_guides:
+            pen = pg.mkPen(
+                ADJUDICATION_DRAG_GUIDE_COLOR,
+                width=ADJUDICATION_DRAG_GUIDE_WIDTH,
+                style=Qt.DotLine,
+            )
+
+            for plot in self.adjudication_waveform_plots:
+                guide = pg.InfiniteLine(
+                    pos=position,
+                    angle=90,
+                    movable=False,
+                    pen=pen,
+                )
+
+                # Above overlays and selection shading.
+                guide.setZValue(2000)
+                plot.addItem(guide, ignoreBounds=True)
+
+                self.adjudication_boundary_drag_guides.append(
+                    (plot, guide)
+                )
+
+        else:
+            for _plot, guide in self.adjudication_boundary_drag_guides:
+                guide.setValue(position)
+
+
+    def clear_adjudication_boundary_drag_guides(self) -> None:
+        """
+        Remove temporary drag guides after release, cancellation, or record change.
+        """
+        for plot, guide in self.adjudication_boundary_drag_guides:
+            if guide.scene() is not None:
+                plot.removeItem(guide)
+
+        self.adjudication_boundary_drag_guides = []
+
 
     # =========================================================================
     # Unsaved-work protection
@@ -3710,6 +4317,91 @@ class AdjudicationAppCallbacks:
 
 
     # =========================================================================
+    # Draft autosave
+    # =========================================================================
+
+    def autosave_current_adjudication(self) -> None:
+        """
+        Automatically save changed draft work without a blocking dialog.
+
+        Completed sessions, unapplied sidebar changes, and pending boundary
+        placement are not saved automatically.
+
+        Save failures retain dirty state and are reported in the sidebar and
+        terminal. The next timer interval can retry.
+        """
+        if getattr(self, "adjudication_autosave_in_progress", False):
+            return
+
+        started = perf_counter()
+        self.adjudication_autosave_in_progress = True
+
+        try:
+            self._autosave_current_adjudication_impl()
+
+        except Exception as exc:
+            print(
+                "[ADJ-UI] Autosave failed:",
+                type(exc).__name__,
+                exc,
+            )
+
+            # Do not clear dirty state or display a success message.
+            self.adjudication_save_status.setText(
+                "Autosave failed. Work remains unsaved; retry Save Draft."
+            )
+            self.adjudication_save_status.setToolTip(
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        finally:
+            self.adjudication_autosave_in_progress = False
+
+            self._adjudication_perf_log(
+                "autosave_current_adjudication",
+                perf_counter() - started,
+            )
+
+
+    def _autosave_current_adjudication_impl(self) -> None:
+        """
+        Save an eligible draft using the existing verified persistence path.
+
+        The loaded session determines the record and reviewer. Dropdown changes
+        do not redirect the save.
+        """
+        if self.adjudication_comparison is None:
+            return
+
+        if self.adjudication_complete:
+            return
+
+        if not self.adjudication_dirty:
+            return
+
+        if self.adjudication_pending_split_index is not None:
+            self.adjudication_save_status.setText(
+                "Autosave deferred: finish or cancel boundary placement."
+            )
+            return
+
+        if self.adjudication_sidebar_has_unapplied_changes():
+            self.adjudication_save_status.setText(
+                "Autosave deferred: click Apply Final Label first."
+            )
+            return
+
+        # Reuse draft verification, reopened-history handling, and single-record
+        # status refresh. Do not call the public manual-save wrapper because it
+        # opens an error dialog on failure.
+        self._save_current_adjudication_draft_impl()
+
+        # The shared implementation clears dirty state only after verified saving.
+        self.adjudication_save_status.setText(
+            "Draft autosaved successfully."
+        )
+
+    # =========================================================================
     # Reopening completed adjudications
     # =========================================================================
 
@@ -3786,15 +4478,33 @@ class AdjudicationAppCallbacks:
         message: str,
     ) -> None:
         """
-        Show an error dialog with explicit, readable foreground/background colors.
+        Display a compact error with selectable, scrollable full details.
 
-        This styling applies only to the error dialog.
+        Long network paths are placed in the expandable details panel rather
+        than forcing the dialog beyond the screen.
         """
+        full_message = str(message)
+
+        # Preserve the complete error in terminal output as well.
+        print(f"[ADJ-UI] {title}: {full_message}")
+
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Warning)
         dialog.setWindowTitle(title)
-        dialog.setText(str(message))
+        dialog.setTextFormat(Qt.PlainText)
+
+        dialog.setText(title)
+        dialog.setInformativeText(
+            "The operation could not be completed. "
+            "Select Show Details to view and copy the complete error."
+        )
+        dialog.setDetailedText(full_message)
+
+        dialog.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
         dialog.setStandardButtons(QMessageBox.Ok)
+
         dialog.setStyleSheet(
             """
             QMessageBox {
@@ -3804,6 +4514,12 @@ class AdjudicationAppCallbacks:
                 color: #00274C;
                 background-color: #FFFFFF;
             }
+            QMessageBox QTextEdit {
+                color: #00274C;
+                background-color: #FFFFFF;
+                min-width: 420px;
+                min-height: 180px;
+            }
             QMessageBox QPushButton {
                 background-color: #00274C;
                 color: #FFCB05;
@@ -3811,4 +4527,5 @@ class AdjudicationAppCallbacks:
             }
             """
         )
+
         dialog.exec_()

@@ -170,6 +170,8 @@ Step 10: Save Progress
 
 Click **Save Draft** periodically and before leaving the session.
 
+Eligible changed drafts are also saved automatically every two minutes.
+
 A draft preserves:
 
 - Final labels and interval boundaries.
@@ -177,14 +179,15 @@ A draft preserves:
 - Comparison context.
 - Selection information.
 
-.. warning::
+.. important::
 
-   The current adjudication baseline requires manual saving.
+   Autosave is deferred while sidebar changes have not been applied or
+   Add Boundary placement is pending.
 
-   Do not assume the annotation application's two-minute autosave also runs
-   for adjudication.
+   Apply labels and finish or cancel boundary placement before saving.
 
 Check the save confirmation before closing or loading another record.
+Do not rely solely on the timer.
 
 See :ref:`adjudication-saving-resuming`.
 

@@ -18,7 +18,7 @@ from typing import Optional
 
 import pyqtgraph as pg
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,7 +46,10 @@ from adjudication.config import (
 )
 from adjudication.config import ADJUDICATORS
 from adjudication.models import AdjudicationComparisonResult
-from adjudication_callbacks import AdjudicationAppCallbacks
+from adjudication_callbacks import (
+    AdjudicationAppCallbacks,
+    ADJUDICATION_AUTOSAVE_INTERVAL_MS,
+)
 from adjudication_calipers import AdjudicationCalipers
 
 # =============================================================================
@@ -65,7 +68,13 @@ RESOLVED_COLOR: str = "#2878B5"
 
 VISIBLE_WAVEFORM_COUNT: int = 3
 SIDEBAR_WIDTH: int = 300
-TIMELINE_HEIGHT: int = 64
+# Compact read-only source/comparison tracks; larger editable final track.
+TIMELINE_HEIGHTS: dict[str, int] = {
+    "Annotator A": 42,
+    "Annotator B": 42,
+    "Agreement / Review": 42,
+    "Final Adjudication": 90,
+}
 
 
 class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
@@ -137,9 +146,42 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
             tuple[pg.PlotWidget, object]
         ] = []
 
+        # The selected boundary is identified by the interval immediately to its left.
+        self.adjudication_selected_boundary_index: Optional[int] = None
+
+        # Temporary guides exist only while dragging a final boundary.
+        self.adjudication_boundary_drag_guides: list[
+            tuple[pg.PlotWidget, pg.InfiniteLine]
+        ] = []
+
+        # Independent automatic scaling preference for each displayed waveform row.
+        self.adjudication_auto_y_enabled: list[bool] = [
+            True
+            for _ in range(VISIBLE_WAVEFORM_COUNT)
+        ]
+
+        self.adjudication_autosave_in_progress: bool = False
+
         self._apply_styles()
         self._build_interface()
+        self.adjudication_auto_y_timer = QTimer(self)
+        self.adjudication_auto_y_timer.setSingleShot(True)
+        self.adjudication_auto_y_timer.timeout.connect(
+            self.autoscale_adjudication_visible_rows
+        )
         self._connect_signals()
+
+        # Connect autosave after signal connection
+        # One timer per reviewer window. The callback checks session eligibility.
+        self.adjudication_autosave_timer = QTimer(self)
+        self.adjudication_autosave_timer.setInterval(
+            ADJUDICATION_AUTOSAVE_INTERVAL_MS
+        )
+        self.adjudication_autosave_timer.timeout.connect(
+            self.autosave_current_adjudication
+        )
+        self.adjudication_autosave_timer.start()
+
         self._size_window()
 
     # =========================================================================
@@ -781,22 +823,56 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         return row_widget
 
     def _build_timeline_row(self, name: str) -> QWidget:
-        """Create a compact, read-only timeline placeholder."""
+        """
+        Create a timeline row with additional space for final adjudication.
+
+        Source and comparison tracks remain compact. The final track receives
+        a larger height and a clearly emphasized row label.
+        """
         row_widget = QWidget()
         row = QHBoxLayout(row_widget)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
 
-        label = QLabel(name)
+        is_final = name == "Final Adjudication"
+
+        label = QLabel(
+            "FINAL\nADJUDICATION"
+            if is_final
+            else name
+        )
         label.setFixedWidth(115)
         label.setWordWrap(True)
-        label.setStyleSheet("font-weight:bold;")
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        if is_final:
+            label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {UM_BLUE};
+                    background-color: {UM_MAIZE};
+                    border: 2px solid {UM_BLUE};
+                    border-radius: 3px;
+                    padding: 4px;
+                    font-size: 13px;
+                    font-weight: bold;
+                }}
+                """
+            )
+        else:
+            label.setStyleSheet("font-weight:bold;")
+
         row.addWidget(label)
 
         plot = self._make_plot()
-        plot.setFixedHeight(TIMELINE_HEIGHT)
+        plot.setFixedHeight(TIMELINE_HEIGHTS[name])
         plot.hideAxis("left")
         plot.setYRange(0, 1, padding=0)
+
+        if is_final:
+            plot.setStyleSheet(
+                f"border: 2px solid {UM_BLUE};"
+            )
 
         self.adjudication_timeline_plots[name] = plot
         row.addWidget(plot, stretch=1)
@@ -996,22 +1072,33 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
                     self.draw_adjudication_waveform(row)
             )
 
+        # Manual Y adjustments disable automatic scaling for that row.
         actions = {
             "Y-IN": "in",
             "Y-OUT": "out",
             "Y+": "up",
             "Y-": "down",
-            "AUTO-Y": "auto",
         }
 
-        for row_index, controls in enumerate(
-            self.adjudication_y_controls
-        ):
+        for row_index, controls in enumerate(self.adjudication_y_controls):
             for button_name, action in actions.items():
                 controls[button_name].clicked.connect(
                     lambda _checked=False, row=row_index, operation=action:
                         self.adjust_adjudication_y(row, operation)
                 )
+
+            # Retain the existing AUTO-Y button.
+            # Clicking AUTO ON or PAUSED turns automatic scaling off.
+            # Clicking AUTO OFF enables it and attempts to fit the visible window.
+            controls["AUTO-Y"].clicked.connect(
+                lambda _checked=False, row=row_index:
+                    self.toggle_adjudication_auto_y(row)
+            )
+
+        # Horizontal navigation schedules scaling after movement pauses.
+        self.adjudication_waveform_plots[0].getViewBox().sigXRangeChanged.connect(
+            self.schedule_adjudication_auto_y
+        )
 
     def _toggle_final_table(self, expanded: bool) -> None:
         """Show or hide the final interval table."""

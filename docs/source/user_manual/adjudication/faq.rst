@@ -98,11 +98,20 @@ assign the new final decision.
 Are my edits automatically saved?
 ---------------------------------
 
-Not in the current adjudication baseline.
+Yes. Changed editable adjudications are saved automatically every two minutes.
 
-Click Save Draft regularly and before leaving the session.
+Autosave is deferred while:
 
-The annotation application's two-minute autosave does not apply here.
+- Sidebar label changes have not been applied.
+- Add Boundary placement is pending.
+
+Completed read-only sessions are not autosaved.
+
+Apply pending labels and use **Save Draft** before leaving the session.
+Confirm the save succeeded rather than relying only on the timer.
+
+The first successful manual or automatic draft save after reopening archives
+the previous completed version.
 
 What is the difference between Load and Resume?
 ----------------------------------------------

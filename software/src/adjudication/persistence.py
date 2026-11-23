@@ -59,6 +59,10 @@ from .paths import (
     ensure_adjudication_output_directory,
     get_adjudication_paths,
 )
+from .discovery import (
+    discover_source_annotation_files,
+    require_ready_source_annotation_files,
+)
 from .utilities import (
     _perf_log,
     coerce_bool,
@@ -147,42 +151,176 @@ def _validate_draft_intervals(
 # Source-change detection
 # =============================================================================
 
-def _capture_source_signature(source: SourceAnnotationFile) -> dict[str, Any]:
+def _capture_source_signature(
+    source: SourceAnnotationFile,
+) -> dict[str, Any]:
     """
-    Capture size and nanosecond modification time for one source file.
+    Capture source-file identity, metadata, and content fingerprint.
 
-    These checks detect ordinary file changes without rereading source CSVs.
+    The content hash permits verification across different mount paths and
+    operating systems. Source CSVs are read only and never modified.
     """
-    stat = source.path.stat()
+    before = source.path.stat()
+    content = source.path.read_bytes()
+    after = source.path.stat()
+
+    # Reject a source changing while its signature is being captured.
+    if (
+        before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+    ):
+        raise SourceFilesChangedError(
+            f"Source annotation changed during verification: {source.path}"
+        )
 
     return {
         "path": str(source.path),
-        "size_bytes": int(stat.st_size),
-        "modified_ns": int(stat.st_mtime_ns),
+        "username": source.username,
+        "alias": source.alias,
+        "size_bytes": int(after.st_size),
+        "modified_ns": int(after.st_mtime_ns),
+        "sha256": _sha256(content),
     }
 
 
-def _verify_source_signature(signature: Mapping[str, Any]) -> None:
+def _verify_source_signature(
+    signature: Mapping[str, Any],
+    current_path: Optional[Path] = None,
+) -> None:
     """
-    Reject a missing or changed source file during draft resume.
+    Verify a source using its currently discovered path.
+
+    Parameters
+    ----------
+    signature : Mapping[str, Any]
+        Previously saved source signature.
+
+    current_path : pathlib.Path or None
+        Source path discovered on the current machine. When supplied, the
+        saved absolute path is historical metadata only.
+
+    Notes
+    -----
+    New signatures are verified by content hash. Legacy signatures without
+    hashes retain their original size/modification-time checks.
     """
-    path = Path(str(signature["path"]))
+    path = (
+        Path(current_path)
+        if current_path is not None
+        else Path(str(signature["path"]))
+    )
 
     if not path.is_file():
         raise SourceFilesChangedError(
-            f"Source annotation is missing: {path}"
+            f"Source annotation is missing at the current location: {path}"
         )
 
     stat = path.stat()
 
-    if (
-        stat.st_size != int(signature["size_bytes"])
-        or stat.st_mtime_ns != int(signature["modified_ns"])
-    ):
+    if stat.st_size != int(signature["size_bytes"]):
         raise SourceFilesChangedError(
-            f"Source annotation changed since this draft was saved: {path}"
+            f"Source annotation size changed: {path}"
         )
 
+    saved_hash = signature.get("sha256")
+
+    if saved_hash:
+        before = stat
+        content = path.read_bytes()
+        after = path.stat()
+
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise SourceFilesChangedError(
+                f"Source annotation changed during verification: {path}"
+            )
+
+        if _sha256(content) != saved_hash:
+            raise SourceFilesChangedError(
+                f"Source annotation contents changed: {path}"
+            )
+
+        return
+
+    # Preserve change protection for previously saved JSON files.
+    if stat.st_mtime_ns != int(signature["modified_ns"]):
+        raise SourceFilesChangedError(
+            "Source modification metadata differ from this legacy saved "
+            f"session: {path}\n"
+            "The session has no source-content hash. This may represent "
+            "a file change or a mount-protocol timestamp difference; "
+            "verification has not been bypassed."
+        )
+
+
+def _resolve_saved_sources(
+    record: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> tuple[SourceAnnotationFile, SourceAnnotationFile]:
+    """
+    Discover and verify saved annotators under the current record output path.
+
+    Saved usernames and A/B assignment are retained even if the global
+    configured annotator order has subsequently changed.
+    """
+    saved_sources = [
+        state["source_a"],
+        state["source_b"],
+    ]
+    signatures = state.get("source_signatures", [])
+
+    if len(signatures) != 2:
+        raise AdjudicationError(
+            "Saved state must contain two source-file signatures."
+        )
+
+    saved_users = [
+        str(source["username"])
+        for source in saved_sources
+    ]
+
+    discovered = discover_source_annotation_files(
+        record_output_path=record["output_path"],
+        subject=record["subject"],
+        file_tag=record["file_tag"],
+        annotators=saved_users,
+    )
+
+    source_a, source_b = require_ready_source_annotation_files(discovered)
+    current_sources = [source_a, source_b]
+
+    for saved_source, signature, current_source in zip(
+        saved_sources,
+        signatures,
+        current_sources,
+    ):
+        if str(saved_source["alias"]) != current_source.alias:
+            raise AdjudicationError(
+                "Saved annotator alias does not match current source ordering."
+            )
+
+        if (
+            signature.get("username") is not None
+            and str(signature["username"]) != current_source.username
+        ):
+            raise AdjudicationError(
+                "Source signature username does not match the saved annotator."
+            )
+
+        _verify_source_signature(
+            signature,
+            current_path=current_source.path,
+        )
+
+        print(
+            "[ADJ] Source verified using current location:",
+            current_source.alias,
+            current_source.path,
+        )
+
+    return source_a, source_b
 
 # =============================================================================
 # Draft saving
@@ -573,7 +711,13 @@ def _load_existing_adjudication_impl(
     record: Mapping[str, Any],
     adjudicator: str,
 ) -> tuple[AdjudicationComparisonResult, dict[str, Any]]:
-    """Restore the CSV selected by the saved workflow status."""
+    """
+    Restore saved adjudication using current-machine source paths.
+
+    The saved CSV and JSON remain authoritative for final decisions and
+    resolution state. Source annotations are located from the current record,
+    not from another machine's saved mount paths.
+    """
     paths = get_adjudication_paths(
         record_output_path=record["output_path"],
         subject=record["subject"],
@@ -629,6 +773,7 @@ def _load_existing_adjudication_impl(
                 f"Saved {name} does not match the selected record/reviewer."
             )
 
+    # Verify adjudication output before restoring any data.
     csv_bytes = csv_path.read_bytes()
 
     if _sha256(csv_bytes) != state.get("csv_sha256"):
@@ -638,29 +783,23 @@ def _load_existing_adjudication_impl(
             "or external modification."
         )
 
-    signatures = state.get("source_signatures", [])
+    # Resolve the two annotator files using this machine's batch/output path.
+    source_a, source_b = _resolve_saved_sources(record, state)
 
-    if len(signatures) != 2:
-        raise AdjudicationError(
-            "Saved state must contain two source-file signatures."
-        )
-
-    for signature in signatures:
-        _verify_source_signature(signature)
+    columns = set(ADJUDICATION_OUTPUT_COLUMNS) | {"adjudicator"}
 
     dataframe = pd.read_csv(
         io.BytesIO(csv_bytes),
         dtype={
             column: str
-            for column in ADJUDICATION_OUTPUT_COLUMNS
+            for column in columns
             if column not in {"start", "end"}
         },
         keep_default_na=False,
         float_precision="round_trip",
     )
 
-    required = set(ADJUDICATION_OUTPUT_COLUMNS) | {"adjudicator"}
-    missing = required.difference(dataframe.columns)
+    missing = columns.difference(dataframe.columns)
 
     if missing:
         raise InvalidAnnotationError(
@@ -710,14 +849,15 @@ def _load_existing_adjudication_impl(
             "Draft adjudication contains completion flags."
         )
 
+    # Restore saved review decisions without rebuilding the comparison.
     comparison = AdjudicationComparisonResult(
         adjudicator=adjudicator,
         subject=str(state["subject"]),
         encounter=str(state["encounter"]),
         namespace=str(state.get("namespace", "")),
         file_tag=str(state["file_tag"]),
-        source_a=_restore_source(state["source_a"]),
-        source_b=_restore_source(state["source_b"]),
+        source_a=source_a,
+        source_b=source_b,
         annotator_a_intervals=[
             AnnotationInterval(**item)
             for item in state["annotator_a_intervals"]

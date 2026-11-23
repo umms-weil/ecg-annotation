@@ -536,3 +536,102 @@ def test_resume_rejects_changed_source_annotation(
             session["record"],
             session["reviewer"],
         )
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_resume_ignores_saved_foreign_mount_paths(
+    persistence_session,
+    completed,
+):
+    """
+    Draft and completed sessions must resolve sources from current record paths.
+
+    A saved Mac mount path must not prevent loading the same inputs elsewhere.
+    """
+    session = persistence_session
+    paths = session["paths"]
+
+    if completed:
+        save_completed_adjudication(
+            session["record"],
+            session["comparison"],
+            waveform_start=WAVEFORM_START,
+            waveform_end=WAVEFORM_END,
+            terminal_event_status=TERMINAL_STATUS,
+            terminal_event_comment=TERMINAL_COMMENT,
+        )
+    else:
+        save_adjudication_draft(
+            session["record"],
+            session["comparison"],
+        )
+
+    state = read_state(paths.state_json)
+
+    # Simulate historical paths saved on another computer.
+    for key in ("source_a", "source_b"):
+        filename = Path(state[key]["path"]).name
+        state[key]["path"] = f"/Volumes/unavailable_share/{filename}"
+
+    for signature in state["source_signatures"]:
+        filename = Path(signature["path"]).name
+        signature["path"] = f"/Volumes/unavailable_share/{filename}"
+
+    paths.state_json.write_text(
+        json.dumps(state, indent=2),
+        encoding="utf-8",
+    )
+
+    restored, navigation = load_existing_adjudication(
+        session["record"],
+        session["reviewer"],
+    )
+
+    assert navigation["complete"] is completed
+    assert restored.source_a.path == session["source_paths"][0]
+    assert restored.source_b.path == session["source_paths"][1]
+
+    assert (
+        restored.prefilled_intervals[0].start
+        == WAVEFORM_START
+    )
+    assert (
+        restored.prefilled_intervals[-1].end
+        == WAVEFORM_END
+    )
+
+    assert_source_files_unchanged(session)
+
+
+def test_legacy_resume_uses_current_paths(
+    persistence_session,
+):
+    """
+    Older signatures without content hashes remain usable after path relocation.
+    """
+    session = persistence_session
+    paths = session["paths"]
+
+    save_adjudication_draft(
+        session["record"],
+        session["comparison"],
+    )
+
+    state = read_state(paths.state_json)
+
+    for signature in state["source_signatures"]:
+        signature.pop("sha256", None)
+        signature["path"] = "/Volumes/unavailable_share/source.csv"
+
+    paths.state_json.write_text(
+        json.dumps(state, indent=2),
+        encoding="utf-8",
+    )
+
+    restored, navigation = load_existing_adjudication(
+        session["record"],
+        session["reviewer"],
+    )
+
+    assert navigation["complete"] is False
+    assert restored.source_a.path == session["source_paths"][0]
+    assert restored.source_b.path == session["source_paths"][1]
