@@ -164,6 +164,9 @@ ADJUDICATION_AUTO_Y_MARGIN_FRACTION: float = 0.10
 ADJUDICATION_AUTO_Y_MIN_SPAN: float = 0.25
 
 
+# Save changed adjudication drafts every two minutes.
+ADJUDICATION_AUTOSAVE_INTERVAL_MS: int = 2 * 60 * 1000
+
 class SelectableAdjudicationBoundary(pg.InfiniteLine):
     """
     Draggable final boundary that also supports explicit left-click selection.
@@ -4314,6 +4317,91 @@ class AdjudicationAppCallbacks:
 
 
     # =========================================================================
+    # Draft autosave
+    # =========================================================================
+
+    def autosave_current_adjudication(self) -> None:
+        """
+        Automatically save changed draft work without a blocking dialog.
+
+        Completed sessions, unapplied sidebar changes, and pending boundary
+        placement are not saved automatically.
+
+        Save failures retain dirty state and are reported in the sidebar and
+        terminal. The next timer interval can retry.
+        """
+        if getattr(self, "adjudication_autosave_in_progress", False):
+            return
+
+        started = perf_counter()
+        self.adjudication_autosave_in_progress = True
+
+        try:
+            self._autosave_current_adjudication_impl()
+
+        except Exception as exc:
+            print(
+                "[ADJ-UI] Autosave failed:",
+                type(exc).__name__,
+                exc,
+            )
+
+            # Do not clear dirty state or display a success message.
+            self.adjudication_save_status.setText(
+                "Autosave failed. Work remains unsaved; retry Save Draft."
+            )
+            self.adjudication_save_status.setToolTip(
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        finally:
+            self.adjudication_autosave_in_progress = False
+
+            self._adjudication_perf_log(
+                "autosave_current_adjudication",
+                perf_counter() - started,
+            )
+
+
+    def _autosave_current_adjudication_impl(self) -> None:
+        """
+        Save an eligible draft using the existing verified persistence path.
+
+        The loaded session determines the record and reviewer. Dropdown changes
+        do not redirect the save.
+        """
+        if self.adjudication_comparison is None:
+            return
+
+        if self.adjudication_complete:
+            return
+
+        if not self.adjudication_dirty:
+            return
+
+        if self.adjudication_pending_split_index is not None:
+            self.adjudication_save_status.setText(
+                "Autosave deferred: finish or cancel boundary placement."
+            )
+            return
+
+        if self.adjudication_sidebar_has_unapplied_changes():
+            self.adjudication_save_status.setText(
+                "Autosave deferred: click Apply Final Label first."
+            )
+            return
+
+        # Reuse draft verification, reopened-history handling, and single-record
+        # status refresh. Do not call the public manual-save wrapper because it
+        # opens an error dialog on failure.
+        self._save_current_adjudication_draft_impl()
+
+        # The shared implementation clears dirty state only after verified saving.
+        self.adjudication_save_status.setText(
+            "Draft autosaved successfully."
+        )
+
+    # =========================================================================
     # Reopening completed adjudications
     # =========================================================================
 
@@ -4390,15 +4478,33 @@ class AdjudicationAppCallbacks:
         message: str,
     ) -> None:
         """
-        Show an error dialog with explicit, readable foreground/background colors.
+        Display a compact error with selectable, scrollable full details.
 
-        This styling applies only to the error dialog.
+        Long network paths are placed in the expandable details panel rather
+        than forcing the dialog beyond the screen.
         """
+        full_message = str(message)
+
+        # Preserve the complete error in terminal output as well.
+        print(f"[ADJ-UI] {title}: {full_message}")
+
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Warning)
         dialog.setWindowTitle(title)
-        dialog.setText(str(message))
+        dialog.setTextFormat(Qt.PlainText)
+
+        dialog.setText(title)
+        dialog.setInformativeText(
+            "The operation could not be completed. "
+            "Select Show Details to view and copy the complete error."
+        )
+        dialog.setDetailedText(full_message)
+
+        dialog.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
         dialog.setStandardButtons(QMessageBox.Ok)
+
         dialog.setStyleSheet(
             """
             QMessageBox {
@@ -4408,6 +4514,12 @@ class AdjudicationAppCallbacks:
                 color: #00274C;
                 background-color: #FFFFFF;
             }
+            QMessageBox QTextEdit {
+                color: #00274C;
+                background-color: #FFFFFF;
+                min-width: 420px;
+                min-height: 180px;
+            }
             QMessageBox QPushButton {
                 background-color: #00274C;
                 color: #FFCB05;
@@ -4415,4 +4527,5 @@ class AdjudicationAppCallbacks:
             }
             """
         )
+
         dialog.exec_()

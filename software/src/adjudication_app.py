@@ -46,7 +46,10 @@ from adjudication.config import (
 )
 from adjudication.config import ADJUDICATORS
 from adjudication.models import AdjudicationComparisonResult
-from adjudication_callbacks import AdjudicationAppCallbacks
+from adjudication_callbacks import (
+    AdjudicationAppCallbacks,
+    ADJUDICATION_AUTOSAVE_INTERVAL_MS,
+)
 from adjudication_calipers import AdjudicationCalipers
 
 # =============================================================================
@@ -157,6 +160,8 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
             for _ in range(VISIBLE_WAVEFORM_COUNT)
         ]
 
+        self.adjudication_autosave_in_progress: bool = False
+
         self._apply_styles()
         self._build_interface()
         self.adjudication_auto_y_timer = QTimer(self)
@@ -165,6 +170,18 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
             self.autoscale_adjudication_visible_rows
         )
         self._connect_signals()
+
+        # Connect autosave after signal connection
+        # One timer per reviewer window. The callback checks session eligibility.
+        self.adjudication_autosave_timer = QTimer(self)
+        self.adjudication_autosave_timer.setInterval(
+            ADJUDICATION_AUTOSAVE_INTERVAL_MS
+        )
+        self.adjudication_autosave_timer.timeout.connect(
+            self.autosave_current_adjudication
+        )
+        self.adjudication_autosave_timer.start()
+
         self._size_window()
 
     # =========================================================================
