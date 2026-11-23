@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 from PyQt5.QtGui import QCloseEvent
 from adjudication.config import (
@@ -468,8 +469,21 @@ class AdjudicationWindow(QMainWindow, AdjudicationAppCallbacks):
         layout.addWidget(self.adjudicator_dropdown)
 
         layout.addWidget(QLabel("Waveform Record"))
+
         self.adjudication_subject_dropdown = QComboBox()
         self.adjudication_subject_dropdown.setEnabled(False)
+
+        # Let the closed dropdown fit the existing sidebar width.
+        self.adjudication_subject_dropdown.setMinimumWidth(0)
+        self.adjudication_subject_dropdown.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Fixed,
+        )
+
+        self.adjudication_subject_dropdown.currentIndexChanged.connect(
+            lambda _index: self.resize_adjudication_record_dropdown()
+        )
+
         layout.addWidget(self.adjudication_subject_dropdown)
 
         self.adjudication_load_btn = self._pending_button(
