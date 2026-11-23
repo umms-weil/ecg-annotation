@@ -80,13 +80,16 @@ Clicking **Apply Final Label** commits the final interval values in memory.
 A disagreement remains unresolved until **Mark Resolved** is explicitly
 selected.
 
-Draft Saving Is Required
-~~~~~~~~~~~~~~~~~~~~~~~
+Saving Draft Work
+~~~~~~~~~~~~~~~~~
 
-Use **Save Draft** before closing or loading another record.
+Eligible changed drafts are saved automatically every two minutes.
 
-The current baseline requires manual adjudication saving. Do not assume that
-the annotation workflow's two-minute autosave also applies to adjudication.
+Autosave is deferred while sidebar label changes have not been applied or
+boundary placement is pending.
+
+Use **Save Draft** before closing or loading another record, and confirm
+that saving succeeded.
 
 Caliper Measurements Are Temporary
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
